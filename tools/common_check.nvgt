@@ -51,13 +51,19 @@ void main() {
 	check("describe_target", describe_target("Wolf", 90, 0, 0, 0, 10, 4, 0) == "Wolf, ahead and to your left, 11 steps.");
 
 	init_catalog();
-	check("items loaded", g_items.length() >= 24);
-	check("recipes loaded", g_recipes.length() >= 18);
+	check("items loaded", g_items.length() >= 25);
+	check("recipes loaded", g_recipes.length() >= 19);
 	check("structs loaded", g_structs.length() >= 8);
 	check("species loaded", g_species.length() >= 6);
+	check("find_item splint", @find_item("splint") != null);
 	check("find_item wood_wall_kit", @find_item("wood_wall_kit") != null);
 	check("find_recipe r_campfire", @find_recipe("r_campfire") != null);
 	check("find_struct wood_door is door & lockable", find_struct("wood_door").is_door && find_struct("wood_door").lockable);
+
+	// Epoch & Last Seen formatting checks
+	check("format_epoch_datetime unix epoch", format_epoch_datetime(1700000000, 0).starts_with("2023-11-14"));
+	check("format_last_seen_en just now", format_last_seen_en(1000, 1020).starts_with("just now"));
+	check("format_last_seen_en mins ago", format_last_seen_en(1000, 1600).starts_with("10 minutes ago"));
 
 	println(fails == 0 ? "PASS" : (fails + " failure(s)"));
 	exit(fails == 0 ? 0 : 1);

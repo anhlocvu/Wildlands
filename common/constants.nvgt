@@ -3,8 +3,8 @@
 const string GAME_NAME = "Wildlands Online";
 const string GAME_ORG = "WildlandsStudio";
 const string GAME_APP = "WildlandsOnline";
-const string GAME_VERSION = "1.0.0";
-const uint PROTO_VERSION = 1;
+const string GAME_VERSION = "2.0.0";
+const uint PROTO_VERSION = 2;
 
 // Single top-level server address constants (per online-audio-game-dev conventions).
 const string MAIN_SERVER_HOST = "wildlands.example.com";
@@ -36,6 +36,9 @@ const double SPRINT_SPEED_PER_SEC = 7.2;
 const double PLAYER_RADIUS = 0.35;
 const double GRAVITY_PER_SEC = 22.0;
 const double JUMP_VEL = 7.5;
+const double TRACKER_MAX_DIST = 30.0;
+const int MAP_MIN_Z = -50;
+const int MAP_MAX_Z = 100;
 const int MAX_INV_SLOTS = 24;
 const int BELT_SLOTS = 9;
 const int MAX_CHEST_SLOTS = 12;
@@ -63,6 +66,8 @@ const uint IN_RIGHT = 1 << 3;
 const uint IN_SPRINT = 1 << 4;
 const uint IN_JUMP = 1 << 5;
 const uint IN_BLOCK = 1 << 6;
+const uint IN_CLIMB_UP = 1 << 7;
+const uint IN_CLIMB_DOWN = 1 << 8;
 
 // Client mix layer IDs (priority order).
 const int LAYER_SPEECH = 0;

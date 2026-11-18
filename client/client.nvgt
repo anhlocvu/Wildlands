@@ -131,15 +131,15 @@ bool handle_auth_flow(const string&in host, uint16 port, bool force_account_dial
 
 void speak_context_help() {
 	if (g_net.map_builder_active) {
-		say("Map Builder controls: Arrow keys step cursor, Page Up and Down adjust height, M marks corner, B or Enter opens build palette, Ctrl+S saves map, F8 exits builder.", true);
+		say("Map Builder cursor controls: Arrow keys step cursor, Page Up and Down adjust height, M marks corner, B or Enter opens cursor palette and Builder Hub, Ctrl+S saves map, F8 exits cursor mode.", true);
 	} else {
-		say("World controls: W A S D walk, Left and Right snap turn, Shift with Left or Right smooth turn, E interact or gather, F attack, G guard, Q use item, 1 to 9 belt slots, I inventory, C crafting, B building, H vitals, X coordinates, K compass, T radar scan, V sonar, slash chat, comma period buffers, F2 social, Escape pause.", true);
+		say("World controls: W A S D walk, Left and Right snap turn, Shift Left or Right smooth turn, Page Up and Down climb stairs, E interact or use portal, F attack, G guard, Q use belt item, 1 to 9 belt slots, I inventory, C crafting, B building, H vitals, X coordinates, K compass, Ctrl Equals or Minus tracker category, Equals or Minus browse targets within 30 steps, Backspace track, Shift Backspace stop tracking, O tracked direction and steps, V sonar, slash chat, comma period buffers, F2 social, F8 builder hub, F9 staff panel, Escape pause.", true);
 	}
 }
 
 void run_world_session() {
 	g_audio.set_menu_music(false);
-	int scan_idx = -1;
+	g_tracker.reset();
 	timer ping_hud_timer;
 	timer local_step_timer;
 	timer smooth_turn_timer;
@@ -156,6 +156,7 @@ void run_world_session() {
 
 		g_net.pump();
 		if (g_net.state != CONN_READY) break;
+		g_tracker.tick(g_net);
 
 		if (g_net.chest_open_pending) {
 			run_chest_menu(g_net);
@@ -180,9 +181,19 @@ void run_world_session() {
 		bool ctrl = key_down(KEY_LCTRL) || key_down(KEY_RCTRL);
 		bool shift = key_down(KEY_LSHIFT) || key_down(KEY_RSHIFT);
 
-		// Map Builder toggle & cursor mode
+		// Builder Hub (F8) & Staff Panel (F9)
 		if (g_profile.key_pressed_bind("map_builder")) {
-			g_net.send_control("BUILDMAP|toggle");
+			if (g_net.map_builder_active) {
+				g_net.send_control("BUILDMAP|toggle");
+			} else {
+				g_net.send_input(0, g_net.my_facing);
+				run_map_builder_hub(g_net);
+			}
+			continue;
+		}
+		if (!g_net.map_builder_active && g_profile.key_pressed_bind("staff_panel")) {
+			g_net.send_input(0, g_net.my_facing);
+			run_staff_panel(g_net);
 			continue;
 		}
 
@@ -198,14 +209,14 @@ void run_world_session() {
 			if (key_pressed(KEY_RETURN) || g_profile.key_pressed_bind("build")) run_map_builder_palette(g_net);
 		}
 
-		// Repeat spoken & Buffer browsing
+		// Repeat spoken & Buffer browsing (PageUp/PageDown unbound from buffers for stair climbing)
 		if (g_profile.key_pressed_bind("repeat_spoken") || (ctrl && key_pressed(KEY_R))) {
 			repeat_last_spoken();
 		}
-		if (g_profile.key_pressed_bind("buf_prev") || key_pressed(KEY_PAGEUP)) {
+		if (g_profile.key_pressed_bind("buf_prev")) {
 			if (!g_net.map_builder_active) buffer_left();
 		}
-		if (g_profile.key_pressed_bind("buf_next") || key_pressed(KEY_PAGEDOWN)) {
+		if (g_profile.key_pressed_bind("buf_next")) {
 			if (!g_net.map_builder_active) buffer_right();
 		}
 		if (g_profile.key_pressed_bind("buf_up")) {
@@ -227,11 +238,23 @@ void run_world_session() {
 			continue;
 		}
 
-		// Status, Radar & Online Keys
+		// Status, STW Tracker & Online Keys
 		if (g_profile.key_pressed_bind("vitals")) speak_vitals_hud(g_net);
 		if (g_profile.key_pressed_bind("coords")) speak_coords_hud(g_net);
 		if (g_profile.key_pressed_bind("compass")) speak_compass_hud(g_net);
-		if (g_profile.key_pressed_bind("scanner")) announce_radar_step(g_net, scan_idx, shift ? -1 : 1);
+		if (g_profile.key_pressed_bind("trk_next")) {
+			if (ctrl) g_tracker.switch_category(g_net, 1);
+			else g_tracker.step_item(g_net, 1);
+		}
+		if (g_profile.key_pressed_bind("trk_prev")) {
+			if (ctrl) g_tracker.switch_category(g_net, -1);
+			else g_tracker.step_item(g_net, -1);
+		}
+		if (g_profile.key_pressed_bind("trk_track")) {
+			if (shift) g_tracker.stop_tracking();
+			else g_tracker.start_tracking(g_net);
+		}
+		if (g_profile.key_pressed_bind("trk_read")) g_tracker.read_tracked(g_net);
 		if (g_profile.key_pressed_bind("sonar")) trigger_sonar_sweep(g_net);
 		if (g_profile.key_pressed_bind("who")) g_net.request_who(true);
 		if (g_profile.key_pressed_bind("ping")) g_net.request_ping(true);
@@ -243,8 +266,10 @@ void run_world_session() {
 			}
 		}
 
-		// Menus (when not in builder cursor capture)
+		// Menus & Single-tap Stair Climb (when not in builder cursor capture)
 		if (!g_net.map_builder_active) {
+			if (g_profile.key_pressed_bind("climb_up")) g_net.send_control("ACT|climb|up");
+			if (g_profile.key_pressed_bind("climb_down")) g_net.send_control("ACT|climb|down");
 			if (g_profile.key_pressed_bind("inventory")) { g_net.send_input(0, g_net.my_facing); run_inventory_menu(g_net); continue; }
 			if (g_profile.key_pressed_bind("craft")) { g_net.send_input(0, g_net.my_facing); run_crafting_menu(g_net); continue; }
 			if (g_profile.key_pressed_bind("build")) { g_net.send_input(0, g_net.my_facing); run_survival_build_menu(g_net); continue; }
@@ -289,7 +314,7 @@ void run_world_session() {
 			}
 		}
 
-		// Movement input bitmask sent at tick cadence (~33ms) or immediately on change
+		// Movement & Continuous Stair Climb bitmask sent at tick cadence (~33ms) or immediately on change
 		uint mask = 0;
 		if (!g_net.map_builder_active) {
 			if (g_profile.key_down_bind("move_fwd") || key_down(KEY_UP)) mask |= IN_FWD;
@@ -299,6 +324,8 @@ void run_world_session() {
 			if (shift) mask |= IN_SPRINT;
 			if (g_profile.key_down_bind("jump")) mask |= IN_JUMP;
 			if (g_profile.key_down_bind("block")) mask |= IN_BLOCK;
+			if (g_profile.key_down_bind("climb_up")) mask |= IN_CLIMB_UP;
+			if (g_profile.key_down_bind("climb_down")) mask |= IN_CLIMB_DOWN;
 		}
 
 		if (mask != last_sent_mask || g_net.my_facing != last_sent_facing || input_send_timer.elapsed >= uint64(TICK_MS)) {
@@ -308,12 +335,14 @@ void run_world_session() {
 			input_send_timer.restart();
 		}
 
-		// Immediate client-side footstep feedback for self while walking cleanly
+		// Immediate client-side footstep feedback only when supported on solid ground (not in mid-air)
 		bool moving = (mask & (IN_FWD | IN_BACK | IN_LEFT | IN_RIGHT)) != 0;
 		if (moving && g_net.snap_received && g_net.map_loaded) {
-			double gz = g_net.map.ground_z_at(g_net.my_x, g_net.my_y, g_net.my_z);
-			if (g_net.my_z <= gz + 0.15) {
-				uint64 iv = shift ? 270 : 420;
+			double sz; string ss; bool dw, ur;
+			bool supported = g_net.map.find_support_at(g_net.my_x, g_net.my_y, g_net.my_z, sz, ss, dw, ur);
+			bool on_stair = (@g_net.map.find_stair_at(g_net.my_x, g_net.my_y, g_net.my_z) != null);
+			if ((supported && g_net.my_z <= sz + 0.20) || on_stair) {
+				uint64 iv = (shift && !g_net.my_fractured) ? 270 : (g_net.my_fractured ? 520 : 420);
 				if (local_step_timer.elapsed >= iv) {
 					local_step_timer.restart();
 					g_audio.play_local_footstep(g_net.map.surface_at(g_net.my_x, g_net.my_y, g_net.my_z));

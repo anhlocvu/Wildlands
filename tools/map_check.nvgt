@@ -62,6 +62,44 @@ void main() {
 		check("all MAP_CHK packets <= MAX_UDP_PAYLOAD", all_fit);
 	}
 
+	// Feature 002: 3D Box Verticality, Air Law, Stairs Surface, Portals, Hazards, Negative Z & Line Manager
+	string box_raw =
+		make_m_line("Test Box Map", 80, 80, -20, 40, "grass", "ambience/forest_day.ogg", true) + "\n"
+		+ make_s_line("Start", 10, 10, 0, 0) + "\n"
+		+ make_p_line("Ground Floor", 0, 0, 50, 50, 0, 0, "grass", "floor", false) + "\n"
+		+ make_p_line("Sky Deck", 20, 20, 30, 30, 20, 20, "stone", "floor", true) + "\n"
+		+ make_p_line("Tower Stairs", 18, 20, 20, 24, 0, 20, "wood", "stairs", false) + "\n"
+		+ make_p_line("Sub Basement", 5, 5, 15, 15, -10, -10, "stone", "floor", false) + "\n"
+		+ make_p_line("Basement Stairs", 8, 12, 10, 14, -10, 0, "stone", "stairs", false) + "\n"
+		+ make_h_line("Lava Pit", 40, 40, 45, 45, 0, 2, 25, 1000, "world/hazard_hit.ogg") + "\n"
+		+ make_d_line("Portal Out", 24, 24, 26, 26, 20, 22, "skywatch_citadel", 12, 12, 0, 90, false, "world/portal_travel.ogg") + "\n";
+
+	WorldMap bm;
+	string berr;
+	check("v2 box map loads", bm.load_from_string(box_raw, berr), berr);
+
+	double sz; string ss; bool dw, ur;
+	check("ground plate 0..50 supports z=0", bm.find_support_at(25, 25, 0, sz, ss, dw, ur) && abs(sz) < 0.01 && ur);
+	check("outside floor 60,60 is Air (no support)", !bm.find_support_at(60, 60, 0, sz, ss, dw, ur));
+	check("upper sky deck supports at z=20", bm.find_support_at(25, 25, 20, sz, ss, dw, ur) && abs(sz - 20.0) < 0.01);
+	check("under sky deck roof detected at z=0", bm.find_support_at(25, 25, 0, sz, ss, dw, ur) && ur);
+	MapPlatform@ st_up = bm.find_stair_at(19, 22, 10);
+	check("stairs found mid-air z=10 with chosen surface wood", @st_up != null && st_up.surface == "wood");
+	check("surface_at on stairs returns stair surface", bm.surface_at(19, 22, 10) == "wood");
+	MapPlatform@ st_down = bm.find_stair_at(9, 13, -5);
+	check("negative Z stairs found at z=-5 with surface stone", @st_down != null && st_down.surface == "stone");
+	check("hazard detected at 42,42,1", @bm.find_hazard_at(42, 42, 1) != null);
+	check("portal detected at 25,25,20", @bm.find_portal_at(25, 25, 20) != null);
+
+	// Line Manager CRUD checks
+	uint orig_lines = bm.raw_lines.length();
+	check("line_summary readable", bm.line_summary(4).find("Tower Stairs") >= 0);
+	check("LM insert line", bm.lm_insert_line(1, make_w_line("Test Wall", 1, 1, 2, 4, 0, 4, "stone", true), berr) && bm.raw_lines.length() == orig_lines + 1, berr);
+	check("LM duplicate line", bm.lm_duplicate_line(2, berr) && bm.raw_lines.length() == orig_lines + 2, berr);
+	check("LM move line down", bm.lm_move_line(2, 1, berr), berr);
+	check("LM delete line", bm.lm_delete_line(3, berr) && bm.raw_lines.length() == orig_lines + 1, berr);
+	check("LM refuses deleting M header", !bm.lm_delete_line(0, berr));
+
 	println(fails == 0 ? "PASS" : (fails + " failure(s)"));
 	exit(fails == 0 ? 0 : 1);
 }

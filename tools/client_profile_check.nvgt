@@ -48,6 +48,11 @@ void main() {
 	assert_true(p2.tutorial_done, "tutorial_done persisted");
 	assert_true(p2.custom_host == "play.example.org" && p2.custom_port == 7205, "custom host/port persisted");
 	assert_true(p2.get_bind_key("attack") == KEY_Z, "custom keybind persisted");
+	assert_true(p2.get_bind_key("scanner") == 0, "legacy T scanner keybind removed");
+	assert_true(p2.get_bind_key("climb_up") == KEY_PAGEUP && p2.get_bind_key("climb_down") == KEY_PAGEDOWN, "PageUp/PageDown climb binds active");
+	assert_true(p2.get_bind_key("trk_next") == KEY_EQUALS && p2.get_bind_key("trk_prev") == KEY_MINUS, "STW tracker = / - binds active");
+	assert_true(p2.get_bind_key("trk_track") == KEY_BACK && p2.get_bind_key("trk_read") == KEY_O, "STW tracker Backspace / O binds active");
+	assert_true(p2.get_bind_key("staff_panel") == KEY_F9, "Staff Panel F9 bind active");
 	assert_true(p2.is_blocked("trollone"), "blocklist case-insensitive persisted");
 
 	// Test 8-slot LRU wallet overwrite & eviction on 9th distinct server

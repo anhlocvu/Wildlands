@@ -105,14 +105,28 @@ void main() {
 	}
 	assert_true(nc.map_loaded && nc.snap_received, "Client assembled chunked map and snapshot");
 
-	// Verify Radar Targets, Sonar, Chat Dispatcher, Buffers, and Client Dynamic Door Occlusion
-	println("[Client E2E] 4. Verifying client Radar, Buffers, Chat commands & Dynamic Door occlusion...");
-	RadarTarget@[] rts = collect_radar_targets(nc);
-	assert_true(rts.length() >= 3, "Radar detected landmarks/resources");
-	for (uint i = 1; i < rts.length(); i++) {
-		assert_true(rts[i].dist >= rts[i - 1].dist - 0.001, "Radar targets sorted closest-first");
+	// Verify STW 6-Category Tracker (strict <= 30 tile list), Sonar, Chat Dispatcher, Buffers & Staff/Builder Packets
+	println("[Client E2E] 4. Verifying STW Tracker (<=30), Buffers, Chat commands & Sound Engine...");
+	TrackerTarget@[] tlist = g_tracker.collect(nc, TRK_CAT_ALL, TRACKER_MAX_DIST);
+	assert_true(tlist.length() >= 3, "STW Tracker detected nearby landmarks/resources/stairs");
+	for (uint i = 0; i < tlist.length(); i++) {
+		assert_true(tlist[i].dist <= TRACKER_MAX_DIST + 0.001, "STW Tracker scan strictly bounded <= 30 tiles");
+		if (i > 0) assert_true(tlist[i].dist >= tlist[i - 1].dist - 0.001, "STW Tracker sorted closest-first");
 	}
+	g_tracker.switch_category(nc, 1);
+	assert_true(g_tracker.cur_category == TRK_CAT_OBJECTS, "Category cycled to Objects");
+	g_tracker.switch_category(nc, -1);
+	assert_true(g_tracker.cur_category == TRK_CAT_ALL, "Category cycled back to All");
+	g_tracker.step_item(nc, 1);
+	g_tracker.start_tracking(nc);
+	assert_true(g_tracker.active_id.length() > 0, "Tracker locked onto active target");
+	g_tracker.read_tracked(nc);
+	g_tracker.tick(nc);
+	g_tracker.stop_tracking();
+	assert_true(g_tracker.active_id.length() == 0, "Tracker stopped cleanly");
 	trigger_sonar_sweep(nc);
+	speak_vitals_hud(nc);
+	speak_coords_hud(nc);
 
 	chat_dispatch_line(nc, "/who");
 	chat_dispatch_line(nc, "/ping");

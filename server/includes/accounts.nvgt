@@ -72,6 +72,10 @@ class AccountRecord {
 	double last_x = 50.0;
 	double last_y = 46.0;
 	double last_z = 0.0;
+	string current_map = "wildlands_valley";
+	int64 created_at_epoch = 0;
+	int64 last_seen_epoch = 0;
+	string last_ip = "";
 
 	bool has_friend(const string&in who_lower) {
 		return friends.find(who_lower) >= 0;
@@ -194,9 +198,10 @@ class AccountStore {
 		for (uint i = 0; i < lines.length(); i++) {
 			string line = lines[i].trim_whitespace();
 			if (line.length() == 0 || line.starts_with("#")) continue;
-			if (!saw_header && line == "ACCOUNTS_V1") { saw_header = true; continue; }
+			if (!saw_header && (line == "ACCOUNTS_V1" || line == "ACCOUNTS_V2")) { saw_header = true; continue; }
 			string[]@ p = split_keep_empty(line, FIELD_SEP);
-			if (field(p, 0) != "ACC" || field(p, 1) != "v1" || p.length() < 22) {
+			string rec_ver = field(p, 1, "");
+			if (field(p, 0) != "ACC" || (rec_ver != "v1" && rec_ver != "v2") || p.length() < 22) {
 				err = "Corrupt account record at line " + (i + 1);
 				return false;
 			}
@@ -229,14 +234,21 @@ class AccountStore {
 			acc.playtime_sec = uint64(parse_int(field(p, 18, "0")));
 			acc.last_x = safe_double(field(p, 19, "50.00"), 0.0, 500.0, 50.0);
 			acc.last_y = safe_double(field(p, 20, "46.00"), 0.0, 500.0, 46.0);
-			acc.last_z = safe_double(field(p, 21, "0.00"), 0.0, 50.0, 0.0);
+			acc.last_z = safe_double(field(p, 21, "0.00"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+			if (p.length() >= 26) {
+				acc.current_map = field(p, 22, "wildlands_valley");
+				if (acc.current_map.length() == 0) acc.current_map = "wildlands_valley";
+				acc.created_at_epoch = parse_int(field(p, 23, "0"));
+				acc.last_seen_epoch = parse_int(field(p, 24, "0"));
+				acc.last_ip = wire_unescape(field(p, 25, ""));
+			}
 
 			if (acc.id >= next_id) next_id = acc.id + 1;
 			accounts.insert_last(acc);
 			by_lower.set(acc.name_lower, @acc);
 		}
 		if (!saw_header) {
-			err = "Missing ACCOUNTS_V1 header in " + db_path;
+			err = "Missing ACCOUNTS header in " + db_path;
 			return false;
 		}
 		return true;
@@ -249,14 +261,16 @@ class AccountStore {
 			string dir = db_path.substr(0, uint(slash));
 			if (!directory_exists(dir)) directory_create(dir);
 		}
-		string buf = "ACCOUNTS_V1\n";
+		string buf = "ACCOUNTS_V2\n";
 		for (uint i = 0; i < accounts.length(); i++) {
 			AccountRecord@ a = accounts[i];
-			buf += "ACC|v1|" + a.id + "|" + a.name + "|" + a.salt + "|" + a.pw_hash + "|" + a.token_hash + "|"
+			buf += "ACC|v2|" + a.id + "|" + a.name + "|" + a.salt + "|" + a.pw_hash + "|" + a.token_hash + "|"
 				+ a.rank + "|" + a.banned_until + "|" + wire_escape(a.ban_reason) + "|" + a.muted_until + "|"
 				+ join_csv_lower(a.friends) + "|" + join_csv_lower(a.blocked) + "|"
 				+ a.kills_pvp + "|" + a.kills_pve + "|" + a.deaths + "|" + a.built_count + "|" + a.gathered_count + "|"
-				+ a.playtime_sec + "|" + fmt2(a.last_x) + "|" + fmt2(a.last_y) + "|" + fmt2(a.last_z) + "\n";
+				+ a.playtime_sec + "|" + fmt2(a.last_x) + "|" + fmt2(a.last_y) + "|" + fmt2(a.last_z) + "|"
+				+ (a.current_map.length() > 0 ? a.current_map : "wildlands_valley") + "|"
+				+ a.created_at_epoch + "|" + a.last_seen_epoch + "|" + wire_escape(a.last_ip) + "\n";
 		}
 		string tmp = db_path + ".tmp";
 		string bak = db_path + ".bak";
@@ -332,7 +346,7 @@ class AccountStore {
 		}
 	}
 
-	bool register_account(const string&in raw_name, const string&in password, double sx, double sy, double sz, AccountRecord@ &out created, string&out err, string&out issued_token) {
+	bool register_account(const string&in raw_name, const string&in password, double sx, double sy, double sz, AccountRecord@ &out created, string&out err, string&out issued_token, const string&in map_slug = "wildlands_valley", const string&in ip = "") {
 		@created = null;
 		err = "";
 		issued_token = "";
@@ -362,6 +376,10 @@ class AccountStore {
 		acc.last_x = sx;
 		acc.last_y = sy;
 		acc.last_z = sz;
+		acc.current_map = map_slug.length() > 0 ? map_slug : "wildlands_valley";
+		acc.created_at_epoch = int64(TIME_STAMP);
+		acc.last_seen_epoch = acc.created_at_epoch;
+		acc.last_ip = ip;
 
 		accounts.insert_last(acc);
 		by_lower.set(acc.name_lower, @acc);
@@ -453,5 +471,93 @@ class AccountStore {
 			line += (i + 1) + ". " + a.name + " with " + a.kills_pve + " hunts, " + a.kills_pvp + " duels, " + a.built_count + " builds. ";
 		}
 		return line;
+	}
+}
+
+class StaffReport {
+	uint64 id = 0;
+	string reporter;
+	string target;
+	string map_slug;
+	double x = 0.0, y = 0.0, z = 0.0;
+	int64 created_epoch = 0;
+	bool resolved = false;
+	string resolved_by = "";
+	string message;
+}
+
+class StaffReportStore {
+	string db_path = "data/reports.dat";
+	StaffReport@[] reports;
+	uint64 next_id = 1;
+	bool dirty = false;
+
+	bool load(string&out err) {
+		err = "";
+		reports.resize(0);
+		next_id = 1;
+		if (!file_exists(db_path)) return true;
+		string raw = file_get_contents(db_path);
+		if (raw.length() == 0) return true;
+		string[]@ lines = split_keep_empty(raw.replace("\r", "", true), "\n");
+		bool saw_hdr = false;
+		for (uint i = 0; i < lines.length(); i++) {
+			string ln = lines[i].trim_whitespace();
+			if (ln.length() == 0 || ln.starts_with("#")) continue;
+			if (!saw_hdr && ln == "REPORTS_V1") { saw_hdr = true; continue; }
+			string[]@ p = split_keep_empty(ln, FIELD_SEP);
+			if (field(p, 0) != "REP" || field(p, 1) != "v1" || p.length() < 13) continue;
+			StaffReport r;
+			r.id = uint64(parse_int(field(p, 2, "0")));
+			r.reporter = sanitize_name(field(p, 3, ""));
+			r.target = sanitize_name(field(p, 4, ""));
+			r.map_slug = field(p, 5, "wildlands_valley");
+			r.x = safe_double(field(p, 6, "0"), 0.0, 500.0, 0.0);
+			r.y = safe_double(field(p, 7, "0"), 0.0, 500.0, 0.0);
+			r.z = safe_double(field(p, 8, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+			r.created_epoch = parse_int(field(p, 9, "0"));
+			r.resolved = field(p, 10, "0") == "1";
+			r.resolved_by = sanitize_name(field(p, 11, ""));
+			r.message = wire_unescape(field(p, 12, ""));
+			if (r.id >= next_id) next_id = r.id + 1;
+			reports.insert_last(r);
+		}
+		return true;
+	}
+
+	bool save(string&out err) {
+		err = "";
+		int slash = db_path.rfind("/");
+		if (slash > 0) {
+			string dir = db_path.substr(0, uint(slash));
+			if (!directory_exists(dir)) directory_create(dir);
+		}
+		string buf = "REPORTS_V1\n";
+		for (uint i = 0; i < reports.length(); i++) {
+			StaffReport@ r = reports[i];
+			buf += "REP|v1|" + r.id + "|" + r.reporter + "|" + (r.target.length() > 0 ? r.target : "-") + "|"
+				+ r.map_slug + "|" + fmt2(r.x) + "|" + fmt2(r.y) + "|" + fmt2(r.z) + "|"
+				+ r.created_epoch + "|" + (r.resolved ? "1" : "0") + "|" + (r.resolved_by.length() > 0 ? r.resolved_by : "-") + "|"
+				+ wire_escape(r.message) + "\n";
+		}
+		string tmp = db_path + ".tmp";
+		string bak = db_path + ".bak";
+		if (!file_put_contents(tmp, buf, false)) { err = "Failed to write temp reports file"; return false; }
+		if (file_exists(db_path)) {
+			file_copy(db_path, bak, true);
+			file_delete(db_path);
+		}
+		if (!file_move(tmp, db_path)) {
+			if (!file_copy(tmp, db_path, true)) { err = "Failed to replace reports file"; return false; }
+			file_delete(tmp);
+		}
+		dirty = false;
+		return true;
+	}
+
+	uint open_count() const {
+		uint c = 0;
+		for (uint i = 0; i < reports.length(); i++) if (!reports[i].resolved) c++;
+		return c;
 	}
 }

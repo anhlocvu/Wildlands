@@ -181,6 +181,7 @@ class AudioEngine {
 		else if (surface == "wood") rel = "steps/wood_" + v + ".ogg";
 		else if (surface == "sand") rel = "steps/sand_" + v + ".ogg";
 		else if (surface == "water") rel = "steps/water_" + v + ".ogg";
+		else if (surface == "carpet") rel = "steps/carpet_" + v + ".ogg";
 		else rel = "steps/grass_" + v + ".ogg";
 
 		string full = sfx_path(rel);
@@ -290,7 +291,7 @@ class AudioEngine {
 		}
 	}
 
-	void update_world(double px, double py, double pz, int facing, bool is_night, bool is_raining, const string&in zone_amb) {
+	void update_world(double px, double py, double pz, int facing, bool is_night, bool is_raining, const string&in zone_amb, bool under_roof = false) {
 		listener_x = px;
 		listener_y = py;
 		listener_z = pz;
@@ -336,8 +337,8 @@ class AudioEngine {
 			}
 		}
 
-		// 3. Weather rain layer
-		float rain_target = is_raining ? 0.55f : 0.0f;
+		// 3. Weather rain layer (softens under roof / indoor cover)
+		float rain_target = is_raining ? (under_roof ? 0.22f : 0.55f) : 0.0f;
 		if (is_raining && @rain_loop == null) {
 			string full = sfx_path("ambience/rain_loop.ogg");
 			if (file_exists(full)) {

@@ -1,0 +1,515 @@
+// Categorized Staff & Developer Control Panel (F9): Accounts (Online / Last Seen), Lifecycle, World, Spawner, Logs & Reports.
+
+#include "builder_ui.nvgt"
+
+bool st_wait_seq(NetClient@ nc, uint prev_seq, int kind, uint timeout_ms = 1400) {
+	timer wt;
+	while (wt.elapsed < timeout_ms && nc.state == CONN_READY) {
+		wait(5);
+		nc.pump();
+		g_audio.tick_menu_audio();
+		if (kind == 0 && nc.st_overview_seq != prev_seq) return true;
+		if (kind == 1 && nc.st_acc_seq != prev_seq) return true;
+		if (kind == 2 && nc.st_detail_seq != prev_seq) return true;
+		if (kind == 3 && nc.st_logs_seq != prev_seq) return true;
+		if (kind == 4 && nc.st_rep_seq != prev_seq) return true;
+	}
+	return false;
+}
+
+string st_pick_map_slug(NetClient@ nc, const string&in title) {
+	uint s_m = nc.bm_maps_seq;
+	nc.send_control("BUILDMAP|hub_sync");
+	bm_wait_seq(nc, s_m, 0, 1000);
+	menu m;
+	init_std_menu(m, title);
+	if (nc.st_map_stats.length() > 0 && nc.bm_maps.length() == 0) {
+		for (uint i = 0; i < nc.st_map_stats.length(); i++) {
+			StaffMapStat@ ms = nc.st_map_stats[i];
+			m.add_item(ms.name + " (" + ms.players + " online)", ms.slug);
+		}
+	} else {
+		for (uint i = 0; i < nc.bm_maps.length(); i++) {
+			BuilderMapInfo@ mi = nc.bm_maps[i];
+			m.add_item(mi.name + " (" + mi.player_count + " online)", mi.slug);
+		}
+		if (nc.bm_maps.length() == 0) m.add_item(nc.current_map_name, nc.current_map_slug);
+	}
+	m.add_item("Cancel", "__cancel");
+	while (m.monitor()) {
+		wait(5); nc.pump(); g_audio.tick_menu_audio();
+		if (nc.state != CONN_READY) return "";
+	}
+	string sel = m.selected_item_id;
+	return sel == "__cancel" ? "" : sel;
+}
+
+string st_pick_duration_code(NetClient@ nc, const string&in title, bool allow_perm) {
+	menu m;
+	init_std_menu(m, title);
+	m.add_item("5 minutes", "5m");
+	m.add_item("15 minutes", "15m");
+	m.add_item("1 hour", "1h");
+	m.add_item("24 hours", "24h");
+	m.add_item("7 days", "7d");
+	if (allow_perm) m.add_item("Permanent", "perm");
+	m.add_item("Cancel", "__cancel");
+	while (m.monitor()) {
+		wait(5); nc.pump(); g_audio.tick_menu_audio();
+		if (nc.state != CONN_READY) return "";
+	}
+	string sel = m.selected_item_id;
+	return sel == "__cancel" ? "" : sel;
+}
+
+string st_format_uptime(uint64 sec) {
+	uint64 h = sec / 3600;
+	uint64 m = (sec % 3600) / 60;
+	uint64 s = sec % 60;
+	if (h > 0) return "" + h + "h " + m + "m";
+	if (m > 0) return "" + m + "m " + s + "s";
+	return "" + s + "s";
+}
+
+// ------------------------------------------------------------------ TARGET ACCOUNT ACTIONS
+
+void st_run_account_actions(NetClient@ nc, StaffAccountEntry@ ae) {
+	while (nc.state == CONN_READY) {
+		uint s_det = nc.st_detail_seq;
+		nc.send_control(pkt_3("STAFF", "acc_detail", ae.name));
+		st_wait_seq(nc, s_det, 2, 1200);
+
+		string status_tag = ae.online
+			? ("Online on " + ae.map_name + ", " + ae.zone_name)
+			: ("Last seen: " + format_last_seen_en(ae.last_seen_epoch, int64(TIME_STAMP), TIMEZONE_OFFSET));
+
+		menu m;
+		init_std_menu(m, ae.name + ", " + rank_label(ae.rank) + ", " + status_tag + ". %0 actions.");
+		m.add_item("Read Full Details: " + (nc.st_detail_text.length() > 0 ? nc.st_detail_text : status_tag), "__read");
+		if (ae.online) {
+			m.add_item("Teleport to " + ae.name, "tp_to");
+			m.add_item("Bring " + ae.name + " to My Position", "bring");
+			if (nc.my_rank >= RANK_ADMIN) {
+				m.add_item("Move " + ae.name + " to Another Map", "move_map");
+				m.add_item("Restore Vitals and Cure Fracture", "heal");
+				m.add_item("Give Item from Catalog", "give_item");
+				m.add_item("Clear Inventory", "clear_inv");
+			}
+			m.add_item("Kick Player Now", "kick");
+		}
+		m.add_item("Rescue to Safe Spawn", "rescue");
+		m.add_item("Mute Account", "mute");
+		m.add_item("Unmute Account", "unmute");
+		m.add_item("Ban Account", "ban");
+		m.add_item("Unban Account", "unban");
+		if (nc.my_rank >= RANK_ADMIN) {
+			m.add_item("Set Account Rank", "set_rank");
+			m.add_item("Invalidate Saved Session Token", "clear_token");
+		}
+		m.add_item("Back to Account Directory", "__back");
+
+		while (m.monitor()) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return;
+		}
+		string act = m.selected_item_id;
+		if (act.length() == 0 || act == "__back") return;
+		if (act == "__read") { say(nc.st_detail_text, true); continue; }
+
+		if (act == "tp_to" || act == "bring" || act == "heal" || act == "rescue" || act == "unmute" || act == "unban" || act == "clear_token") {
+			nc.send_control(pkt_build("STAFF", {"act", act, ae.name}));
+			continue;
+		}
+		if (act == "clear_inv") {
+			menu cf;
+			init_std_menu(cf, "Clear entire inventory of " + ae.name + "?");
+			cf.add_item("Cancel", "no");
+			cf.add_item("Yes, clear inventory", "yes");
+			while (cf.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+			if (cf.selected_item_id == "yes") nc.send_control(pkt_build("STAFF", {"act", "clear_inv", ae.name}));
+			continue;
+		}
+		if (act == "kick") {
+			string rsn;
+			if (!show_text_prompt("Kick " + ae.name, "Kick reason", "Policy notice", rsn, 80)) continue;
+			nc.send_control(pkt_build("STAFF", {"act", "kick", ae.name, wire_escape(rsn)}));
+			return;
+		}
+		if (act == "mute") {
+			string dur = st_pick_duration_code(nc, "Choose mute duration for " + ae.name, false);
+			if (dur.length() == 0) continue;
+			nc.send_control(pkt_build("STAFF", {"act", "mute", ae.name, dur, wire_escape("Muted by staff")}));
+			continue;
+		}
+		if (act == "ban") {
+			string dur = st_pick_duration_code(nc, "Choose ban duration for " + ae.name, true);
+			if (dur.length() == 0) continue;
+			string rsn;
+			if (!show_text_prompt("Ban " + ae.name, "Ban reason", "Rule violation", rsn, 80)) continue;
+			nc.send_control(pkt_build("STAFF", {"act", "ban", ae.name, dur, wire_escape(rsn)}));
+			continue;
+		}
+		if (act == "move_map") {
+			string slug = st_pick_map_slug(nc, "Move " + ae.name + " to which map?");
+			if (slug.length() == 0) continue;
+			nc.send_control(pkt_build("STAFF", {"act", "move_map", ae.name, slug}));
+			continue;
+		}
+		if (act == "give_item") {
+			menu im;
+			init_std_menu(im, "Choose item to grant to " + ae.name + ". " + g_items.length() + " items.");
+			for (uint i = 0; i < g_items.length(); i++) {
+				im.add_item(g_items[i].name + " (" + g_items[i].category + ")", g_items[i].id);
+			}
+			im.add_item("Cancel", "__cancel");
+			while (im.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+			if (im.selected_item_id.length() == 0 || im.selected_item_id == "__cancel") continue;
+			string iid = im.selected_item_id;
+			menu qm;
+			init_std_menu(qm, "Quantity for " + iid + ".");
+			int[] qtys = {1, 2, 5, 10, 20, 50};
+			for (uint i = 0; i < qtys.length(); i++) qm.add_item("" + qtys[i], "" + qtys[i]);
+			while (qm.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+			if (qm.selected_item_id.length() == 0) continue;
+			nc.send_control(pkt_build("STAFF", {"act", "give_item", ae.name, iid, qm.selected_item_id}));
+			continue;
+		}
+		if (act == "set_rank") {
+			menu rm;
+			init_std_menu(rm, "Assign new rank for " + ae.name + ".");
+			rm.add_item("Player (0)", "0");
+			rm.add_item("Builder (1)", "1");
+			rm.add_item("Moderator (2)", "2");
+			if (nc.my_rank >= RANK_DEV) rm.add_item("Admin (3)", "3");
+			rm.add_item("Cancel", "__cancel");
+			while (rm.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+			if (rm.selected_item_id.length() > 0 && rm.selected_item_id != "__cancel") {
+				nc.send_control(pkt_build("STAFF", {"act", "set_rank", ae.name, rm.selected_item_id}));
+			}
+		}
+	}
+}
+
+void st_run_account_directory(NetClient@ nc) {
+	string flt = "all";
+	while (nc.state == CONN_READY) {
+		uint s_acc = nc.st_acc_seq;
+		nc.send_control(pkt_3("STAFF", "accounts", flt));
+		st_wait_seq(nc, s_acc, 1, 1600);
+		int64 now_sec = int64(TIME_STAMP);
+
+		menu m;
+		init_std_menu(m, "Account Directory, filter " + flt + ", " + nc.st_accounts.length() + " accounts. %0 entries.");
+		m.add_item("Change Filter (Current: " + flt + ")", "__filter");
+		for (uint i = 0; i < nc.st_accounts.length(); i++) {
+			StaffAccountEntry@ ae = nc.st_accounts[i];
+			string st_s = ae.online
+				? ("Online (" + ae.map_name + ", " + ae.zone_name + ")")
+				: ("Last seen: " + format_last_seen_en(ae.last_seen_epoch, now_sec, TIMEZONE_OFFSET));
+			string flags = "";
+			if (ae.ban_rem_sec != 0) flags += " [BANNED]";
+			if (ae.mute_rem_sec > 0) flags += " [MUTED]";
+			m.add_item(ae.name + " [" + rank_label(ae.rank) + "] - " + st_s + flags, "" + i);
+		}
+		m.add_item("Refresh Directory", "__refresh");
+		m.add_item("Back to Staff Panel", "__back");
+
+		while (m.monitor()) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return;
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__back") return;
+		if (sel == "__refresh") continue;
+		if (sel == "__filter") {
+			menu fm;
+			init_std_menu(fm, "Filter accounts.");
+			fm.add_item("All Accounts (Online first)", "all");
+			fm.add_item("Online Players Only", "online");
+			fm.add_item("Staff Accounts Only", "staff");
+			fm.add_item("Muted or Banned Only", "punished");
+			while (fm.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+			if (fm.selected_item_id.length() > 0) flt = fm.selected_item_id;
+			continue;
+		}
+		int idx = safe_int(sel, 0, int(nc.st_accounts.length()) - 1, -1);
+		if (idx >= 0) st_run_account_actions(nc, nc.st_accounts[uint(idx)]);
+	}
+}
+
+// ------------------------------------------------------------------ LIFECYCLE, WORLD, SPAWNER, LOGS, REPORTS
+
+void st_run_lifecycle_menu(NetClient@ nc) {
+	while (nc.state == CONN_READY) {
+		uint s_ov = nc.st_overview_seq;
+		nc.send_control("STAFF|overview");
+		st_wait_seq(nc, s_ov, 0, 1200);
+
+		menu m;
+		init_std_menu(m, "Developer Server Lifecycle Control. %0 actions.");
+		if (nc.st_shutdown_rem > 0) m.add_item("Cancel Active Shutdown or Restart (" + nc.st_shutdown_rem + "s left)", "cancel");
+		m.add_item("Schedule Graceful Shutdown (Save All & Stop)", "shutdown");
+		m.add_item("Schedule Clean Server Restart (Save All & Relaunch)", "restart");
+		m.add_item("Maintenance Lock Mode: " + (nc.st_maintenance ? "ON (click to disable)" : "OFF (click to enable)"), "maint");
+		m.add_item("Allow Guest Logins: " + (nc.st_guests_allowed ? "ON (click to disable)" : "OFF (click to enable)"), "guests");
+		m.add_item("Edit Server MOTD", "motd");
+		m.add_item("Add Changelog Announcement Line", "changelog");
+		m.add_item("Back to Staff Panel", "__back");
+
+		while (m.monitor()) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return;
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__back") return;
+
+		if (sel == "cancel") { nc.send_control("STAFF|lifecycle|cancel"); continue; }
+		if (sel == "maint") { nc.send_control(pkt_build("STAFF", {"lifecycle", "maintenance", nc.st_maintenance ? "0" : "1"})); continue; }
+		if (sel == "guests") { nc.send_control(pkt_build("STAFF", {"lifecycle", "guests", nc.st_guests_allowed ? "0" : "1"})); continue; }
+		if (sel == "motd") {
+			string nmotd;
+			if (show_text_prompt("Update Server MOTD", "Enter new MOTD message", nc.motd, nmotd, 160)) {
+				nc.send_control(pkt_build("STAFF", {"lifecycle", "motd", "0", wire_escape(nmotd)}));
+			}
+			continue;
+		}
+		if (sel == "changelog") {
+			string ncl;
+			if (show_text_prompt("Prepend Changelog Entry", "Enter new changelog item", "", ncl, 160)) {
+				nc.send_control(pkt_build("STAFF", {"lifecycle", "changelog_add", "0", wire_escape(ncl)}));
+			}
+			continue;
+		}
+		if (sel == "shutdown" || sel == "restart") {
+			menu cm;
+			init_std_menu(cm, "Choose countdown delay before server " + sel + ".");
+			cm.add_item("5 seconds (Urgent)", "5");
+			cm.add_item("10 seconds (Recommended)", "10");
+			cm.add_item("30 seconds", "30");
+			cm.add_item("60 seconds", "60");
+			cm.add_item("Cancel", "__cancel");
+			while (cm.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+			if (cm.selected_item_id.length() == 0 || cm.selected_item_id == "__cancel") continue;
+			string rsn;
+			if (!show_text_prompt("Confirm " + sel, "Reason shown to players", sel == "restart" ? "Scheduled maintenance restart" : "Scheduled server shutdown", rsn, 120)) continue;
+			nc.send_control(pkt_build("STAFF", {"lifecycle", sel, cm.selected_item_id, wire_escape(rsn)}));
+			return;
+		}
+	}
+}
+
+void st_run_world_menu(NetClient@ nc) {
+	while (nc.state == CONN_READY) {
+		menu m;
+		init_std_menu(m, "World, Weather, Environment & Broadcast Controls. %0 tools.");
+		m.add_item("Save All Accounts, Objects & Reports Now", "save_now");
+		m.add_item("Broadcast Server-Wide Announcement", "announce");
+		m.add_item("Set Weather: Clear", "w_clear");
+		m.add_item("Set Weather: Rainstorm", "w_rain");
+		m.add_item("Set Time: Daytime", "t_day");
+		m.add_item("Set Time: Nighttime", "t_night");
+		m.add_item("Clear Ground Loot Across All Maps", "clear_drops");
+		if (nc.my_rank >= RANK_DEV) {
+			m.add_item("Set Target Wildlife Count", "wildlife");
+			m.add_item("Set Target Practice Bot Count", "bots");
+			m.add_item("Reload Maps, Items and Server Config Live", "reload");
+		}
+		m.add_item("Back to Staff Panel", "__back");
+
+		while (m.monitor()) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return;
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__back") return;
+
+		if (sel == "save_now" || sel == "clear_drops" || sel == "reload") { nc.send_control(pkt_3("STAFF", "world", sel)); }
+		else if (sel == "w_clear") nc.send_control("STAFF|world|weather|clear");
+		else if (sel == "w_rain") nc.send_control("STAFF|world|weather|rain");
+		else if (sel == "t_day") nc.send_control("STAFF|world|time|day");
+		else if (sel == "t_night") nc.send_control("STAFF|world|time|night");
+		else if (sel == "announce") {
+			string txt;
+			if (show_text_prompt("Global Announcement", "Message to broadcast to all players", "", txt, 200)) {
+				nc.send_control(pkt_build("STAFF", {"world", "announce", wire_escape(txt)}));
+			}
+		} else if (sel == "wildlife" || sel == "bots") {
+			menu nm;
+			init_std_menu(nm, "Choose " + sel + " target count.");
+			int[] bots_c = {0, 2, 4, 6, 10};
+			int[] wild_c = {0, 6, 12, 20, 32};
+			int[]@ cnts = (sel == "bots") ? @bots_c : @wild_c;
+			for (uint i = 0; i < cnts.length(); i++) nm.add_item("" + cnts[i], "" + cnts[i]);
+			while (nm.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+			if (nm.selected_item_id.length() > 0) nc.send_control(pkt_build("STAFF", {"world", sel, nm.selected_item_id}));
+		}
+	}
+}
+
+void st_run_spawner_menu(NetClient@ nc) {
+	menu m;
+	init_std_menu(m, "Spawn Creature or Practice Bot at current position on " + nc.current_map_name + ".");
+	string[] kinds = {"deer", "rabbit", "boar", "wolf", "bear", "bot_survivor"};
+	string[] labels = {"Deer (passive prey)", "Rabbit (fast small prey)", "Wild Boar", "Wolf (pack predator)", "Grizzly Bear (heavy apex)", "Practice Bot Survivor"};
+	for (uint i = 0; i < kinds.length(); i++) m.add_item(labels[i], kinds[i]);
+	m.add_item("Cancel", "__cancel");
+	while (m.monitor()) {
+		wait(5); nc.pump(); g_audio.tick_menu_audio();
+		if (nc.state != CONN_READY) return;
+	}
+	if (m.selected_item_id.length() == 0 || m.selected_item_id == "__cancel") return;
+	nc.send_control(pkt_build("STAFF", {
+		"spawn_mob", m.selected_item_id, nc.current_map_slug,
+		fmt2(nc.my_x + 2.0), fmt2(nc.my_y + 2.0), fmt2(nc.my_z)
+	}));
+}
+
+void st_run_teleport_form(NetClient@ nc) {
+	string slug = st_pick_map_slug(nc, "Choose destination map for teleport");
+	if (slug.length() == 0) return;
+	audio_form f;
+	f.create_window("Teleport Coordinates on " + slug, false, true);
+	int f_x = f.create_input_box("X Coordinate", "" + int(nc.my_x), "", 8);
+	int f_y = f.create_input_box("Y Coordinate", "" + int(nc.my_y), "", 8);
+	int f_z = f.create_input_box("Z Elevation", "" + int(nc.my_z), "", 8);
+	int f_ok = f.create_button("Teleport Now", true, false);
+	int f_cancel = f.create_button("Cancel", false, true);
+	f.focus(f_x);
+	while (true) {
+		wait(5); nc.pump(); g_audio.tick_menu_audio();
+		if (nc.state != CONN_READY) return;
+		f.monitor();
+		if (f.is_pressed(f_cancel)) { g_audio.play_ui_cue("menu_back.ogg", 0.8f); return; }
+		if (f.is_pressed(f_ok)) {
+			nc.send_control(pkt_build("STAFF", {"tp_loc", slug, f.get_text(f_x).trim_whitespace(), f.get_text(f_y).trim_whitespace(), f.get_text(f_z).trim_whitespace()}));
+			return;
+		}
+	}
+}
+
+void st_run_logs_reports_menu(NetClient@ nc) {
+	while (nc.state == CONN_READY) {
+		uint s_ov = nc.st_overview_seq;
+		nc.send_control("STAFF|overview");
+		st_wait_seq(nc, s_ov, 0, 1200);
+
+		menu m;
+		init_std_menu(m, "Telemetry, Audit Logs and Player Reports. %0 items.");
+		m.add_item("Server Telemetry: Uptime " + st_format_uptime(nc.st_uptime_sec)
+			+ ", Worst tick " + nc.st_worst_tick_ms + "ms, Online " + nc.st_online_count
+			+ ", Accounts " + nc.st_total_accounts + ", Maps " + nc.st_maps_count
+			+ ", Structures " + nc.st_structs_count + ", Mobs " + nc.st_mobs_count
+			+ ", Open Reports " + nc.st_open_reports, "__telemetry");
+		for (uint i = 0; i < nc.st_map_stats.length(); i++) {
+			StaffMapStat@ ms = nc.st_map_stats[i];
+			m.add_item("Map " + ms.name + " (" + ms.slug + "): " + ms.players + " players", "__map:" + ms.slug);
+		}
+		m.add_item("View Recent Audit and Security Logs", "logs");
+		m.add_item("View Player Reports (" + nc.st_open_reports + " open)", "reports");
+		m.add_item("Back to Staff Panel", "__back");
+
+		while (m.monitor()) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return;
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__back") return;
+
+		if (sel == "logs") {
+			uint s_lg = nc.st_logs_seq;
+			nc.send_control("STAFF|logs|40");
+			st_wait_seq(nc, s_lg, 3, 1400);
+			menu lm;
+			init_std_menu(lm, "Server Audit Logs, " + nc.st_logs.length() + " recent lines.");
+			for (int i = int(nc.st_logs.length()) - 1; i >= 0; i--) {
+				lm.add_item(nc.st_logs[uint(i)], "" + i);
+			}
+			lm.add_item("Close", "__close");
+			while (lm.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+		} else if (sel == "reports") {
+			uint s_rp = nc.st_rep_seq;
+			nc.send_control("STAFF|reports_list");
+			st_wait_seq(nc, s_rp, 4, 1400);
+			menu rm;
+			init_std_menu(rm, "Player Reports, " + nc.st_reports.length() + " total.");
+			for (uint i = 0; i < nc.st_reports.length(); i++) {
+				StaffReportEntry@ sr = nc.st_reports[i];
+				string rtag = sr.resolved ? ("[Resolved by " + sr.resolved_by + "] ") : "[OPEN] ";
+				rm.add_item("#" + sr.id + " " + rtag + sr.reporter + " vs " + sr.target + " on " + sr.map_slug + ": " + sr.message, "" + i);
+			}
+			rm.add_item("Back", "__back");
+			while (rm.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+			int ridx = safe_int(rm.selected_item_id, 0, int(nc.st_reports.length()) - 1, -1);
+			if (ridx >= 0) {
+				StaffReportEntry@ sr = nc.st_reports[uint(ridx)];
+				menu ract;
+				init_std_menu(ract, "Report #" + sr.id + " by " + sr.reporter + ".");
+				ract.add_item("Teleport to Report Location (" + sr.map_slug + ")", "tp");
+				if (!sr.resolved) ract.add_item("Mark Report Resolved", "resolve");
+				ract.add_item("Back", "__back");
+				while (ract.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+				if (ract.selected_item_id == "tp") {
+					nc.send_control(pkt_build("STAFF", {"tp_loc", sr.map_slug, fmt2(sr.x), fmt2(sr.y), fmt2(sr.z)}));
+					return;
+				} else if (ract.selected_item_id == "resolve") {
+					nc.send_control(pkt_3("STAFF", "report_resolve", "" + sr.id));
+				}
+			}
+		}
+	}
+}
+
+void run_staff_panel(NetClient@ nc) {
+	if (nc.my_rank < RANK_MOD) {
+		if (nc.my_rank >= RANK_BUILDER) {
+			run_map_builder_hub(nc);
+			return;
+		}
+		say("Moderator rank or higher is required for Staff Panel.", true);
+		return;
+	}
+
+	while (nc.state == CONN_READY) {
+		uint s_ov = nc.st_overview_seq;
+		nc.send_control("STAFF|overview");
+		st_wait_seq(nc, s_ov, 0, 1200);
+
+		menu m;
+		init_std_menu(m, "Staff Panel (" + rank_label(nc.my_rank) + "). " + nc.st_online_count + " online across "
+			+ nc.st_maps_count + " maps. " + nc.st_open_reports + " open reports. %0 categories.");
+		m.add_item("Account Directory (Online Status & Last Seen)", "accounts");
+		if (nc.my_rank >= RANK_DEV) m.add_item("Server Lifecycle (Shutdown, Restart, Maintenance, MOTD)", "lifecycle");
+		if (nc.my_rank >= RANK_ADMIN) m.add_item("World, Weather, Saves & Broadcasts", "world");
+		if (nc.my_rank >= RANK_ADMIN) m.add_item("Spawn Wildlife or Practice Bots", "spawner");
+		m.add_item("Teleport to Any Map or Coordinates", "tp");
+		m.add_item("Open STW Audio Map Builder Hub (F8)", "builder");
+		m.add_item("Server Telemetry, Audit Logs & Player Reports", "logs_reports");
+		m.add_item("Send Staff Chat Message (/sc)", "staff_chat");
+		m.add_item("Read Staff Operations Guide", "guide");
+		m.add_item("Close Staff Panel", "__close");
+
+		while (m.monitor()) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return;
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__close") break;
+
+		if (sel == "accounts") st_run_account_directory(nc);
+		else if (sel == "lifecycle") st_run_lifecycle_menu(nc);
+		else if (sel == "world") st_run_world_menu(nc);
+		else if (sel == "spawner") st_run_spawner_menu(nc);
+		else if (sel == "tp") { st_run_teleport_form(nc); return; }
+		else if (sel == "builder") { run_map_builder_hub(nc); }
+		else if (sel == "logs_reports") st_run_logs_reports_menu(nc);
+		else if (sel == "staff_chat") {
+			string msg;
+			if (show_text_prompt("Staff Chat (/sc)", "Message visible to all online staff", "", msg, MAX_CHAT_LEN)) {
+				nc.send_chat_pkt(pkt_4("CHAT", "staff", "-", wire_escape(msg)));
+			}
+		} else if (sel == "guide") {
+			run_doc_reader(nc, "Staff Operations Guide", "STAFF_GUIDE.md",
+				"Use F9 to open the categorized Staff Panel: inspect online or offline last-seen accounts, apply moderation actions, manage server lifecycle shutdown/restart, monitor reports and audit logs.");
+		}
+	}
+}

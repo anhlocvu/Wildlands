@@ -1,114 +1,18 @@
-// Client spatial radar scanner, acoustic sonar echolocation sweep, and vitals/coords HUD readouts.
+// Client acoustic sonar echolocation sweep and vitals/coords HUD readouts.
+// Legacy T-scanner retired; STW-style tracking lives in tracker.nvgt.
 
-#include "net_client.nvgt"
-
-class RadarTarget {
-	string label;
-	double x = 0.0, y = 0.0, z = 0.0;
-	double dist = 0.0;
-}
-
-RadarTarget@[] collect_radar_targets(NetClient@ nc) {
-	RadarTarget@[] out_list;
-	if (!nc.snap_received) return out_list;
-
-	// Nearby actors / players / wildlife / loot drops
-	for (uint i = 0; i < nc.ents.length(); i++) {
-		ClientEnt@ e = nc.ents[i];
-		RadarTarget rt;
-		string kind_tag = "";
-		if (e.kind == "player") kind_tag = "player ";
-		else if (e.kind == "drop") kind_tag = "item ";
-		rt.label = kind_tag + e.name;
-		rt.x = e.cur_x; rt.y = e.cur_y; rt.z = e.cur_z;
-		rt.dist = get_3d_distance(nc.my_x, nc.my_y, nc.my_z, e.cur_x, e.cur_y, e.cur_z);
-		out_list.insert_last(rt);
-	}
-
-	// Built structures within earshot
-	for (uint i = 0; i < nc.objs.length(); i++) {
-		ClientObj@ o = nc.objs[i];
-		double d = get_3d_distance(nc.my_x, nc.my_y, nc.my_z, o.x, o.y, o.z);
-		if (d > EARSHOT_RADIUS * 1.3) continue;
-		StructDef@ def = find_struct(o.type);
-		RadarTarget rt;
-		rt.label = (@def != null ? def.name : o.type);
-		if (@def != null && def.is_door) rt.label += (o.is_open ? " open" : " closed");
-		if (o.locked) rt.label += " locked";
-		rt.x = o.x; rt.y = o.y; rt.z = o.z;
-		rt.dist = d;
-		out_list.insert_last(rt);
-	}
-
-	// Map resource nodes & zones within 48 steps
-	if (nc.map_loaded) {
-		for (uint i = 0; i < nc.map.resources.length(); i++) {
-			MapResourceSpawn@ mr = nc.map.resources[i];
-			double d = get_3d_distance(nc.my_x, nc.my_y, nc.my_z, mr.x, mr.y, mr.z);
-			if (d > 48.0) continue;
-			RadarTarget rt;
-			rt.label = mr.type;
-			rt.x = mr.x; rt.y = mr.y; rt.z = mr.z;
-			rt.dist = d;
-			out_list.insert_last(rt);
-		}
-		for (uint i = 0; i < nc.map.zones.length(); i++) {
-			MapZone@ z = nc.map.zones[i];
-			double cx = 0.5 * (z.min_x + z.max_x);
-			double cy = 0.5 * (z.min_y + z.max_y);
-			double d = get_2d_distance(nc.my_x, nc.my_y, cx, cy);
-			if (d <= 6.0) continue;
-			RadarTarget rt;
-			rt.label = z.name + " center";
-			rt.x = cx; rt.y = cy; rt.z = nc.my_z;
-			rt.dist = d;
-			out_list.insert_last(rt);
-		}
-	}
-
-	// Insertion sort closest first
-	for (uint i = 1; i < out_list.length(); i++) {
-		RadarTarget@ key = out_list[i];
-		int j = int(i) - 1;
-		while (j >= 0 && out_list[uint(j)].dist > key.dist) {
-			@out_list[uint(j) + 1] = @out_list[uint(j)];
-			j--;
-		}
-		@out_list[uint(j) + 1] = @key;
-	}
-	return out_list;
-}
-
-void announce_radar_step(NetClient@ nc, int&inout scan_idx, int dir) {
-	RadarTarget@[] list = collect_radar_targets(nc);
-	if (list.length() == 0) {
-		g_audio.play_ui_cue("error.ogg", 0.6f);
-		say("Nothing detected on radar nearby.", true);
-		return;
-	}
-	if (dir < 0) scan_idx--;
-	else scan_idx++;
-	if (scan_idx < 0) scan_idx = int(list.length()) - 1;
-	if (scan_idx >= int(list.length())) scan_idx = 0;
-
-	RadarTarget@ rt = list[uint(scan_idx)];
-	g_audio.play_world_sfx("self", "ui/sonar_ping.ogg", rt.x, rt.y, rt.z, 0.85f, true);
-	string desc = describe_target(rt.label, double(nc.my_facing), nc.my_x, nc.my_y, nc.my_z, rt.x, rt.y, rt.z);
-	say(desc + " " + (scan_idx + 1) + " of " + list.length() + ".", true);
-}
+#include "tracker.nvgt"
 
 void trigger_sonar_sweep(NetClient@ nc) {
 	if (!nc.snap_received) return;
-	RadarTarget@[] list = collect_radar_targets(nc);
+	TrackerTarget@[] list = g_tracker.collect(nc, TRK_CAT_ALL, TRACKER_MAX_DIST);
 	int played = 0;
 	for (uint i = 0; i < list.length() && played < 3; i++) {
-		RadarTarget@ rt = list[i];
-		if (rt.dist > EARSHOT_RADIUS) break;
+		TrackerTarget@ rt = list[i];
 		g_audio.play_world_sfx("world", "ui/sonar_ping.ogg", rt.x, rt.y, rt.z, 0.75f, true);
 		played++;
 	}
 
-	// Check directly ahead at 1.5, 3.0, 5.0 tiles for wall or obstacle echolocation
 	double bx = bearing_x(double(nc.my_facing));
 	double by = bearing_y(double(nc.my_facing));
 	string wall_mat;
@@ -127,7 +31,7 @@ void trigger_sonar_sweep(NetClient@ nc) {
 	if (blocked_ahead) {
 		say(wall_mat + " obstacle " + int(hit_dist) + " steps ahead.", true);
 	} else if (played > 0) {
-		RadarTarget@ near = list[0];
+		TrackerTarget@ near = list[0];
 		say("Path clear ahead. Nearest: " + describe_target(near.label, double(nc.my_facing), nc.my_x, nc.my_y, nc.my_z, near.x, near.y, near.z), true);
 	} else {
 		g_audio.play_ui_cue("ui/sonar_ping.ogg", 0.55f);
@@ -139,15 +43,19 @@ void speak_vitals_hud(NetClient@ nc) {
 	if (!nc.snap_received) { say("Waiting for world state.", true); return; }
 	string weather = nc.is_raining ? "raining" : "clear skies";
 	string tod = nc.is_night ? "nighttime" : "daylight";
+	string frac = nc.my_fractured ? " Fractured leg." : "";
 	say("Health " + nc.my_hp + ", hunger " + nc.my_hunger + ", thirst " + nc.my_thirst
 		+ ", stamina " + nc.my_stamina + ", warmth " + nc.my_warmth
-		+ ". " + tod + ", " + weather + ".", true);
+		+ "." + frac + " " + tod + ", " + weather + ".", true);
 }
 
 void speak_coords_hud(NetClient@ nc) {
 	if (!nc.snap_received) return;
 	string surf = nc.map_loaded ? nc.map.surface_at(nc.my_x, nc.my_y, nc.my_z) : "ground";
-	say(nc.cur_zone + ", X " + int(nc.my_x + 0.5) + ", Y " + int(nc.my_y + 0.5) + ", elevation " + int(nc.my_z + 0.5) + ", standing on " + surf + ".", true);
+	double sz; string ss; bool dw, ur;
+	bool air = nc.map_loaded && !nc.map.find_support_at(nc.my_x, nc.my_y, nc.my_z, sz, ss, dw, ur) && (@nc.map.find_stair_at(nc.my_x, nc.my_y, nc.my_z) == null);
+	string mname = nc.current_map_name.length() > 0 ? nc.current_map_name + ", " : "";
+	say(mname + nc.cur_zone + ", X " + int(nc.my_x + 0.5) + ", Y " + int(nc.my_y + 0.5) + ", Z " + int(nc.my_z + (nc.my_z < 0 ? -0.5 : 0.5)) + ", " + (air ? "in mid-air" : ("standing on " + surf)) + ".", true);
 }
 
 void speak_compass_hud(NetClient@ nc) {

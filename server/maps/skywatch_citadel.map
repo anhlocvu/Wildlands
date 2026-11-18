@@ -1,0 +1,22 @@
+M|Skywatch Citadel|80|80|-20|40|stone|ambience/wind_gust.ogg|1
+S|Citadel Courtyard|20.00|10.00|0.00|0
+Z|Citadel Courtyard|10.00|5.00|35.00|35.00|-2.00|30.00|stone|ambience/wind_gust.ogg|1
+Z|Lower Vault Cavern|12.00|20.00|28.00|38.00|-20.00|-1.00|dirt|ambience/cave_loop.ogg|0
+Z|Sky Spire Terrace|15.00|25.00|35.00|48.00|18.00|40.00|wood|ambience/wind_gust.ogg|0
+P|Courtyard Ground|10.00|5.00|35.00|35.00|0.00|0.00|stone|floor|0|y|1
+P|Stone Spiral Stairs|22.00|22.00|25.00|25.00|0.00|20.00|stone|stairs|0|y|1
+P|Sky Spire Deck|18.00|24.00|32.00|36.00|20.00|20.00|wood|floor|1|y|1
+P|Sky Air Bridge|24.00|36.00|27.00|46.00|20.00|20.00|wood|floor|0|y|1
+P|Northern Bastion|20.00|46.00|34.00|56.00|20.00|20.00|carpet|floor|1|y|1
+P|Vault Descent Stairs|15.00|20.00|18.00|23.00|-10.00|0.00|stone|stairs|0|y|1
+P|Underground Vault Floor|12.00|20.00|28.00|38.00|-10.00|-10.00|stone|floor|0|y|1
+L|Moat Deep Water|40.00|20.00|55.00|40.00|-4.00|0.00|deep|ambience/river_loop.ogg
+W|Bastion West Wall|20.00|46.00|21.00|56.00|20.00|24.00|stone|1
+W|Bastion East Wall|33.00|46.00|34.00|56.00|20.00|24.00|stone|1
+D|Return to Wildlands Valley|19.00|6.00|22.00|9.00|0.00|3.00|wildlands_valley|61.50|58.00|0.00|180|0|world/portal_travel.ogg
+H|Spire Flame Brazier|30.00|48.00|32.00|50.00|20.00|22.00|12|1200|world/hazard_hit.ogg
+R|iron_vein|20.00|30.00|-10.00|6|60
+R|herb_patch|26.00|50.00|20.00|4|45
+A|Citadel Portal Hum|world/portal_travel.ogg|20.50|7.50|1.00|18|0.55
+A|Vault Dripping Water|ambience/cave_loop.ogg|20.00|28.00|-10.00|20|0.65
+A|Sky Spire Beacon|builder/beacon_ping.ogg|26.00|50.00|20.00|28|0.60

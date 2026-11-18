@@ -1,5 +1,6 @@
-// Server world simulation: persistent structures, resource nodes, vitals,
-// movement & physics, crafting, gathering, loot drops, and day/night/weather.
+// Server multi-map world simulation: persistent structures, resource nodes, vitals,
+// 3D movement, stairs surface climbing, true air/void gravity & fall trauma, portals,
+// hazards, crafting, gathering, loot drops, and day/night/weather.
 
 #include "state.nvgt"
 
@@ -27,10 +28,11 @@ void decode_chest_items(const string&in encoded, ItemStack@[]@ out_items) {
 	}
 }
 
-void world_init_nodes(ServerCtx@ ctx) {
-	ctx.nodes.resize(0);
-	for (uint i = 0; i < ctx.map.resources.length(); i++) {
-		MapResourceSpawn@ r = ctx.map.resources[i];
+void world_init_nodes(ServerCtx@ ctx, MapInstance@ mi) {
+	if (@mi == null) return;
+	mi.nodes.resize(0);
+	for (uint i = 0; i < mi.map.resources.length(); i++) {
+		MapResourceSpawn@ r = mi.map.resources[i];
 		ResourceNode rn;
 		rn.id = ctx.next_entity_id++;
 		rn.type = r.type;
@@ -38,7 +40,13 @@ void world_init_nodes(ServerCtx@ ctx) {
 		rn.max_charges = r.max_charges;
 		rn.charges = r.max_charges;
 		rn.respawn_sec = r.respawn_sec;
-		ctx.nodes.insert_last(rn);
+		mi.nodes.insert_last(rn);
+	}
+}
+
+void world_init_all_nodes(ServerCtx@ ctx) {
+	for (uint i = 0; i < ctx.maps.length(); i++) {
+		world_init_nodes(ctx, ctx.maps[i]);
 	}
 }
 
@@ -46,7 +54,7 @@ bool world_load_objects(ServerCtx@ ctx, string&out err) {
 	err = "";
 	ctx.structures.resize(0);
 	if (!file_exists(ctx.objects_db_path)) {
-		ctx.sync_map_occluders();
+		ctx.sync_all_map_occluders();
 		return true;
 	}
 	string raw = file_get_contents(ctx.objects_db_path);
@@ -67,12 +75,12 @@ bool world_load_objects(ServerCtx@ ctx, string&out err) {
 		}
 		WorldStructure st;
 		st.id = uint64(parse_int(field(p, 2, "0")));
-		st.map_name = wire_unescape(field(p, 3, ctx.map.name));
+		st.map_name = wire_unescape(field(p, 3, ctx.default_map_slug));
 		st.type = field(p, 4, "wood_wall");
 		st.owner = sanitize_name(field(p, 5, "Server"));
 		st.x = safe_double(field(p, 6, "0"), 0.0, 500.0, 0.0);
 		st.y = safe_double(field(p, 7, "0"), 0.0, 500.0, 0.0);
-		st.z = safe_double(field(p, 8, "0"), 0.0, 50.0, 0.0);
+		st.z = safe_double(field(p, 8, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
 		st.facing = safe_int(field(p, 9, "0"), 0, 359, 0);
 		st.max_hp = safe_int(field(p, 11, "100"), 1, 1000, 100);
 		st.hp = safe_int(field(p, 10, "100"), 1, st.max_hp, st.max_hp);
@@ -84,7 +92,7 @@ bool world_load_objects(ServerCtx@ ctx, string&out err) {
 		ctx.structures.insert_last(st);
 	}
 	if (!saw_hdr) { err = "Missing OBJECTS_V1 header"; return false; }
-	ctx.sync_map_occluders();
+	ctx.sync_all_map_occluders();
 	return true;
 }
 
@@ -118,40 +126,215 @@ bool world_save_objects(ServerCtx@ ctx, string&out err) {
 	return true;
 }
 
-bool world_near_structure(ServerCtx@ ctx, double x, double y, double z, const string&in type, double max_dist = 3.5) {
+bool world_near_structure(ServerCtx@ ctx, MapInstance@ mi, double x, double y, double z, const string&in type, double max_dist = 3.5) {
 	for (uint i = 0; i < ctx.structures.length(); i++) {
 		WorldStructure@ st = ctx.structures[i];
-		if (st.map_name != ctx.map.name || st.type != type) continue;
+		if (!ctx.struct_on_map(st, mi) || st.type != type) continue;
 		if (st.type == "campfire" && st.fuel_sec <= 0) continue;
 		if (get_3d_distance(x, y, z, st.x, st.y, st.z) <= max_dist) return true;
 	}
 	return false;
 }
 
-bool world_near_emitter_campfire(ServerCtx@ ctx, double x, double y, double z) {
-	for (uint i = 0; i < ctx.map.emitters.length(); i++) {
-		MapEmitter@ e = ctx.map.emitters[i];
-		if (e.sound_file.find("campfire") >= 0 && get_3d_distance(x, y, z, e.x, e.y, e.z) <= 4.5) return true;
+bool world_near_emitter_campfire(ServerCtx@ ctx, MapInstance@ mi, double x, double y, double z) {
+	if (@mi != null) {
+		for (uint i = 0; i < mi.map.emitters.length(); i++) {
+			MapEmitter@ e = mi.map.emitters[i];
+			if (e.sound_file.find("campfire") >= 0 && get_3d_distance(x, y, z, e.x, e.y, e.z) <= 4.5) return true;
+		}
 	}
-	return world_near_structure(ctx, x, y, z, "campfire", 4.5);
+	return world_near_structure(ctx, mi, x, y, z, "campfire", 4.5);
 }
 
-void world_spawn_drop(ServerCtx@ ctx, const string&in item_id, int qty, double x, double y, double z, uint64 now_ms) {
-	if (qty <= 0) return;
+void world_spawn_drop(ServerCtx@ ctx, MapInstance@ mi, const string&in item_id, int qty, double x, double y, double z, uint64 now_ms) {
+	if (@mi == null || qty <= 0) return;
 	LootDrop d;
 	d.id = ctx.next_entity_id++;
 	d.item_id = item_id;
 	d.qty = qty;
 	d.x = x; d.y = y; d.z = z;
 	d.expires_ms = now_ms + 180000;
-	ctx.drops.insert_last(d);
+	mi.drops.insert_last(d);
+}
+
+void world_respawn_player(ServerCtx@ ctx, PlayerSession@ ps) {
+	MapInstance@ mi = ctx.player_map(ps);
+	if (@mi == null || mi.map.spawns.length() == 0) @mi = ctx.default_map();
+	MapSpawn@ sp = (@mi != null && mi.map.spawns.length() > 0) ? mi.map.spawns[0] : null;
+	if (@mi != null && mi.slug != ps.current_map) {
+		ps.current_map = mi.slug;
+		ctx.send_map_sync(ps);
+	}
+	ps.x = @sp != null ? sp.x : 50.0;
+	ps.y = @sp != null ? sp.y : 46.0;
+	ps.z = @sp != null ? sp.z : 0.0;
+	ps.vx = 0.0; ps.vy = 0.0; ps.vz = 0.0;
+	ps.on_ground = true;
+	ps.fall_start_z = ps.z;
+	ps.fall_air_sfx_sent = false;
+	ps.fracture_until_ms = 0;
+	ps.hp = 100;
+	ps.hunger = 80;
+	ps.thirst = 80;
+	ps.stamina = 100;
+	ps.warmth = 90;
+	ps.duel_opponent = "";
+	ps.duel_until_ms = 0;
+	if (@mi != null) {
+		ctx.broadcast_sfx_3d(mi.slug, "world", "combat/respawn.ogg", ps.x, ps.y, ps.z, 0.85, 20.0);
+		ctx.send_speech(ps, MBUF_GAME, true, "Respawned at " + mi.map.zone_name_at(ps.x, ps.y, ps.z) + " in " + mi.map.name + ".");
+	}
+}
+
+void world_kill_env(ServerCtx@ ctx, PlayerSession@ victim, const string&in cause) {
+	if (@victim == null || !victim.authed || victim.peer_id == 0) return;
+	MapInstance@ mi = ctx.player_map(victim);
+	string mslug = @mi != null ? mi.slug : victim.current_map;
+	ctx.broadcast_sfx_3d(mslug, "threat", "combat/death.ogg", victim.x, victim.y, victim.z, 0.95, 30.0);
+	if (@victim.account != null) { victim.account.deaths++; ctx.accounts.dirty = true; }
+	ctx.broadcast_speech_map(mslug, MBUF_GAME, false, victim.name + " died from " + cause + ".");
+	ctx.send_speech(victim, MBUF_GAME, true, "You died from " + cause + ".");
+	world_respawn_player(ctx, victim);
+}
+
+bool world_transfer_player_map(ServerCtx@ ctx, PlayerSession@ ps, MapInstance@ dest, double dx, double dy, double dz, int dfac, const string&in travel_sfx = "world/portal_travel.ogg") {
+	if (@ps == null || @dest == null) return false;
+	string old_map = ps.current_map;
+	if (old_map != dest.slug) {
+		ctx.broadcast_sfx_3d(old_map, "world", travel_sfx, ps.x, ps.y, ps.z, 0.7, 18.0);
+	}
+	ps.current_map = dest.slug;
+	ps.x = clampd(dx, 1.5, double(dest.map.width - 1.5));
+	ps.y = clampd(dy, 1.5, double(dest.map.height - 1.5));
+	ps.z = clampd(dz, double(dest.map.min_z), double(dest.map.max_z));
+	ps.facing = wrap_deg(dfac);
+	ps.vx = 0.0; ps.vy = 0.0; ps.vz = 0.0;
+	ps.on_ground = true;
+	ps.fall_start_z = ps.z;
+	ps.fall_air_sfx_sent = false;
+	ps.last_zone = "";
+	ps.duel_opponent = "";
+	ps.duel_until_ms = 0;
+
+	if (@ps.account != null) {
+		ps.account.current_map = dest.slug;
+		ps.account.last_x = ps.x;
+		ps.account.last_y = ps.y;
+		ps.account.last_z = ps.z;
+		ctx.accounts.dirty = true;
+	}
+
+	if (old_map != dest.slug) {
+		ctx.send_control(ps, pkt_build("MAP_TRANSFER", {
+			wire_escape(dest.slug), wire_escape(dest.map.name),
+			fmt2(ps.x), fmt2(ps.y), fmt2(ps.z), "" + ps.facing
+		}));
+		ctx.send_map_sync(ps);
+		ctx.send_sfx_to(ps, "self", travel_sfx, ps.x, ps.y, ps.z, 0.85);
+		ctx.broadcast_sfx_3d(dest.slug, "world", travel_sfx, ps.x, ps.y, ps.z, 0.75, 22.0);
+		ctx.send_speech(ps, MBUF_GAME, true, "Entered " + dest.map.name + ", " + dest.map.zone_name_at(ps.x, ps.y, ps.z) + ".");
+	} else {
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Teleported to " + int(ps.x) + ", " + int(ps.y) + ", Z " + int(ps.z) + " on " + dest.map.name + ".");
+	}
+	return true;
+}
+
+void world_handle_climb(ServerCtx@ ctx, PlayerSession@ ps, int dir, uint64 now_ms, uint64 min_cd_ms = 200) {
+	if (@ps == null || !ps.authed || ps.peer_id == 0) return;
+	if (now_ms - ps.last_climb_ms < min_cd_ms) return;
+	MapInstance@ mi = ctx.player_map(ps);
+	if (@mi == null) return;
+	MapPlatform@ stair = mi.map.find_stair_at(ps.x, ps.y, ps.z);
+	if (@stair == null) return;
+
+	double next_z = ps.z + double(dir);
+	if (next_z > stair.max_z) next_z = stair.max_z;
+	if (next_z < stair.min_z) next_z = stair.min_z;
+	if (abs(next_z - ps.z) < 0.05) {
+		ps.last_climb_ms = now_ms;
+		ctx.send_sfx_to(ps, "self", "ui/menu_edge.ogg", ps.x, ps.y, ps.z, 0.45);
+		return;
+	}
+	string mat;
+	if (mi.map.blocked_by_wall(ps.x, ps.y, next_z, PLAYER_RADIUS, mat)) {
+		ps.last_climb_ms = now_ms;
+		ctx.send_sfx_to(ps, "self", mat == "stone" ? "steps/wall_bump_stone.ogg" : "steps/wall_bump_wood.ogg", ps.x, ps.y, ps.z, 0.7);
+		return;
+	}
+
+	ps.last_climb_ms = now_ms;
+	ps.z = next_z;
+	ps.vz = 0.0;
+	ps.on_ground = true;
+	ps.fall_start_z = ps.z;
+	ps.fall_air_sfx_sent = false;
+
+	// Play footstep sound matching the staircase's builder-selected surface!
+	string surf = stair.surface.length() > 0 ? stair.surface : "wood";
+	string sfx = "steps/" + surf + "_" + random(1, 3) + ".ogg";
+	ctx.send_sfx_to(ps, "self", sfx, ps.x, ps.y, ps.z, 0.78);
+	string pkt = pkt_build("SFX", {"actors", sfx, fmt2(ps.x), fmt2(ps.y), fmt2(ps.z), "0.70", "1"});
+	for (uint i = 0; i < ctx.sessions.length(); i++) {
+		PlayerSession@ other = ctx.sessions[i];
+		if (@other == @ps || !other.authed || other.peer_id == 0 || other.current_map != mi.slug) continue;
+		if (get_3d_distance(other.x, other.y, other.z, ps.x, ps.y, ps.z) <= 22.0) {
+			ctx.send_ch(other.peer_id, CH_AUDIO, pkt, true);
+		}
+	}
+}
+
+void world_apply_fall_landing(ServerCtx@ ctx, MapInstance@ mi, PlayerSession@ ps, double landed_z, bool is_deep_water, uint64 now_ms) {
+	double drop = ps.fall_start_z - landed_z;
+	ps.z = landed_z;
+	ps.vz = 0.0;
+	ps.on_ground = true;
+	ps.fall_air_sfx_sent = false;
+
+	if (is_deep_water && drop > 1.2) {
+		ctx.broadcast_sfx_3d(mi.slug, "actors", "steps/water_splash_big.ogg", ps.x, ps.y, ps.z, 0.9, 24.0);
+		if (drop > 4.0) ctx.send_speech(ps, MBUF_GAME, false, "Splashed safely into deep water.");
+		return;
+	}
+	if (drop > 5.5) {
+		int fdmg = clampi(int((drop - 3.0) * 8.5), 18, 100);
+		ctx.broadcast_sfx_3d(mi.slug, "actors", "steps/land_hard.ogg", ps.x, ps.y, ps.z, 0.95, 22.0);
+		ctx.broadcast_sfx_3d(mi.slug, "actors", "combat/bone_break.ogg", ps.x, ps.y, ps.z, 0.95, 20.0);
+		if (ps.hp - fdmg <= 0) {
+			world_kill_env(ctx, ps, "a " + int(drop + 0.5) + "-step fall");
+			return;
+		}
+		ps.hp = clampi(ps.hp - fdmg, 1, 100);
+		if (drop > 6.5) {
+			ps.fracture_until_ms = now_ms + 25000;
+			ctx.send_speech(ps, MBUF_GAME, true, "Bone-cracking fall! Fractured leg, took " + fdmg + " damage. Use a bandage or splint.");
+		} else {
+			ctx.send_speech(ps, MBUF_GAME, true, "Severe fall! Took " + fdmg + " fall damage.");
+		}
+	} else if (drop > 2.5) {
+		int fdmg = clampi(int((drop - 2.0) * 5.0), 4, 22);
+		ctx.broadcast_sfx_3d(mi.slug, "actors", "steps/land_hard.ogg", ps.x, ps.y, ps.z, 0.85, 20.0);
+		if (ps.hp - fdmg <= 0) {
+			world_kill_env(ctx, ps, "a high fall");
+			return;
+		}
+		ps.hp = clampi(ps.hp - fdmg, 1, 100);
+		ctx.send_speech(ps, MBUF_GAME, true, "Hard landing, took " + fdmg + " fall damage.");
+	} else if (drop > 0.6) {
+		ctx.broadcast_sfx_3d(mi.slug, "actors", "steps/land_soft.ogg", ps.x, ps.y, ps.z, 0.7, 15.0);
+	}
 }
 
 void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64 now_ms) {
-	if (!ps.authed || ps.peer_id == 0 || ps.builder_mode) {
+	if (!ps.authed || ps.peer_id == 0) {
 		ps.vx = 0.0; ps.vy = 0.0;
 		return;
 	}
+	if (ps.builder_mode && !ps.builder_noclip) {
+		ps.vx = 0.0; ps.vy = 0.0;
+		return;
+	}
+	MapInstance@ mi = ctx.player_map(ps);
+	if (@mi == null) return;
 
 	double fwd_x = bearing_x(ps.facing);
 	double fwd_y = bearing_y(ps.facing);
@@ -170,21 +353,35 @@ void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64
 		move_y /= mag;
 	}
 
-	bool want_sprint = (ps.input_mask & IN_SPRINT) != 0 && mag > 0.01 && ps.stamina > 5;
-	string surf = ctx.map.surface_at(ps.x, ps.y, ps.z);
+	bool fractured = ps.is_fractured(now_ms);
+	bool want_sprint = !fractured && (ps.input_mask & IN_SPRINT) != 0 && mag > 0.01 && ps.stamina > 5;
+	string surf = mi.map.surface_at(ps.x, ps.y, ps.z);
 	double speed = want_sprint ? SPRINT_SPEED_PER_SEC : WALK_SPEED_PER_SEC;
-	if (surf == "water") speed *= 0.65;
-	if (ps.blocking) speed *= 0.45;
+	if (ps.builder_noclip) speed = SPRINT_SPEED_PER_SEC * 1.6;
+	else {
+		if (surf == "water") speed *= 0.65;
+		if (ps.blocking) speed *= 0.45;
+		if (fractured) speed *= 0.65;
+	}
 
 	ps.vx = move_x * speed;
 	ps.vy = move_y * speed;
+
+	if (ps.builder_noclip) {
+		ps.x = clampd(ps.x + ps.vx * dt, 0.5, double(mi.map.width - 0.5));
+		ps.y = clampd(ps.y + ps.vy * dt, 0.5, double(mi.map.height - 0.5));
+		if ((ps.input_mask & IN_CLIMB_UP) != 0) ps.z = clampd(ps.z + 10.0 * dt, double(mi.map.min_z), double(mi.map.max_z));
+		if ((ps.input_mask & IN_CLIMB_DOWN) != 0) ps.z = clampd(ps.z - 10.0 * dt, double(mi.map.min_z), double(mi.map.max_z));
+		ps.vz = 0.0; ps.on_ground = true;
+		return;
+	}
 
 	// Axis-separated wall sliding so blind players can follow walls smoothly.
 	string hit_mat_x, hit_mat_y;
 	bool bumped = false;
 	string bump_mat = "wood";
 	double nx = ps.x + ps.vx * dt;
-	if (!ctx.map.blocked_by_wall(nx, ps.y, ps.z, PLAYER_RADIUS, hit_mat_x)) {
+	if (!mi.map.blocked_by_wall(nx, ps.y, ps.z, PLAYER_RADIUS, hit_mat_x)) {
 		ps.x = nx;
 	} else {
 		ps.vx = 0.0;
@@ -192,7 +389,7 @@ void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64
 		bump_mat = hit_mat_x;
 	}
 	double ny = ps.y + ps.vy * dt;
-	if (!ctx.map.blocked_by_wall(ps.x, ny, ps.z, PLAYER_RADIUS, hit_mat_y)) {
+	if (!mi.map.blocked_by_wall(ps.x, ny, ps.z, PLAYER_RADIUS, hit_mat_y)) {
 		ps.y = ny;
 	} else {
 		ps.vy = 0.0;
@@ -206,59 +403,97 @@ void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64
 		ctx.send_sfx_to(ps, "self", wsfx, ps.x, ps.y, ps.z, 0.75);
 	}
 
-	// Jump & Z gravity across platforms / ramps.
-	double floor_z = ctx.map.ground_z_at(ps.x, ps.y, ps.z);
-	if (ps.on_ground && (ps.input_mask & IN_JUMP) != 0 && ps.stamina >= 8) {
-		ps.on_ground = false;
-		ps.vz = JUMP_VEL;
+	// Staircase climbing (PageUp / PageDown) & mid-stair suspension
+	if ((ps.input_mask & IN_CLIMB_UP) != 0) world_handle_climb(ctx, ps, 1, now_ms, 200);
+	else if ((ps.input_mask & IN_CLIMB_DOWN) != 0) world_handle_climb(ctx, ps, -1, now_ms, 200);
+
+	MapPlatform@ on_stair = mi.map.find_stair_at(ps.x, ps.y, ps.z);
+	if (@on_stair != null) {
+		ps.z = clampd(ps.z, on_stair.min_z, on_stair.max_z);
+		ps.vz = 0.0;
+		ps.on_ground = true;
 		ps.fall_start_z = ps.z;
-		ps.stamina = clampi(ps.stamina - 8, 0, 100);
-		ctx.broadcast_sfx_3d("actors", "steps/jump.ogg", ps.x, ps.y, ps.z, 0.75, 18.0);
-	}
-	if (!ps.on_ground || ps.z > floor_z + 0.01) {
-		if (ps.on_ground) { ps.on_ground = false; ps.fall_start_z = ps.z; }
-		ps.vz -= GRAVITY_PER_SEC * dt;
-		ps.z += ps.vz * dt;
-		floor_z = ctx.map.ground_z_at(ps.x, ps.y, ps.z);
-		if (ps.z <= floor_z) {
-			double drop = ps.fall_start_z - floor_z;
-			ps.z = floor_z;
-			ps.vz = 0.0;
-			ps.on_ground = true;
-			if (drop > 4.2) {
-				int fdmg = clampi(int((drop - 3.5) * 10.0), 5, 50);
-				ps.hp = clampi(ps.hp - fdmg, 0, 100);
-				ctx.broadcast_sfx_3d("actors", "steps/land_hard.ogg", ps.x, ps.y, ps.z, 0.9, 20.0);
-				ctx.send_speech(ps, MBUF_GAME, true, "Hard landing, took " + fdmg + " fall damage.");
-			} else if (drop > 0.6) {
-				ctx.broadcast_sfx_3d("actors", "steps/land_soft.ogg", ps.x, ps.y, ps.z, 0.7, 15.0);
-			}
-		}
+		ps.fall_air_sfx_sent = false;
 	} else {
-		ps.z = floor_z;
+		// True Air/Void Law & Z Gravity
+		double sup_z; string sup_surf; bool deep_w; bool under_roof;
+		bool has_sup = mi.map.find_support_at(ps.x, ps.y, ps.z, sup_z, sup_surf, deep_w, under_roof);
+
+		if (ps.on_ground && has_sup && !fractured && (ps.input_mask & IN_JUMP) != 0 && ps.stamina >= 8) {
+			ps.on_ground = false;
+			ps.vz = JUMP_VEL;
+			ps.fall_start_z = ps.z;
+			ps.fall_air_sfx_sent = false;
+			ps.stamina = clampi(ps.stamina - 8, 0, 100);
+			ctx.broadcast_sfx_3d(mi.slug, "actors", "steps/jump.ogg", ps.x, ps.y, ps.z, 0.75, 18.0);
+		}
+
+		if (!ps.on_ground || !has_sup || ps.z > sup_z + 0.05) {
+			if (ps.on_ground) {
+				ps.on_ground = false;
+				ps.fall_start_z = ps.z;
+				ps.fall_air_sfx_sent = false;
+			}
+			ps.vz -= GRAVITY_PER_SEC * dt;
+			ps.z += ps.vz * dt;
+			if (!ps.fall_air_sfx_sent && (ps.fall_start_z - ps.z > 2.2 || ps.vz < -7.5)) {
+				ps.fall_air_sfx_sent = true;
+				ctx.broadcast_sfx_3d(mi.slug, "actors", "steps/fall_air.ogg", ps.x, ps.y, ps.z, 0.85, 22.0);
+			}
+			bool has_sup2 = mi.map.find_support_at(ps.x, ps.y, ps.z, sup_z, sup_surf, deep_w, under_roof);
+			if (has_sup2 && ps.z <= sup_z) {
+				world_apply_fall_landing(ctx, mi, ps, sup_z, deep_w, now_ms);
+			} else if (!has_sup2 && ps.z < double(mi.map.min_z) - 6.0) {
+				world_kill_env(ctx, ps, "falling into the void");
+				return;
+			}
+		} else {
+			ps.z = sup_z;
+		}
+	}
+
+	// Auto-step Map Portals & Hazard Zones
+	MapPortal@ prt = mi.map.find_portal_at(ps.x, ps.y, ps.z);
+	if (@prt != null && prt.auto_step) {
+		MapInstance@ dest = ctx.find_map(prt.target_map);
+		if (@dest != null) {
+			world_transfer_player_map(ctx, ps, dest, prt.dest_x, prt.dest_y, prt.dest_z, prt.dest_facing, prt.sound_file);
+			return;
+		}
+	}
+
+	MapHazard@ hz = mi.map.find_hazard_at(ps.x, ps.y, ps.z);
+	if (@hz != null && now_ms - ps.last_hazard_ms >= uint64(hz.interval_ms)) {
+		ps.last_hazard_ms = now_ms;
+		ctx.broadcast_sfx_3d(mi.slug, "threat", hz.sound_file, ps.x, ps.y, ps.z, 0.9, 20.0);
+		if (ps.hp - hz.damage <= 0) {
+			world_kill_env(ctx, ps, hz.label);
+			return;
+		}
+		ps.hp = clampi(ps.hp - hz.damage, 1, 100);
+		ctx.send_speech(ps, MBUF_GAME, true, hz.label + " hits you for " + hz.damage + " damage! Health " + ps.hp + ".");
 	}
 
 	// Zone transition announcement & footsteps to OTHER players (local steps sound immediately on client).
-	string zname = ctx.map.zone_name_at(ps.x, ps.y);
+	string zname = mi.map.zone_name_at(ps.x, ps.y, ps.z);
 	if (zname != ps.last_zone) {
 		bool first = ps.last_zone.length() == 0;
 		ps.last_zone = zname;
 		if (!first) {
-			string safe_note = ctx.map.is_safe_at(ps.x, ps.y) ? " Safe zone." : "";
+			string safe_note = mi.map.is_safe_at(ps.x, ps.y, ps.z) ? " Safe zone." : "";
 			ctx.send_speech(ps, MBUF_GAME, false, "Entered " + zname + "." + safe_note);
 		}
 	}
 	double moved_spd = sqrt(ps.vx * ps.vx + ps.vy * ps.vy);
-	if (moved_spd > 0.5 && ps.on_ground) {
-		uint64 step_iv = want_sprint ? 270 : 420;
+	if (moved_spd > 0.5 && ps.on_ground && @on_stair == null) {
+		uint64 step_iv = want_sprint ? 270 : (fractured ? 560 : 420);
 		if (now_ms - ps.last_step_sfx_ms >= step_iv) {
 			ps.last_step_sfx_ms = now_ms;
 			string sfx = "steps/" + surf + "_" + random(1, 3) + ".ogg";
-			// Broadcast spatialized footstep only to OTHER nearby players (caller plays local self-step immediately).
 			string pkt = pkt_build("SFX", {"actors", sfx, fmt2(ps.x), fmt2(ps.y), fmt2(ps.z), "0.70", "1"});
 			for (uint i = 0; i < ctx.sessions.length(); i++) {
 				PlayerSession@ other = ctx.sessions[i];
-				if (@other == @ps || !other.authed || other.peer_id == 0) continue;
+				if (@other == @ps || !other.authed || other.peer_id == 0 || other.current_map != mi.slug) continue;
 				if (get_3d_distance(other.x, other.y, other.z, ps.x, ps.y, ps.z) <= 22.0) {
 					ctx.send_ch(other.peer_id, CH_AUDIO, pkt, true);
 				}
@@ -268,24 +503,26 @@ void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64
 }
 
 void world_step_vitals_and_env(ServerCtx@ ctx, uint64 now_ms) {
-	// Resource respawns
-	for (uint i = 0; i < ctx.nodes.length(); i++) {
-		ResourceNode@ rn = ctx.nodes[i];
-		if (rn.charges < rn.max_charges && now_ms >= rn.next_respawn_ms) {
-			rn.charges = rn.max_charges;
+	// Per-map resource respawns & drop expiration
+	for (uint mi_idx = 0; mi_idx < ctx.maps.length(); mi_idx++) {
+		MapInstance@ mi = ctx.maps[mi_idx];
+		for (uint i = 0; i < mi.nodes.length(); i++) {
+			ResourceNode@ rn = mi.nodes[i];
+			if (rn.charges < rn.max_charges && now_ms >= rn.next_respawn_ms) {
+				rn.charges = rn.max_charges;
+			}
+		}
+		for (int i = int(mi.drops.length()) - 1; i >= 0; i--) {
+			if (now_ms >= mi.drops[uint(i)].expires_ms) mi.drops.remove_at(uint(i));
 		}
 	}
-	// Expire drops
-	for (int i = int(ctx.drops.length()) - 1; i >= 0; i--) {
-		if (now_ms >= ctx.drops[uint(i)].expires_ms) ctx.drops.remove_at(uint(i));
-	}
-	// Campfire fuel & weather once per ~1 second on tick % TICK_HZ == 0
+
 	if (ctx.tick_count % uint64(TICK_HZ) == 0) {
 		ctx.cycle_sec = (ctx.cycle_sec + 1) % 1200;
 		bool now_night = ctx.cycle_sec >= 720;
 		if (now_night != ctx.is_night) {
 			ctx.is_night = now_night;
-			ctx.broadcast_speech(MBUF_GAME, false, ctx.is_night ? "Night falls over the valley. Stay near a fire for warmth." : "Dawn breaks across the valley.");
+			ctx.broadcast_speech(MBUF_GAME, false, ctx.is_night ? "Night falls over the world. Stay near a fire for warmth." : "Dawn breaks across the world.");
 		}
 		if (now_ms >= ctx.next_weather_ms) {
 			ctx.next_weather_ms = now_ms + uint64(random(120, 240)) * 1000;
@@ -304,11 +541,10 @@ void world_step_vitals_and_env(ServerCtx@ ctx, uint64 now_ms) {
 		}
 	}
 
-	// Per-player vitals every 3 seconds
 	for (uint i = 0; i < ctx.sessions.length(); i++) {
 		PlayerSession@ ps = ctx.sessions[i];
 		if (!ps.authed || ps.peer_id == 0) continue;
-		if ((ps.input_mask & IN_SPRINT) != 0 && (ps.vx != 0.0 || ps.vy != 0.0)) {
+		if ((ps.input_mask & IN_SPRINT) != 0 && (ps.vx != 0.0 || ps.vy != 0.0) && !ps.is_fractured(now_ms)) {
 			if (ctx.tick_count % 6 == 0) ps.stamina = clampi(ps.stamina - 2, 0, 100);
 		} else {
 			if (ctx.tick_count % 5 == 0) ps.stamina = clampi(ps.stamina + 3, 0, 100);
@@ -318,18 +554,21 @@ void world_step_vitals_and_env(ServerCtx@ ctx, uint64 now_ms) {
 		if (now_ms - ps.last_vital_tick_ms < 3000) continue;
 		ps.last_vital_tick_ms = now_ms;
 
-		// Gentle survival decay (slower in safe zone, faster when cold/wet)
-		bool safe = ctx.map.is_safe_at(ps.x, ps.y);
+		MapInstance@ mi = ctx.player_map(ps);
+		bool safe = @mi != null && mi.map.is_safe_at(ps.x, ps.y, ps.z);
 		if (!safe && ctx.tick_count % (uint64(TICK_HZ) * 18) < uint64(TICK_HZ * 3)) {
 			ps.hunger = clampi(ps.hunger - 1, 0, 100);
 			ps.thirst = clampi(ps.thirst - 1, 0, 100);
 		}
-		bool near_fire = world_near_emitter_campfire(ctx, ps.x, ps.y, ps.z);
+		double sz; string ss; bool dw; bool under_roof = false;
+		if (@mi != null) mi.map.find_support_at(ps.x, ps.y, ps.z, sz, ss, dw, under_roof);
+
+		bool near_fire = world_near_emitter_campfire(ctx, mi, ps.x, ps.y, ps.z);
 		ItemStack@ eq = ps.active_item();
 		bool holding_torch = @eq != null && eq.id == "torch";
 		if (near_fire || holding_torch) {
 			ps.warmth = clampi(ps.warmth + 6, 0, 100);
-		} else if (ctx.is_night || ctx.is_raining) {
+		} else if (!under_roof && (ctx.is_night || ctx.is_raining)) {
 			ps.warmth = clampi(ps.warmth - (ctx.is_raining ? 2 : 1), 0, 100);
 		} else {
 			ps.warmth = clampi(ps.warmth + 1, 0, 100);
@@ -362,17 +601,29 @@ void world_handle_gather(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
 		return;
 	}
 	ps.last_gather_ms = now_ms;
+	MapInstance@ mi = ctx.player_map(ps);
+	if (@mi == null) return;
+
+	// 0. Check non-auto Map Portal interaction nearby
+	MapPortal@ prt = mi.map.find_portal_at(ps.x, ps.y, ps.z);
+	if (@prt != null) {
+		MapInstance@ dest = ctx.find_map(prt.target_map);
+		if (@dest != null) {
+			world_transfer_player_map(ctx, ps, dest, prt.dest_x, prt.dest_y, prt.dest_z, prt.dest_facing, prt.sound_file);
+			return;
+		}
+	}
 
 	// 1. Check nearby loot drops first.
-	for (int i = int(ctx.drops.length()) - 1; i >= 0; i--) {
-		LootDrop@ d = ctx.drops[uint(i)];
+	for (int i = int(mi.drops.length()) - 1; i >= 0; i--) {
+		LootDrop@ d = mi.drops[uint(i)];
 		if (get_3d_distance(ps.x, ps.y, ps.z, d.x, d.y, d.z) <= 2.5) {
 			if (ps.add_item(d.item_id, d.qty)) {
 				ItemDef@ def = find_item(d.item_id);
 				string iname = @def != null ? def.name : d.item_id;
 				ctx.send_speech(ps, MBUF_GAME, false, "Picked up " + d.qty + " " + iname + ".");
 				ctx.send_sfx_to(ps, "self", "ui/menu_select.ogg", ps.x, ps.y, ps.z, 0.8);
-				ctx.drops.remove_at(uint(i));
+				mi.drops.remove_at(uint(i));
 				ctx.send_inv(ps);
 			} else {
 				ctx.send_speech(ps, MBUF_GAME, true, "Inventory is full.");
@@ -382,17 +633,17 @@ void world_handle_gather(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
 	}
 
 	// 2. Check water scooping / drinking if standing at or near water.
-	string surf = ctx.map.surface_at(ps.x, ps.y, ps.z);
+	string surf = mi.map.surface_at(ps.x, ps.y, ps.z);
 	if (surf == "water") {
 		if (ps.count_item("water_flask_empty") > 0) {
 			ps.remove_item("water_flask_empty", 1);
 			ps.add_item("water_flask_full", 1);
-			ctx.broadcast_sfx_3d("world", "survival/water_scoop.ogg", ps.x, ps.y, ps.z, 0.85, 18.0);
+			ctx.broadcast_sfx_3d(mi.slug, "world", "survival/water_scoop.ogg", ps.x, ps.y, ps.z, 0.85, 18.0);
 			ctx.send_speech(ps, MBUF_GAME, false, "Filled water flask.");
 			ctx.send_inv(ps);
 		} else {
 			ps.thirst = clampi(ps.thirst + 30, 0, 100);
-			ctx.broadcast_sfx_3d("world", "survival/drink.ogg", ps.x, ps.y, ps.z, 0.8, 14.0);
+			ctx.broadcast_sfx_3d(mi.slug, "world", "survival/drink.ogg", ps.x, ps.y, ps.z, 0.8, 14.0);
 			ctx.send_speech(ps, MBUF_GAME, false, "Drank fresh stream water. Thirst " + ps.thirst + " percent.");
 		}
 		return;
@@ -401,8 +652,8 @@ void world_handle_gather(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
 	// 3. Find closest resource node within 2.8 tiles.
 	ResourceNode@ best = null;
 	double best_d = 2.8;
-	for (uint i = 0; i < ctx.nodes.length(); i++) {
-		ResourceNode@ rn = ctx.nodes[i];
+	for (uint i = 0; i < mi.nodes.length(); i++) {
+		ResourceNode@ rn = mi.nodes[i];
 		if (rn.charges <= 0) continue;
 		double dist = get_3d_distance(ps.x, ps.y, ps.z, rn.x, rn.y, rn.z);
 		if (dist <= best_d) {
@@ -452,9 +703,9 @@ void world_handle_gather(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
 	best.charges--;
 	if (best.charges <= 0) {
 		best.next_respawn_ms = now_ms + uint64(best.respawn_sec) * 1000;
-		if (best.type == "tree") ctx.broadcast_sfx_3d("world", "survival/tree_fall.ogg", best.x, best.y, best.z, 0.9, 28.0);
+		if (best.type == "tree") ctx.broadcast_sfx_3d(mi.slug, "world", "survival/tree_fall.ogg", best.x, best.y, best.z, 0.9, 28.0);
 	}
-	ctx.broadcast_sfx_3d("world", sfx, best.x, best.y, best.z, 0.85, 22.0);
+	ctx.broadcast_sfx_3d(mi.slug, "world", sfx, best.x, best.y, best.z, 0.85, 22.0);
 	if (@ps.account != null) { ps.account.gathered_count++; ctx.accounts.dirty = true; }
 	ItemDef@ ydef = find_item(yield_id);
 	ctx.send_speech(ps, MBUF_GAME, false, "Gathered " + yield_qty + " " + (@ydef != null ? ydef.name : yield_id) + ".");
@@ -462,17 +713,18 @@ void world_handle_gather(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
 }
 
 void world_handle_craft(ServerCtx@ ctx, PlayerSession@ ps, const string&in recipe_id) {
+	MapInstance@ mi = ctx.player_map(ps);
 	RecipeDef@ rec = find_recipe(recipe_id);
 	if (@rec == null) {
 		ctx.send_speech(ps, MBUF_GAME, true, "Unknown recipe.");
 		return;
 	}
-	if (rec.requires_fire && !world_near_emitter_campfire(ctx, ps.x, ps.y, ps.z)) {
+	if (rec.requires_fire && !world_near_emitter_campfire(ctx, mi, ps.x, ps.y, ps.z)) {
 		ctx.send_sfx_to(ps, "self", "ui/error.ogg", ps.x, ps.y, ps.z, 0.7);
 		ctx.send_speech(ps, MBUF_GAME, true, "Stand near a lit campfire to craft that.");
 		return;
 	}
-	if (rec.requires_bench && !world_near_structure(ctx, ps.x, ps.y, ps.z, "craft_bench", 4.0)) {
+	if (rec.requires_bench && !world_near_structure(ctx, mi, ps.x, ps.y, ps.z, "craft_bench", 4.0)) {
 		ctx.send_sfx_to(ps, "self", "ui/error.ogg", ps.x, ps.y, ps.z, 0.7);
 		ctx.send_speech(ps, MBUF_GAME, true, "Stand near a crafting bench to craft that.");
 		return;
@@ -490,7 +742,7 @@ void world_handle_craft(ServerCtx@ ctx, PlayerSession@ ps, const string&in recip
 	}
 	ps.add_item(rec.output_id, rec.output_qty);
 	ItemDef@ odef = find_item(rec.output_id);
-	ctx.broadcast_sfx_3d("world", "survival/craft_ok.ogg", ps.x, ps.y, ps.z, 0.85, 16.0);
+	ctx.broadcast_sfx_3d(ps.current_map, "world", "survival/craft_ok.ogg", ps.x, ps.y, ps.z, 0.85, 16.0);
 	ctx.send_speech(ps, MBUF_GAME, false, "Crafted " + rec.output_qty + " " + (@odef != null ? odef.name : rec.output_id) + ".");
 	ctx.send_inv(ps);
 }
@@ -508,12 +760,18 @@ void world_handle_use_item(ServerCtx@ ctx, PlayerSession@ ps) {
 		ps.hunger = clampi(ps.hunger + def.feed_hunger, 0, 100);
 		ps.thirst = clampi(ps.thirst + def.quench_thirst, 0, 100);
 		ps.warmth = clampi(ps.warmth + def.warmth_boost, 0, 100);
+		bool cured_fracture = false;
+		if ((eq.id == "bandage" || eq.id == "splint") && ps.fracture_until_ms > 0) {
+			ps.fracture_until_ms = 0;
+			cured_fracture = true;
+		}
 		string used_id = eq.id;
 		ps.remove_item(used_id, 1);
 		if (used_id == "water_flask_full") ps.add_item("water_flask_empty", 1);
 		string sfx = def.category == "drink" ? "survival/drink.ogg" : (def.category == "med" ? "survival/bandage.ogg" : "survival/eat.ogg");
-		ctx.broadcast_sfx_3d("actors", sfx, ps.x, ps.y, ps.z, 0.8, 12.0);
-		ctx.send_speech(ps, MBUF_GAME, false, "Used " + def.name + ". Health " + ps.hp + ", hunger " + ps.hunger + ", thirst " + ps.thirst + ".");
+		ctx.broadcast_sfx_3d(ps.current_map, "actors", sfx, ps.x, ps.y, ps.z, 0.8, 12.0);
+		string extra = cured_fracture ? " Fracture healed." : "";
+		ctx.send_speech(ps, MBUF_GAME, false, "Used " + def.name + "." + extra + " Health " + ps.hp + ", hunger " + ps.hunger + ", thirst " + ps.thirst + ".");
 		ctx.send_inv(ps);
 	} else if (def.category == "kit") {
 		ctx.send_speech(ps, MBUF_GAME, false, "Use B or Survival Builder menu to place " + def.name + ".");

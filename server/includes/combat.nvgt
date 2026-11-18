@@ -1,52 +1,38 @@
 // Server-authoritative combat: melee swings, guard blocking, ranged bows/arrows,
-// consensual duels, PvP zones, damage, death & respawn.
+// consensual duels, map-scoped PvP zones, damage, death & respawn.
 
 #include "world.nvgt"
 
 void combat_respawn_player(ServerCtx@ ctx, PlayerSession@ ps) {
-	MapSpawn@ sp = ctx.map.spawns.length() > 0 ? ctx.map.spawns[0] : null;
-	ps.x = @sp != null ? sp.x : 50.0;
-	ps.y = @sp != null ? sp.y : 46.0;
-	ps.z = @sp != null ? sp.z : 0.0;
-	ps.vx = 0.0; ps.vy = 0.0; ps.vz = 0.0;
-	ps.on_ground = true;
-	ps.hp = 100;
-	ps.hunger = 80;
-	ps.thirst = 80;
-	ps.stamina = 100;
-	ps.warmth = 90;
-	ps.duel_opponent = "";
-	ps.duel_until_ms = 0;
-	ctx.broadcast_sfx_3d("world", "combat/respawn.ogg", ps.x, ps.y, ps.z, 0.85, 20.0);
-	ctx.send_speech(ps, MBUF_GAME, true, "Respawned at " + ctx.map.zone_name_at(ps.x, ps.y) + ".");
+	world_respawn_player(ctx, ps);
 }
 
 void combat_damage_player(ServerCtx@ ctx, PlayerSession@ victim, int dmg, const string&in attacker_name, bool attacker_is_player, double src_x, double src_y, double src_z, uint64 now_ms) {
 	if (@victim == null || !victim.authed || victim.peer_id == 0) return;
+	string mslug = victim.current_map;
 	int final_dmg = dmg;
 	if (victim.blocking) {
 		final_dmg = dmg / 3;
 		if (final_dmg < 1) final_dmg = 1;
-		ctx.broadcast_sfx_3d("threat", "combat/hit_block.ogg", victim.x, victim.y, victim.z, 0.9, 20.0);
+		ctx.broadcast_sfx_3d(mslug, "threat", "combat/hit_block.ogg", victim.x, victim.y, victim.z, 0.9, 20.0);
 		ctx.send_speech(victim, MBUF_GAME, true, "Blocked " + attacker_name + ", took " + final_dmg + " damage.");
 	} else {
-		ctx.broadcast_sfx_3d("threat", "combat/hurt.ogg", victim.x, victim.y, victim.z, 0.9, 22.0);
+		ctx.broadcast_sfx_3d(mslug, "threat", "combat/hurt.ogg", victim.x, victim.y, victim.z, 0.9, 22.0);
 		ctx.send_speech(victim, MBUF_GAME, true, attacker_name + " hit you for " + final_dmg + " damage. Health " + clampi(victim.hp - final_dmg, 0, 100) + ".");
 	}
 	victim.hp = clampi(victim.hp - final_dmg, 0, 100);
 	if (victim.hp > 0) return;
 
-	ctx.broadcast_sfx_3d("threat", "combat/death.ogg", victim.x, victim.y, victim.z, 0.95, 30.0);
+	ctx.broadcast_sfx_3d(mslug, "threat", "combat/death.ogg", victim.x, victim.y, victim.z, 0.95, 30.0);
 	if (@victim.account != null) { victim.account.deaths++; ctx.accounts.dirty = true; }
 
 	if (attacker_is_player) {
 		PlayerSession@ atk = ctx.find_session_by_name(attacker_name);
 		if (@atk != null && @atk.account != null) { atk.account.kills_pvp++; ctx.accounts.dirty = true; }
-		ctx.broadcast_speech(MBUF_GAME, false, attacker_name + " defeated " + victim.name + ".");
+		ctx.broadcast_speech_map(mslug, MBUF_GAME, false, attacker_name + " defeated " + victim.name + ".");
 	} else {
-		ctx.broadcast_speech(MBUF_GAME, false, victim.name + " was killed by " + attacker_name + ".");
+		ctx.broadcast_speech_map(mslug, MBUF_GAME, false, victim.name + " was killed by " + attacker_name + ".");
 	}
-	// Clear duel if any, keep starter gear, respawn safely.
 	if (victim.duel_opponent.length() > 0) {
 		PlayerSession@ opp = ctx.find_session_by_name(victim.duel_opponent);
 		if (@opp != null) {
@@ -56,22 +42,24 @@ void combat_damage_player(ServerCtx@ ctx, PlayerSession@ victim, int dmg, const 
 		}
 	}
 	ctx.send_speech(victim, MBUF_GAME, true, attacker_name + " killed you.");
-	combat_respawn_player(ctx, victim);
+	world_respawn_player(ctx, victim);
 }
 
 bool combat_can_pvp(ServerCtx@ ctx, PlayerSession@ a, PlayerSession@ b, uint64 now_ms) {
-	if (@a == null || @b == null || @a == @b) return false;
+	if (@a == null || @b == null || @a == @b || a.current_map != b.current_map) return false;
 	if (a.duel_opponent.lower() == b.name.lower() && now_ms < a.duel_until_ms) return true;
-	if (ctx.map.is_safe_at(a.x, a.y) || ctx.map.is_safe_at(b.x, b.y)) return false;
+	MapInstance@ mi = ctx.player_map(a);
+	if (@mi == null || !mi.map.pvp_enabled) return false;
+	if (mi.map.is_safe_at(a.x, a.y, a.z) || mi.map.is_safe_at(b.x, b.y, b.z)) return false;
 	return true;
 }
 
-void combat_handle_mob_death(ServerCtx@ ctx, WildlifeMob@ mob, PlayerSession@ killer, uint64 now_ms) {
+void combat_handle_mob_death(ServerCtx@ ctx, MapInstance@ mi, WildlifeMob@ mob, PlayerSession@ killer, uint64 now_ms) {
 	SpeciesDef@ sp = find_species(mob.kind);
 	string mname = mob.name;
-	ctx.broadcast_sfx_3d("world", "combat/death.ogg", mob.x, mob.y, mob.z, 0.85, 24.0);
+	ctx.broadcast_sfx_3d(mi.slug, "world", "combat/death.ogg", mob.x, mob.y, mob.z, 0.85, 24.0);
 	if (@sp != null && sp.drop_item.length() > 0) {
-		world_spawn_drop(ctx, sp.drop_item, sp.drop_qty, mob.x, mob.y, mob.z, now_ms);
+		world_spawn_drop(ctx, mi, sp.drop_item, sp.drop_qty, mob.x, mob.y, mob.z, now_ms);
 	}
 	if (@killer != null) {
 		if (@killer.account != null) { killer.account.kills_pve++; ctx.accounts.dirty = true; }
@@ -81,6 +69,9 @@ void combat_handle_mob_death(ServerCtx@ ctx, WildlifeMob@ mob, PlayerSession@ ki
 
 void combat_handle_attack(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
 	if (!ps.authed || ps.peer_id == 0) return;
+	MapInstance@ mi = ctx.player_map(ps);
+	if (@mi == null) return;
+
 	ItemStack@ eq = ps.active_item();
 	ItemDef@ wdef = @eq != null ? find_item(eq.id) : null;
 	uint64 cd = @wdef != null && wdef.cooldown_ms > 0 ? uint64(wdef.cooldown_ms) : 650;
@@ -94,7 +85,6 @@ void combat_handle_attack(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
 	}
 	ps.stamina = clampi(ps.stamina - 4, 0, 100);
 
-	// Ranged Bow branch.
 	if (@wdef != null && wdef.id == "wooden_bow") {
 		if (ps.count_item("arrow") < 1) {
 			ctx.send_sfx_to(ps, "self", "ui/error.ogg", ps.x, ps.y, ps.z, 0.7);
@@ -103,7 +93,7 @@ void combat_handle_attack(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
 		}
 		ps.remove_item("arrow", 1);
 		ctx.send_inv(ps);
-		ctx.broadcast_sfx_3d("actors", "combat/bow_release.ogg", ps.x, ps.y, ps.z, 0.9, 25.0);
+		ctx.broadcast_sfx_3d(mi.slug, "actors", "combat/bow_release.ogg", ps.x, ps.y, ps.z, 0.9, 25.0);
 
 		ArrowProjectile ap;
 		ap.id = ctx.next_entity_id++;
@@ -118,41 +108,56 @@ void combat_handle_attack(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
 		ap.vz = 0.0;
 		ap.damage = wdef.damage;
 		ap.expires_ms = now_ms + 1200;
-		ctx.arrows.insert_last(ap);
+		mi.arrows.insert_last(ap);
 		return;
 	}
 
-	// Melee swing branch.
 	int dmg = (@wdef != null && wdef.damage > 0) ? wdef.damage : 10;
 	double rng = (@wdef != null && wdef.range > 0.5) ? wdef.range : 2.3;
-	ctx.broadcast_sfx_3d("actors", "combat/swing_melee.ogg", ps.x, ps.y, ps.z, 0.85, 20.0);
+	ctx.broadcast_sfx_3d(mi.slug, "actors", "combat/swing_melee.ogg", ps.x, ps.y, ps.z, 0.85, 20.0);
 
 	bool hit_any = false;
-	// 1. Check wildlife & bots in front cone within rng.
-	for (int i = int(ctx.mobs.length()) - 1; i >= 0; i--) {
-		WildlifeMob@ mob = ctx.mobs[uint(i)];
-		double d = get_3d_distance(ps.x, ps.y, ps.z, mob.x, mob.y, mob.z);
-		if (d > rng) continue;
-		double brg = bearing_to(ps.x, ps.y, mob.x, mob.y);
-		int diff = abs(angle_diff_deg(ps.facing, int(brg + 0.5)));
-		if (d > 0.9 && diff > 65) continue;
-		hit_any = true;
-		mob.hp -= dmg;
-		mob.aggro_peer = ps.peer_id;
-		SpeciesDef@ sp = find_species(mob.kind);
-		if (@sp != null && !sp.hostile) mob.ai_state = AI_FLEE;
-		ctx.broadcast_sfx_3d("threat", "combat/hit_flesh.ogg", mob.x, mob.y, mob.z, 0.9, 24.0);
-		if (@sp != null && sp.snd_hurt.length() > 0) ctx.broadcast_sfx_3d("threat", sp.snd_hurt, mob.x, mob.y, mob.z, 0.85, 26.0);
-		if (mob.hp <= 0) {
-			combat_handle_mob_death(ctx, mob, ps, now_ms);
-			ctx.mobs.remove_at(uint(i));
-		} else {
-			ctx.send_speech(ps, MBUF_GAME, false, "Hit " + mob.name + " for " + dmg + ". " + mob.hp + " HP left.");
+	if (ps.duel_opponent.length() > 0 && now_ms < ps.duel_until_ms) {
+		for (uint i = 0; i < ctx.sessions.length(); i++) {
+			PlayerSession@ other = ctx.sessions[i];
+			if (@other == @ps || !other.authed || other.peer_id == 0) continue;
+			if (other.name.lower() != ps.duel_opponent.lower()) continue;
+			if (!combat_can_pvp(ctx, ps, other, now_ms)) continue;
+			double d = get_3d_distance(ps.x, ps.y, ps.z, other.x, other.y, other.z);
+			if (d > rng) continue;
+			double brg = bearing_to(ps.x, ps.y, other.x, other.y);
+			if (d > 0.9 && abs(angle_diff_deg(ps.facing, int(brg + 0.5))) > 65) continue;
+			hit_any = true;
+			combat_damage_player(ctx, other, dmg, ps.name, true, ps.x, ps.y, ps.z, now_ms);
+			break;
 		}
-		break;
 	}
 
-	// 2. Check rival players (PvP / Duel) if no mob hit.
+	if (!hit_any) {
+		for (int i = int(mi.mobs.length()) - 1; i >= 0; i--) {
+			WildlifeMob@ mob = mi.mobs[uint(i)];
+			double d = get_3d_distance(ps.x, ps.y, ps.z, mob.x, mob.y, mob.z);
+			if (d > rng) continue;
+			double brg = bearing_to(ps.x, ps.y, mob.x, mob.y);
+			int diff = abs(angle_diff_deg(ps.facing, int(brg + 0.5)));
+			if (d > 0.9 && diff > 65) continue;
+			hit_any = true;
+			mob.hp -= dmg;
+			mob.aggro_peer = ps.peer_id;
+			SpeciesDef@ sp = find_species(mob.kind);
+			if (@sp != null && !sp.hostile) mob.ai_state = AI_FLEE;
+			ctx.broadcast_sfx_3d(mi.slug, "threat", "combat/hit_flesh.ogg", mob.x, mob.y, mob.z, 0.9, 24.0);
+			if (@sp != null && sp.snd_hurt.length() > 0) ctx.broadcast_sfx_3d(mi.slug, "threat", sp.snd_hurt, mob.x, mob.y, mob.z, 0.85, 26.0);
+			if (mob.hp <= 0) {
+				combat_handle_mob_death(ctx, mi, mob, ps, now_ms);
+				mi.mobs.remove_at(uint(i));
+			} else {
+				ctx.send_speech(ps, MBUF_GAME, false, "Hit " + mob.name + " for " + dmg + ". " + mob.hp + " HP left.");
+			}
+			break;
+		}
+	}
+
 	if (!hit_any) {
 		for (uint i = 0; i < ctx.sessions.length(); i++) {
 			PlayerSession@ other = ctx.sessions[i];
@@ -168,79 +173,80 @@ void combat_handle_attack(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
 		}
 	}
 
-	if (!hit_any) {
-		// 3. Damage enemy/non-safe destructible structures in front if facing one? Keep safe zone protected!
-		if (!ctx.map.is_safe_at(ps.x, ps.y)) {
-			for (int i = int(ctx.structures.length()) - 1; i >= 0; i--) {
-				WorldStructure@ st = ctx.structures[uint(i)];
-				if (st.map_name != ctx.map.name || st.owner.lower() == ps.name.lower()) continue;
-				if (get_3d_distance(ps.x, ps.y, ps.z, st.x, st.y, st.z) <= rng) {
-					st.hp -= dmg;
-					hit_any = true;
-					ctx.broadcast_sfx_3d("world", "builder/build_break.ogg", st.x, st.y, st.z, 0.85, 22.0);
-					ctx.objects_dirty = true;
-					if (st.hp <= 0) {
-						ctx.broadcast_obj("del", st);
-						ctx.structures.remove_at(uint(i));
-						ctx.sync_map_occluders();
-						ctx.send_speech(ps, MBUF_GAME, false, "Destroyed structure.");
-					} else {
-						ctx.broadcast_obj("upd", st);
-					}
-					break;
+	if (!hit_any && !mi.map.is_safe_at(ps.x, ps.y, ps.z)) {
+		for (int i = int(ctx.structures.length()) - 1; i >= 0; i--) {
+			WorldStructure@ st = ctx.structures[uint(i)];
+			if (!ctx.struct_on_map(st, mi) || st.owner.lower() == ps.name.lower()) continue;
+			if (get_3d_distance(ps.x, ps.y, ps.z, st.x, st.y, st.z) <= rng) {
+				st.hp -= dmg;
+				hit_any = true;
+				ctx.broadcast_sfx_3d(mi.slug, "world", "builder/build_break.ogg", st.x, st.y, st.z, 0.85, 22.0);
+				ctx.objects_dirty = true;
+				if (st.hp <= 0) {
+					ctx.broadcast_obj("del", st);
+					ctx.structures.remove_at(uint(i));
+					ctx.sync_map_occluders(mi);
+					ctx.send_speech(ps, MBUF_GAME, false, "Destroyed structure.");
+				} else {
+					ctx.broadcast_obj("upd", st);
 				}
+				break;
 			}
 		}
 	}
 
 	if (!hit_any) {
-		ctx.broadcast_sfx_3d("actors", "combat/whiff.ogg", ps.x, ps.y, ps.z, 0.7, 16.0);
+		ctx.broadcast_sfx_3d(mi.slug, "actors", "combat/whiff.ogg", ps.x, ps.y, ps.z, 0.7, 16.0);
 	}
 }
 
 void combat_step_arrows(ServerCtx@ ctx, double dt, uint64 now_ms) {
-	for (int i = int(ctx.arrows.length()) - 1; i >= 0; i--) {
-		ArrowProjectile@ ap = ctx.arrows[uint(i)];
-		if (now_ms >= ap.expires_ms) { ctx.arrows.remove_at(uint(i)); continue; }
-		ap.x += ap.vx * dt;
-		ap.y += ap.vy * dt;
-		string mat;
-		if (ctx.map.blocked_by_wall(ap.x, ap.y, ap.z, 0.15, mat)) {
-			ctx.broadcast_sfx_3d("world", "steps/wall_bump_wood.ogg", ap.x, ap.y, ap.z, 0.75, 22.0);
-			ctx.arrows.remove_at(uint(i));
-			continue;
-		}
-		bool consumed = false;
-		for (int m = int(ctx.mobs.length()) - 1; m >= 0; m--) {
-			WildlifeMob@ mob = ctx.mobs[uint(m)];
-			if (get_2d_distance(ap.x, ap.y, mob.x, mob.y) <= 0.85) {
-				mob.hp -= ap.damage;
-				mob.aggro_peer = ap.owner_peer;
-				PlayerSession@ killer = ctx.find_session_by_peer(ap.owner_peer);
-				ctx.broadcast_sfx_3d("threat", "combat/hit_flesh.ogg", mob.x, mob.y, mob.z, 0.9, 26.0);
-				if (mob.hp <= 0) {
-					combat_handle_mob_death(ctx, mob, killer, now_ms);
-					ctx.mobs.remove_at(uint(m));
-				} else if (@killer != null) {
-					ctx.send_speech(killer, MBUF_GAME, false, "Arrow hit " + mob.name + " for " + ap.damage + ".");
+	for (uint m_idx = 0; m_idx < ctx.maps.length(); m_idx++) {
+		MapInstance@ mi = ctx.maps[m_idx];
+		for (int i = int(mi.arrows.length()) - 1; i >= 0; i--) {
+			ArrowProjectile@ ap = mi.arrows[uint(i)];
+			if (now_ms >= ap.expires_ms) { mi.arrows.remove_at(uint(i)); continue; }
+			ap.x += ap.vx * dt;
+			ap.y += ap.vy * dt;
+			string mat;
+			if (mi.map.blocked_by_wall(ap.x, ap.y, ap.z, 0.15, mat)) {
+				ctx.broadcast_sfx_3d(mi.slug, "world", "steps/wall_bump_wood.ogg", ap.x, ap.y, ap.z, 0.75, 22.0);
+				mi.arrows.remove_at(uint(i));
+				continue;
+			}
+			bool consumed = false;
+			for (int m = int(mi.mobs.length()) - 1; m >= 0; m--) {
+				WildlifeMob@ mob = mi.mobs[uint(m)];
+				if (get_2d_distance(ap.x, ap.y, mob.x, mob.y) <= 0.85) {
+					mob.hp -= ap.damage;
+					mob.aggro_peer = ap.owner_peer;
+					PlayerSession@ killer = ctx.find_session_by_peer(ap.owner_peer);
+					ctx.broadcast_sfx_3d(mi.slug, "threat", "combat/hit_flesh.ogg", mob.x, mob.y, mob.z, 0.9, 26.0);
+					if (mob.hp <= 0) {
+						combat_handle_mob_death(ctx, mi, mob, killer, now_ms);
+						mi.mobs.remove_at(uint(m));
+					} else if (@killer != null) {
+						ctx.send_speech(killer, MBUF_GAME, false, "Arrow hit " + mob.name + " for " + ap.damage + ".");
+					}
+					consumed = true;
+					break;
 				}
-				consumed = true;
-				break;
 			}
-		}
-		if (consumed) { ctx.arrows.remove_at(uint(i)); continue; }
+			if (consumed) { mi.arrows.remove_at(uint(i)); continue; }
 
-		PlayerSession@ shooter = ctx.find_session_by_peer(ap.owner_peer);
-		for (uint p = 0; p < ctx.sessions.length(); p++) {
-			PlayerSession@ other = ctx.sessions[p];
-			if (@other == null || other.peer_id == ap.owner_peer || !other.authed || other.peer_id == 0) continue;
-			if (!combat_can_pvp(ctx, shooter, other, now_ms)) continue;
-			if (get_2d_distance(ap.x, ap.y, other.x, other.y) <= 0.8) {
-				combat_damage_player(ctx, other, ap.damage, ap.owner_name, true, ap.x, ap.y, ap.z, now_ms);
-				consumed = true;
-				break;
+			PlayerSession@ shooter = ctx.find_session_by_peer(ap.owner_peer);
+			for (uint p = 0; p < ctx.sessions.length(); p++) {
+				PlayerSession@ other = ctx.sessions[p];
+				if (@other == null || other.peer_id == ap.owner_peer || !other.authed || other.peer_id == 0) continue;
+				if (other.current_map != mi.slug) continue;
+				if (!combat_can_pvp(ctx, shooter, other, now_ms)) continue;
+				if (get_2d_distance(ap.x, ap.y, other.x, other.y) <= 0.8) {
+					combat_damage_player(ctx, other, ap.damage, ap.owner_name, true, ap.x, ap.y, ap.z, now_ms);
+					consumed = true;
+					break;
+				}
 			}
+			if (consumed) mi.arrows.remove_at(uint(i));
 		}
-		if (consumed) ctx.arrows.remove_at(uint(i));
 	}
 }

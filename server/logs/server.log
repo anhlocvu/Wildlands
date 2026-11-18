@@ -215,3 +215,113 @@
 2026-11-18 11:39:23 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
 2026-11-18 11:39:33 [NET] Peer 1 (anhloc) disconnected (closed)
 2026-11-18 11:39:36 [INFO] Server shut down cleanly.
+2026-11-18 13:42:40 [INFO] Loaded map 'Wildlands Valley' (120x120), 21 resource nodes.
+2026-11-18 13:42:40 [READY] Server listening on port 7100 (proto=1, accounts=1, objects=0).
+2026-11-18 13:42:43 [NET] Peer 1 connected from 127.0.0.1:64015
+2026-11-18 13:42:43 [AUTH] Signed in anhloc (Developer) from 127.0.0.1:64015
+2026-11-18 13:42:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 8ms
+2026-11-18 13:43:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 13:43:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 13:43:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 13:43:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 10ms
+2026-11-18 13:44:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 13:44:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 13:44:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 13:44:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 24ms
+2026-11-18 13:45:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 6ms
+2026-11-18 13:45:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 20ms
+2026-11-18 13:45:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 13:45:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 13:46:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 24ms
+2026-11-18 13:46:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 22ms
+2026-11-18 13:46:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 13:46:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 28ms
+2026-11-18 13:47:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 9ms
+2026-11-18 13:47:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 13ms
+2026-11-18 13:47:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 21ms
+2026-11-18 13:47:40 [BUILDER] anhloc saved map to maps/wildlands_valley.map
+2026-11-18 13:47:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 20ms
+2026-11-18 13:48:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 18ms
+2026-11-18 13:48:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 19ms
+2026-11-18 13:48:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 22ms
+2026-11-18 13:48:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 26ms
+2026-11-18 13:49:05 [BUILDER] anhloc reloaded map maps/wildlands_valley.map
+2026-11-18 13:49:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 13:49:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 13:49:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 13:49:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 9ms
+2026-11-18 13:50:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 7ms
+2026-11-18 13:50:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 13:50:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 8ms
+2026-11-18 13:50:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 18ms
+2026-11-18 13:51:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 19ms
+2026-11-18 13:51:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 25ms
+2026-11-18 13:51:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 22ms
+2026-11-18 13:51:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 25ms
+2026-11-18 13:52:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 13:52:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 13:52:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 23ms
+2026-11-18 13:52:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 30ms
+2026-11-18 13:53:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 18ms
+2026-11-18 13:53:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 13:53:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 13:53:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 27ms
+2026-11-18 13:54:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 23ms
+2026-11-18 13:54:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 13:54:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 21ms
+2026-11-18 13:54:55 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 32ms
+2026-11-18 13:55:10 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 13ms
+2026-11-18 13:55:25 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 25ms
+2026-11-18 13:55:40 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 10ms
+2026-11-18 13:55:56 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 19ms
+2026-11-18 13:56:11 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 13:56:26 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 23ms
+2026-11-18 13:56:41 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 20ms
+2026-11-18 13:56:56 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 13:57:11 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 18ms
+2026-11-18 13:57:26 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 13:57:41 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 18ms
+2026-11-18 13:57:56 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 24ms
+2026-11-18 13:58:08 [NET] Peer 1 (anhloc) disconnected (closed)
+2026-11-18 13:58:19 [INFO] Server shut down cleanly.
+2026-11-18 19:51:30 [INFO] Loaded 2 map(s); primary 'wildlands_valley'.
+2026-11-18 19:51:30 [READY] Server listening on port 7198 (proto=2, maps=2, accounts=0).
+2026-11-18 19:51:33 [NET] Peer 1 connected from 127.0.0.1:63015
+2026-11-18 19:51:51 [AUTH_REG] Registered new account ClientHero from 127.0.0.1:63015
+2026-11-18 19:51:51 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:63015
+2026-11-18 19:51:51 [NET] Peer 1 (ClientHero) disconnected (closed)
+2026-11-18 19:51:51 [NET] Peer 2 connected from 127.0.0.1:63020
+2026-11-18 19:51:51 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:63020
+2026-11-18 19:51:51 [NET] Peer 2 (ClientHero) disconnected (closed)
+2026-11-18 19:51:51 [NET] Peer 3 connected from 127.0.0.1:63021
+2026-11-18 19:51:52 [AUTH_FAIL] LOGIN refused for ClientHero from 127.0.0.1:63021: Unknown account name or incorrect password.
+2026-11-18 19:51:52 [AUTH_FAIL] REG refused for clienthero from 127.0.0.1:63021: That account name is already taken.
+2026-11-18 19:51:52 [NET] Peer 3 () disconnected (closed)
+2026-11-18 19:51:52 [NET] Peer 4 connected from 127.0.0.1:63022
+2026-11-18 19:51:52 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:63022
+2026-11-18 19:51:52 [CHAT] ClientHero: Hello from Client E2E
+2026-11-18 19:51:53 [PM] ClientHero -> ClientHero (len=8)
+2026-11-18 19:51:54 [NET] Peer 4 (ClientHero) disconnected (closed)
+2026-11-18 20:03:08 [INFO] Loaded 2 map(s); primary 'wildlands_valley'.
+2026-11-18 20:03:08 [READY] Server listening on port 7100 (proto=2, maps=2, accounts=1).
+2026-11-18 20:03:23 [NET] Peer 1 connected from 127.0.0.1:52885
+2026-11-18 20:03:23 [AUTH] Signed in anhloc (Developer) on wildlands_valley from 127.0.0.1:52885
+2026-11-18 20:03:23 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 2ms
+2026-11-18 20:03:38 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 17ms
+2026-11-18 20:03:53 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 13ms
+2026-11-18 20:04:08 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 16ms
+2026-11-18 20:04:23 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 17ms
+2026-11-18 20:04:39 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 10ms
+2026-11-18 20:04:54 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 8ms
+2026-11-18 20:05:09 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 16ms
+2026-11-18 20:05:24 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 15ms
+2026-11-18 20:05:39 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 16ms
+2026-11-18 20:05:54 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 15ms
+2026-11-18 20:06:09 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 15ms
+2026-11-18 20:06:24 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 16ms
+2026-11-18 20:06:39 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 15ms
+2026-11-18 20:06:52 [BUILDER] anhloc created new map 'anhloc' (50x50)
+2026-11-18 20:06:54 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 20:07:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 20:07:18 [NET] Peer 1 (anhloc) disconnected (closed)
+2026-11-18 20:11:20 [INFO] Server shut down cleanly.

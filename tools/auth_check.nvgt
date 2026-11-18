@@ -85,6 +85,38 @@ void main() {
 	bad_store.db_path = store.db_path;
 	check("corrupt store fails load fatally", !bad_store.load(err) && err.length() > 0, err);
 
+	// Legacy ACCOUNTS_V1 migration check + v2 fields (last_seen_epoch, current_map)
+	string v1_path = tmp_dir + "/v1_accounts.dat";
+	file_put_contents(v1_path, "ACCOUNTS_V1\nACC|v1|1|LegacyHero|" + salt + "|" + h1 + "||0|0|-|0|||1|2|0|3|4|120|50.00|46.00|0.00\n", false);
+	AccountStore v1_store;
+	v1_store.db_path = v1_path;
+	v1_store.devs_path = store.devs_path;
+	check("loads legacy ACCOUNTS_V1 seamlessly", v1_store.load(err) && @v1_store.find("LegacyHero") != null, err);
+	AccountRecord@ lh = v1_store.find("LegacyHero");
+	lh.current_map = "skywatch_citadel";
+	lh.last_seen_epoch = 1700001234;
+	lh.last_ip = "127.0.0.1";
+	check("upgrades and saves ACCOUNTS_V2", v1_store.save(err), err);
+	AccountStore v2_reload;
+	v2_reload.db_path = v1_path;
+	v2_reload.devs_path = store.devs_path;
+	AccountRecord@ lh2 = null;
+	check("reloads ACCOUNTS_V2 fields cleanly", v2_reload.load(err) && (@lh2 = v2_reload.find("LegacyHero")) != null && lh2.current_map == "skywatch_citadel" && lh2.last_seen_epoch == 1700001234, err);
+
+	// StaffReportStore check
+	StaffReportStore rstore;
+	rstore.db_path = tmp_dir + "/reports.dat";
+	StaffReport sr;
+	sr.id = rstore.next_id++;
+	sr.reporter = "Ranger_1";
+	sr.target = "Griefer";
+	sr.map_slug = "wildlands_valley";
+	sr.x = 12; sr.y = 34; sr.z = 0;
+	sr.created_epoch = 1700000000;
+	sr.message = "Blocked bridge|test";
+	rstore.reports.insert_last(sr);
+	check("saves and reloads reports.dat", rstore.save(err) && rstore.load(err) && rstore.reports.length() == 1 && rstore.reports[0].message == "Blocked bridge|test", err);
+
 	directory_delete(tmp_dir, true);
 	println(fails == 0 ? "PASS" : (fails + " failure(s)"));
 	exit(fails == 0 ? 0 : 1);

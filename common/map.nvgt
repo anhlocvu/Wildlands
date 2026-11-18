@@ -1,138 +1,258 @@
-// Shared map parser, serializer, validation, surface/zone lookup, wall collision & occlusion.
+// Shared map parser, serializer, validation, 3D box support/air physics, stairs,
+// portals, hazards, acoustic wall occlusion, and line-authoritative Line Manager ops.
 // Used identically by server, client, map builder, and offline console checks.
 
 #include "protocol.nvgt"
+#include "compass.nvgt"
 
 class MapSpawn {
 	string label;
-	double x, y, z;
-	int facing;
+	double x = 10.0, y = 10.0, z = 0.0;
+	int facing = 0;
 }
 
 class MapZone {
 	string name;
-	double min_x, min_y, max_x, max_y;
-	string surface;
-	string ambience_loop;
-	bool is_safe_zone;
+	double min_x = 0.0, min_y = 0.0, max_x = 10.0, max_y = 10.0;
+	double min_z = double(MAP_MIN_Z), max_z = double(MAP_MAX_Z);
+	string surface = "grass";
+	string ambience_loop = "";
+	bool is_safe_zone = false;
 }
 
 class MapWall {
 	string label;
-	double min_x, min_y, max_x, max_y;
-	double min_z, max_z;
-	string material;
+	double min_x = 0.0, min_y = 0.0, max_x = 1.0, max_y = 1.0;
+	double min_z = 0.0, max_z = 4.0;
+	string material = "wood";
+	bool occlude_sound = true;
 }
 
 class MapPlatform {
 	string label;
-	double min_x, min_y, max_x, max_y;
-	double z_level;
-	string surface;
-	bool is_ramp;
-	string ramp_axis; // x or y
-	int ramp_dir;     // +1 or -1
+	double min_x = 0.0, min_y = 0.0, max_x = 10.0, max_y = 10.0;
+	double min_z = 0.0, max_z = 0.0;
+	string surface = "wood";
+	string kind = "floor"; // "floor", "stairs", "ramp"
+	bool is_roof = false;
+	string ramp_axis = "y"; // "x" or "y"
+	int ramp_dir = 1;       // +1 or -1
+
+	double get_z_level() const property { return max_z; }
+	bool get_is_ramp() const property { return kind == "ramp"; }
+	bool get_is_stairs() const property { return kind == "stairs"; }
 }
 
 class MapWater {
 	string label;
-	double min_x, min_y, max_x, max_y;
-	double z_level;
-	string depth; // shallow or deep
-	string sound_loop;
+	double min_x = 0.0, min_y = 0.0, max_x = 10.0, max_y = 10.0;
+	double min_z = -2.0, max_z = 0.0;
+	string depth = "shallow"; // "shallow" or "deep"
+	string sound_loop = "ambience/river_loop.ogg";
+
+	double get_z_level() const property { return max_z; }
+}
+
+class MapHazard {
+	string label;
+	double min_x = 0.0, min_y = 0.0, max_x = 1.0, max_y = 1.0;
+	double min_z = 0.0, max_z = 2.0;
+	int damage = 15;
+	int interval_ms = 1200;
+	string sound_file = "world/hazard_hit.ogg";
+}
+
+class MapPortal {
+	string label;
+	double min_x = 0.0, min_y = 0.0, max_x = 1.0, max_y = 1.0;
+	double min_z = 0.0, max_z = 3.0;
+	string target_map = "wildlands_valley";
+	double dest_x = 50.0, dest_y = 46.0, dest_z = 0.0;
+	int dest_facing = 0;
+	bool auto_step = false;
+	string sound_file = "world/portal_travel.ogg";
 }
 
 class MapResourceSpawn {
-	string type; // tree, rock, iron_vein, berry_bush, herb_patch
-	double x, y, z;
-	int max_charges;
-	int respawn_sec;
+	string type = "tree";
+	double x = 0.0, y = 0.0, z = 0.0;
+	int max_charges = 3;
+	int respawn_sec = 45;
 }
 
 class MapEmitter {
-	string label;
-	string sound_file;
-	double x, y, z;
-	int range;
-	double volume;
+	string label = "Beacon";
+	string sound_file = "survival/campfire_loop.ogg";
+	double x = 0.0, y = 0.0, z = 0.0;
+	int range = 20;
+	double volume = 0.60;
 }
 
-// Dynamic wall/door proxy synced onto map for unified collision & sound occlusion.
+// Dynamic wall/door/floor proxy synced onto map for unified collision, floor & sound occlusion.
 class DynOccluder {
-	uint64 id;
-	double x, y, z;
-	double half_w;
-	double height;
-	bool blocks_move;
-	bool occludes_sound;
-	string material;
+	uint64 id = 0;
+	double x = 0.0, y = 0.0, z = 0.0;
+	double half_w = 0.5;
+	double height = 3.0;
+	bool blocks_move = true;
+	bool occludes_sound = true;
+	bool is_floor = false;
+	string material = "wood";
+}
+
+void order_pair(double&inout a, double&inout b) {
+	if (a > b) {
+		double t = a;
+		a = b;
+		b = t;
+	}
+}
+
+string slugify_map_id(const string&in raw) {
+	string low = raw.trim_whitespace().lower();
+	string out_s = "";
+	for (uint i = 0; i < low.length() && out_s.length() < 32; i++) {
+		string ch = low.substr(i, 1);
+		uint8 b = character_to_ascii(ch);
+		bool ok = (b >= 97 && b <= 122) || (b >= 48 && b <= 57) || ch == "_" || ch == "-";
+		if (ok) out_s += ch;
+		else if (ch == " " && out_s.length() > 0 && !out_s.ends_with("_")) out_s += "_";
+	}
+	while (out_s.ends_with("_") || out_s.ends_with("-")) out_s = out_s.substr(0, out_s.length() - 1);
+	if (out_s.length() < 2) out_s = "custom_map";
+	return out_s;
+}
+
+// Record line formatters (MAP_V2 canonical format)
+string make_m_line(const string&in name, int w, int h, int min_z, int max_z, const string&in surf, const string&in amb, bool pvp = true) {
+	return "M|" + wire_escape(name) + "|" + w + "|" + h + "|" + min_z + "|" + max_z + "|" + surf + "|" + amb + "|" + (pvp ? "1" : "0");
+}
+string make_s_line(const string&in label, double x, double y, double z, int facing) {
+	return "S|" + wire_escape(label) + "|" + fmt2(x) + "|" + fmt2(y) + "|" + fmt2(z) + "|" + wrap_deg(facing);
+}
+string make_z_line(const string&in name, double x1, double y1, double x2, double y2, double z1, double z2, const string&in surf, const string&in amb, bool safe) {
+	return "Z|" + wire_escape(name) + "|" + fmt2(x1) + "|" + fmt2(y1) + "|" + fmt2(x2) + "|" + fmt2(y2) + "|" + fmt2(z1) + "|" + fmt2(z2) + "|" + surf + "|" + amb + "|" + (safe ? "1" : "0");
+}
+string make_w_line(const string&in label, double x1, double y1, double x2, double y2, double z1, double z2, const string&in mat, bool occlude = true) {
+	return "W|" + wire_escape(label) + "|" + fmt2(x1) + "|" + fmt2(y1) + "|" + fmt2(x2) + "|" + fmt2(y2) + "|" + fmt2(z1) + "|" + fmt2(z2) + "|" + mat + "|" + (occlude ? "1" : "0");
+}
+string make_p_line(const string&in label, double x1, double y1, double x2, double y2, double z1, double z2, const string&in surf, const string&in kind, bool roof = false, const string&in axis = "y", int dir = 1) {
+	return "P|" + wire_escape(label) + "|" + fmt2(x1) + "|" + fmt2(y1) + "|" + fmt2(x2) + "|" + fmt2(y2) + "|" + fmt2(z1) + "|" + fmt2(z2) + "|" + surf + "|" + kind + "|" + (roof ? "1" : "0") + "|" + axis + "|" + dir;
+}
+string make_l_line(const string&in label, double x1, double y1, double x2, double y2, double z1, double z2, const string&in depth, const string&in snd) {
+	return "L|" + wire_escape(label) + "|" + fmt2(x1) + "|" + fmt2(y1) + "|" + fmt2(x2) + "|" + fmt2(y2) + "|" + fmt2(z1) + "|" + fmt2(z2) + "|" + depth + "|" + snd;
+}
+string make_h_line(const string&in label, double x1, double y1, double x2, double y2, double z1, double z2, int dmg, int iv_ms, const string&in snd) {
+	return "H|" + wire_escape(label) + "|" + fmt2(x1) + "|" + fmt2(y1) + "|" + fmt2(x2) + "|" + fmt2(y2) + "|" + fmt2(z1) + "|" + fmt2(z2) + "|" + dmg + "|" + iv_ms + "|" + snd;
+}
+string make_d_line(const string&in label, double x1, double y1, double x2, double y2, double z1, double z2, const string&in tgt_map, double dx, double dy, double dz, int dfac, bool auto_step, const string&in snd) {
+	return "D|" + wire_escape(label) + "|" + fmt2(x1) + "|" + fmt2(y1) + "|" + fmt2(x2) + "|" + fmt2(y2) + "|" + fmt2(z1) + "|" + fmt2(z2) + "|" + slugify_map_id(tgt_map) + "|" + fmt2(dx) + "|" + fmt2(dy) + "|" + fmt2(dz) + "|" + wrap_deg(dfac) + "|" + (auto_step ? "1" : "0") + "|" + snd;
+}
+string make_r_line(const string&in rtype, double x, double y, double z, int charges, int respawn_sec) {
+	return "R|" + rtype + "|" + fmt2(x) + "|" + fmt2(y) + "|" + fmt2(z) + "|" + charges + "|" + respawn_sec;
+}
+string make_a_line(const string&in label, const string&in snd, double x, double y, double z, int rng, double vol) {
+	return "A|" + wire_escape(label) + "|" + snd + "|" + fmt2(x) + "|" + fmt2(y) + "|" + fmt2(z) + "|" + rng + "|" + fmt2(vol);
 }
 
 class WorldMap {
+	string slug = "wildlands_valley";
 	string name = "Unnamed";
 	int width = 160;
 	int height = 160;
-	int max_z = 20;
+	int min_z = -20;
+	int max_z = 30;
 	string default_surface = "grass";
 	string ambience_default = "ambience/forest_day.ogg";
+	bool pvp_enabled = true;
 
 	MapSpawn@[] spawns;
 	MapZone@[] zones;
 	MapWall@[] walls;
 	MapPlatform@[] platforms;
 	MapWater@[] waters;
+	MapHazard@[] hazards;
+	MapPortal@[] portals;
 	MapResourceSpawn@[] resources;
 	MapEmitter@[] emitters;
 	DynOccluder@[] dyn_occluders;
+	string[] raw_lines;
 
 	void clear() {
 		name = "Unnamed";
 		width = 160;
 		height = 160;
-		max_z = 20;
+		min_z = -20;
+		max_z = 30;
 		default_surface = "grass";
 		ambience_default = "ambience/forest_day.ogg";
+		pvp_enabled = true;
 		spawns.resize(0);
 		zones.resize(0);
 		walls.resize(0);
 		platforms.resize(0);
 		waters.resize(0);
+		hazards.resize(0);
+		portals.resize(0);
 		resources.resize(0);
 		emitters.resize(0);
 		dyn_occluders.resize(0);
+		raw_lines.resize(0);
 	}
 
-	bool load_from_string(const string&in raw, string&out err) {
-		clear();
+	bool parse_single_line(const string&in line, uint line_no, bool&out is_header, string&out err) {
+		is_header = false;
 		err = "";
-		bool seen_header = false;
-		string[]@ lines = split_keep_empty(raw.replace("\r", "", true), "\n");
-		for (uint li = 0; li < lines.length(); li++) {
-			string line = lines[li].trim_whitespace();
-			if (line.length() == 0 || line.starts_with("#")) continue;
-			string[]@ p = split_keep_empty(line, FIELD_SEP);
-			string tag = field(p, 0, "");
-			if (tag == "M") {
-				if (p.length() < 7) { err = "Malformed M header on line " + (li + 1); return false; }
-				seen_header = true;
+		string[]@ p = split_keep_empty(line, FIELD_SEP);
+		string tag = field(p, 0, "");
+		if (tag == "M") {
+			is_header = true;
+			if (p.length() >= 9) {
 				name = wire_unescape(field(p, 1, "Unnamed"));
-				width = safe_int(field(p, 2, "160"), 40, 500, 160);
-				height = safe_int(field(p, 3, "160"), 40, 500, 160);
-				max_z = safe_int(field(p, 4, "20"), 5, 50, 20);
+				width = safe_int(field(p, 2, "120"), 40, 500, 120);
+				height = safe_int(field(p, 3, "120"), 40, 500, 120);
+				min_z = safe_int(field(p, 4, "-20"), MAP_MIN_Z, 0, -20);
+				max_z = safe_int(field(p, 5, "30"), 5, MAP_MAX_Z, 30);
+				if (min_z > max_z) { int t = min_z; min_z = max_z; max_z = t; }
+				default_surface = field(p, 6, "grass");
+				ambience_default = field(p, 7, "ambience/forest_day.ogg");
+				pvp_enabled = safe_int(field(p, 8, "1"), 0, 1, 1) == 1;
+			} else if (p.length() >= 7) {
+				name = wire_unescape(field(p, 1, "Unnamed"));
+				width = safe_int(field(p, 2, "120"), 40, 500, 120);
+				height = safe_int(field(p, 3, "120"), 40, 500, 120);
+				min_z = -20;
+				max_z = safe_int(field(p, 4, "20"), 5, MAP_MAX_Z, 20);
 				default_surface = field(p, 5, "grass");
 				ambience_default = field(p, 6, "ambience/forest_day.ogg");
-			} else if (tag == "S") {
-				if (p.length() < 6) { err = "Malformed S spawn on line " + (li + 1); return false; }
-				MapSpawn s;
-				s.label = wire_unescape(field(p, 1, "Spawn"));
-				s.x = safe_double(field(p, 2, "10"), 0.0, 500.0, 10.0);
-				s.y = safe_double(field(p, 3, "10"), 0.0, 500.0, 10.0);
-				s.z = safe_double(field(p, 4, "0"), 0.0, 50.0, 0.0);
-				s.facing = safe_int(field(p, 5, "0"), 0, 359, 0);
-				spawns.insert_last(s);
-			} else if (tag == "Z") {
-				if (p.length() < 9) { err = "Malformed Z zone on line " + (li + 1); return false; }
-				MapZone z;
+				pvp_enabled = true;
+			} else {
+				err = "Malformed M header on line " + line_no;
+				return false;
+			}
+		} else if (tag == "S") {
+			if (p.length() < 6) { err = "Malformed S spawn on line " + line_no; return false; }
+			MapSpawn s;
+			s.label = wire_unescape(field(p, 1, "Spawn"));
+			s.x = safe_double(field(p, 2, "10"), 0.0, 500.0, 10.0);
+			s.y = safe_double(field(p, 3, "10"), 0.0, 500.0, 10.0);
+			s.z = safe_double(field(p, 4, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+			s.facing = wrap_deg(safe_int(field(p, 5, "0"), 0, 359, 0));
+			spawns.insert_last(s);
+		} else if (tag == "Z") {
+			MapZone z;
+			if (p.length() >= 11) {
+				z.name = wire_unescape(field(p, 1, "Wilderness"));
+				z.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
+				z.min_y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
+				z.max_x = safe_double(field(p, 4, "10"), 0.0, 500.0, 10.0);
+				z.max_y = safe_double(field(p, 5, "10"), 0.0, 500.0, 10.0);
+				z.min_z = safe_double(field(p, 6, "-50"), double(MAP_MIN_Z), double(MAP_MAX_Z), double(MAP_MIN_Z));
+				z.max_z = safe_double(field(p, 7, "100"), double(MAP_MIN_Z), double(MAP_MAX_Z), double(MAP_MAX_Z));
+				z.surface = field(p, 8, "grass");
+				z.ambience_loop = field(p, 9, "");
+				z.is_safe_zone = safe_int(field(p, 10, "0"), 0, 1, 0) == 1;
+			} else if (p.length() >= 9) {
 				z.name = wire_unescape(field(p, 1, "Wilderness"));
 				z.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
 				z.min_y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
@@ -141,70 +261,181 @@ class WorldMap {
 				z.surface = field(p, 6, "grass");
 				z.ambience_loop = field(p, 7, "");
 				z.is_safe_zone = safe_int(field(p, 8, "0"), 0, 1, 0) == 1;
-				zones.insert_last(z);
-			} else if (tag == "W") {
-				if (p.length() < 9) { err = "Malformed W wall on line " + (li + 1); return false; }
-				MapWall w;
-				w.label = wire_unescape(field(p, 1, "Wall"));
-				w.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
-				w.min_y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
-				w.max_x = safe_double(field(p, 4, "1"), 0.0, 500.0, 1.0);
-				w.max_y = safe_double(field(p, 5, "1"), 0.0, 500.0, 1.0);
-				w.min_z = safe_double(field(p, 6, "0"), 0.0, 50.0, 0.0);
-				w.max_z = safe_double(field(p, 7, "3"), 0.0, 50.0, 3.0);
-				w.material = field(p, 8, "wood");
-				walls.insert_last(w);
-			} else if (tag == "P") {
-				if (p.length() < 11) { err = "Malformed P platform on line " + (li + 1); return false; }
-				MapPlatform pl;
+			} else {
+				err = "Malformed Z zone on line " + line_no;
+				return false;
+			}
+			order_pair(z.min_x, z.max_x);
+			order_pair(z.min_y, z.max_y);
+			order_pair(z.min_z, z.max_z);
+			zones.insert_last(z);
+		} else if (tag == "W") {
+			if (p.length() < 9) { err = "Malformed W wall on line " + line_no; return false; }
+			MapWall w;
+			w.label = wire_unescape(field(p, 1, "Wall"));
+			w.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
+			w.min_y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
+			w.max_x = safe_double(field(p, 4, "1"), 0.0, 500.0, 1.0);
+			w.max_y = safe_double(field(p, 5, "1"), 0.0, 500.0, 1.0);
+			w.min_z = safe_double(field(p, 6, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+			w.max_z = safe_double(field(p, 7, "4"), double(MAP_MIN_Z), double(MAP_MAX_Z), 4.0);
+			w.material = field(p, 8, "wood");
+			w.occlude_sound = p.length() >= 10 ? (safe_int(field(p, 9, "1"), 0, 1, 1) == 1) : true;
+			order_pair(w.min_x, w.max_x);
+			order_pair(w.min_y, w.max_y);
+			order_pair(w.min_z, w.max_z);
+			walls.insert_last(w);
+		} else if (tag == "P") {
+			MapPlatform pl;
+			if (p.length() >= 13) {
+				pl.label = wire_unescape(field(p, 1, "Platform"));
+				pl.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
+				pl.min_y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
+				pl.max_x = safe_double(field(p, 4, "10"), 0.0, 500.0, 10.0);
+				pl.max_y = safe_double(field(p, 5, "10"), 0.0, 500.0, 10.0);
+				pl.min_z = safe_double(field(p, 6, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+				pl.max_z = safe_double(field(p, 7, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+				pl.surface = field(p, 8, "wood");
+				pl.kind = field(p, 9, "floor");
+				if (pl.kind != "floor" && pl.kind != "stairs" && pl.kind != "ramp") pl.kind = "floor";
+				pl.is_roof = safe_int(field(p, 10, "0"), 0, 1, 0) == 1;
+				pl.ramp_axis = field(p, 11, "y");
+				pl.ramp_dir = safe_int(field(p, 12, "1"), -1, 1, 1);
+			} else if (p.length() >= 11) {
 				pl.label = wire_unescape(field(p, 1, "Platform"));
 				pl.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
 				pl.min_y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
 				pl.max_x = safe_double(field(p, 4, "1"), 0.0, 500.0, 1.0);
 				pl.max_y = safe_double(field(p, 5, "1"), 0.0, 500.0, 1.0);
-				pl.z_level = safe_double(field(p, 6, "1"), 0.0, 50.0, 1.0);
+				double zl = safe_double(field(p, 6, "1"), double(MAP_MIN_Z), double(MAP_MAX_Z), 1.0);
 				pl.surface = field(p, 7, "wood");
-				pl.is_ramp = safe_int(field(p, 8, "0"), 0, 1, 0) == 1;
+				bool is_rmp = safe_int(field(p, 8, "0"), 0, 1, 0) == 1;
+				pl.kind = is_rmp ? "ramp" : "floor";
+				pl.min_z = is_rmp ? 0.0 : zl;
+				pl.max_z = zl;
 				pl.ramp_axis = field(p, 9, "y");
 				pl.ramp_dir = safe_int(field(p, 10, "1"), -1, 1, 1);
-				platforms.insert_last(pl);
-			} else if (tag == "L") {
-				if (p.length() < 9) { err = "Malformed L water on line " + (li + 1); return false; }
-				MapWater w;
+			} else {
+				err = "Malformed P platform on line " + line_no;
+				return false;
+			}
+			order_pair(pl.min_x, pl.max_x);
+			order_pair(pl.min_y, pl.max_y);
+			order_pair(pl.min_z, pl.max_z);
+			platforms.insert_last(pl);
+		} else if (tag == "L") {
+			MapWater w;
+			if (p.length() >= 10) {
 				w.label = wire_unescape(field(p, 1, "Water"));
 				w.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
 				w.min_y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
 				w.max_x = safe_double(field(p, 4, "1"), 0.0, 500.0, 1.0);
 				w.max_y = safe_double(field(p, 5, "1"), 0.0, 500.0, 1.0);
-				w.z_level = safe_double(field(p, 6, "0"), 0.0, 50.0, 0.0);
+				w.min_z = safe_double(field(p, 6, "-2"), double(MAP_MIN_Z), double(MAP_MAX_Z), -2.0);
+				w.max_z = safe_double(field(p, 7, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+				w.depth = field(p, 8, "shallow");
+				w.sound_loop = field(p, 9, "ambience/river_loop.ogg");
+			} else if (p.length() >= 9) {
+				w.label = wire_unescape(field(p, 1, "Water"));
+				w.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
+				w.min_y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
+				w.max_x = safe_double(field(p, 4, "1"), 0.0, 500.0, 1.0);
+				w.max_y = safe_double(field(p, 5, "1"), 0.0, 500.0, 1.0);
+				double zl = safe_double(field(p, 6, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+				w.min_z = zl - 2.0;
+				w.max_z = zl;
 				w.depth = field(p, 7, "shallow");
 				w.sound_loop = field(p, 8, "ambience/river_loop.ogg");
-				waters.insert_last(w);
-			} else if (tag == "R") {
-				if (p.length() < 7) { err = "Malformed R resource on line " + (li + 1); return false; }
-				MapResourceSpawn r;
-				r.type = field(p, 1, "tree");
-				r.x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
-				r.y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
-				r.z = safe_double(field(p, 4, "0"), 0.0, 50.0, 0.0);
-				r.max_charges = safe_int(field(p, 5, "3"), 1, 20, 3);
-				r.respawn_sec = safe_int(field(p, 6, "60"), 5, 3600, 60);
-				resources.insert_last(r);
-			} else if (tag == "A") {
-				if (p.length() < 8) { err = "Malformed A emitter on line " + (li + 1); return false; }
-				MapEmitter e;
-				e.label = wire_unescape(field(p, 1, "Beacon"));
-				e.sound_file = field(p, 2, "survival/campfire_loop.ogg");
-				e.x = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
-				e.y = safe_double(field(p, 4, "0"), 0.0, 500.0, 0.0);
-				e.z = safe_double(field(p, 5, "0"), 0.0, 50.0, 0.0);
-				e.range = safe_int(field(p, 6, "20"), 2, 100, 20);
-				e.volume = safe_double(field(p, 7, "0.60"), 0.05, 1.0, 0.60);
-				emitters.insert_last(e);
 			} else {
-				err = "Unknown map record tag '" + tag + "' on line " + (li + 1);
+				err = "Malformed L water on line " + line_no;
 				return false;
 			}
+			order_pair(w.min_x, w.max_x);
+			order_pair(w.min_y, w.max_y);
+			order_pair(w.min_z, w.max_z);
+			waters.insert_last(w);
+		} else if (tag == "H") {
+			if (p.length() < 11) { err = "Malformed H hazard on line " + line_no; return false; }
+			MapHazard hz;
+			hz.label = wire_unescape(field(p, 1, "Hazard"));
+			hz.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
+			hz.min_y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
+			hz.max_x = safe_double(field(p, 4, "1"), 0.0, 500.0, 1.0);
+			hz.max_y = safe_double(field(p, 5, "1"), 0.0, 500.0, 1.0);
+			hz.min_z = safe_double(field(p, 6, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+			hz.max_z = safe_double(field(p, 7, "2"), double(MAP_MIN_Z), double(MAP_MAX_Z), 2.0);
+			hz.damage = safe_int(field(p, 8, "12"), 1, 100, 12);
+			hz.interval_ms = safe_int(field(p, 9, "1200"), 250, 10000, 1200);
+			hz.sound_file = field(p, 10, "world/hazard_hit.ogg");
+			order_pair(hz.min_x, hz.max_x);
+			order_pair(hz.min_y, hz.max_y);
+			order_pair(hz.min_z, hz.max_z);
+			hazards.insert_last(hz);
+		} else if (tag == "D") {
+			if (p.length() < 15) { err = "Malformed D portal on line " + line_no; return false; }
+			MapPortal pt;
+			pt.label = wire_unescape(field(p, 1, "Portal"));
+			pt.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
+			pt.min_y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
+			pt.max_x = safe_double(field(p, 4, "1"), 0.0, 500.0, 1.0);
+			pt.max_y = safe_double(field(p, 5, "1"), 0.0, 500.0, 1.0);
+			pt.min_z = safe_double(field(p, 6, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+			pt.max_z = safe_double(field(p, 7, "3"), double(MAP_MIN_Z), double(MAP_MAX_Z), 3.0);
+			pt.target_map = slugify_map_id(field(p, 8, "wildlands_valley"));
+			pt.dest_x = safe_double(field(p, 9, "50"), 0.0, 500.0, 50.0);
+			pt.dest_y = safe_double(field(p, 10, "46"), 0.0, 500.0, 46.0);
+			pt.dest_z = safe_double(field(p, 11, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+			pt.dest_facing = wrap_deg(safe_int(field(p, 12, "0"), 0, 359, 0));
+			pt.auto_step = safe_int(field(p, 13, "0"), 0, 1, 0) == 1;
+			pt.sound_file = field(p, 14, "world/portal_travel.ogg");
+			order_pair(pt.min_x, pt.max_x);
+			order_pair(pt.min_y, pt.max_y);
+			order_pair(pt.min_z, pt.max_z);
+			portals.insert_last(pt);
+		} else if (tag == "R") {
+			if (p.length() < 7) { err = "Malformed R resource on line " + line_no; return false; }
+			MapResourceSpawn r;
+			r.type = field(p, 1, "tree");
+			r.x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
+			r.y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
+			r.z = safe_double(field(p, 4, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+			r.max_charges = safe_int(field(p, 5, "3"), 1, 20, 3);
+			r.respawn_sec = safe_int(field(p, 6, "60"), 5, 3600, 60);
+			resources.insert_last(r);
+		} else if (tag == "A") {
+			if (p.length() < 8) { err = "Malformed A emitter on line " + line_no; return false; }
+			MapEmitter e;
+			e.label = wire_unescape(field(p, 1, "Beacon"));
+			e.sound_file = field(p, 2, "survival/campfire_loop.ogg");
+			e.x = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
+			e.y = safe_double(field(p, 4, "0"), 0.0, 500.0, 0.0);
+			e.z = safe_double(field(p, 5, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+			e.range = safe_int(field(p, 6, "20"), 2, 100, 20);
+			e.volume = safe_double(field(p, 7, "0.60"), 0.05, 1.0, 0.60);
+			emitters.insert_last(e);
+		} else {
+			err = "Unknown map record tag '" + tag + "' on line " + line_no;
+			return false;
+		}
+		return true;
+	}
+
+	bool load_from_lines(string[]@ lines, string&out err) {
+		string saved_slug = slug;
+		clear();
+		slug = saved_slug;
+		err = "";
+		bool seen_header = false;
+		for (uint li = 0; li < lines.length(); li++) {
+			string line = lines[li].trim_whitespace();
+			if (line.length() == 0 || line.starts_with("#")) continue;
+			bool is_hdr = false;
+			if (!parse_single_line(line, li + 1, is_hdr, err)) return false;
+			if (is_hdr) {
+				if (seen_header) { err = "Duplicate M header on line " + (li + 1); return false; }
+				seen_header = true;
+			}
+			raw_lines.insert_last(line);
 		}
 		if (!seen_header) { err = "Missing M header record"; return false; }
 		string[]@ errs = validate();
@@ -212,42 +443,68 @@ class WorldMap {
 		return true;
 	}
 
+	bool load_from_string(const string&in raw, string&out err) {
+		string[]@ lines = split_keep_empty(raw.replace("\r", "", true), "\n");
+		return load_from_lines(lines, err);
+	}
+
 	bool load_from_file(const string&in path, string&out err) {
 		if (!file_exists(path)) { err = "Map file not found: " + path; return false; }
 		string content = file_get_contents(path);
 		if (content.length() == 0) { err = "Map file is empty: " + path; return false; }
+		int sl = path.rfind("/");
+		int bs = path.rfind("\\");
+		int cut = sl > bs ? sl : bs;
+		string fname = cut >= 0 ? path.substr(uint(cut + 1)) : path;
+		if (fname.ends_with(".map")) fname = fname.substr(0, fname.length() - 4);
+		if (fname.length() > 0) slug = slugify_map_id(fname);
 		return load_from_string(content, err);
 	}
 
 	string serialize() {
-		string out_str = "M|" + wire_escape(name) + "|" + width + "|" + height + "|" + max_z + "|" + default_surface + "|" + ambience_default + "\n";
+		if (raw_lines.length() > 0) {
+			string out_str = "";
+			for (uint i = 0; i < raw_lines.length(); i++) {
+				out_str += raw_lines[i] + "\n";
+			}
+			return out_str;
+		}
+		string out_str = make_m_line(name, width, height, min_z, max_z, default_surface, ambience_default, pvp_enabled) + "\n";
 		for (uint i = 0; i < spawns.length(); i++) {
 			MapSpawn@ s = spawns[i];
-			out_str += "S|" + wire_escape(s.label) + "|" + fmt2(s.x) + "|" + fmt2(s.y) + "|" + fmt2(s.z) + "|" + s.facing + "\n";
+			out_str += make_s_line(s.label, s.x, s.y, s.z, s.facing) + "\n";
 		}
 		for (uint i = 0; i < zones.length(); i++) {
 			MapZone@ z = zones[i];
-			out_str += "Z|" + wire_escape(z.name) + "|" + fmt2(z.min_x) + "|" + fmt2(z.min_y) + "|" + fmt2(z.max_x) + "|" + fmt2(z.max_y) + "|" + z.surface + "|" + z.ambience_loop + "|" + (z.is_safe_zone ? "1" : "0") + "\n";
+			out_str += make_z_line(z.name, z.min_x, z.min_y, z.max_x, z.max_y, z.min_z, z.max_z, z.surface, z.ambience_loop, z.is_safe_zone) + "\n";
 		}
 		for (uint i = 0; i < walls.length(); i++) {
 			MapWall@ w = walls[i];
-			out_str += "W|" + wire_escape(w.label) + "|" + fmt2(w.min_x) + "|" + fmt2(w.min_y) + "|" + fmt2(w.max_x) + "|" + fmt2(w.max_y) + "|" + fmt2(w.min_z) + "|" + fmt2(w.max_z) + "|" + w.material + "\n";
+			out_str += make_w_line(w.label, w.min_x, w.min_y, w.max_x, w.max_y, w.min_z, w.max_z, w.material, w.occlude_sound) + "\n";
 		}
 		for (uint i = 0; i < platforms.length(); i++) {
 			MapPlatform@ pl = platforms[i];
-			out_str += "P|" + wire_escape(pl.label) + "|" + fmt2(pl.min_x) + "|" + fmt2(pl.min_y) + "|" + fmt2(pl.max_x) + "|" + fmt2(pl.max_y) + "|" + fmt2(pl.z_level) + "|" + pl.surface + "|" + (pl.is_ramp ? "1" : "0") + "|" + pl.ramp_axis + "|" + pl.ramp_dir + "\n";
+			out_str += make_p_line(pl.label, pl.min_x, pl.min_y, pl.max_x, pl.max_y, pl.min_z, pl.max_z, pl.surface, pl.kind, pl.is_roof, pl.ramp_axis, pl.ramp_dir) + "\n";
 		}
 		for (uint i = 0; i < waters.length(); i++) {
 			MapWater@ l = waters[i];
-			out_str += "L|" + wire_escape(l.label) + "|" + fmt2(l.min_x) + "|" + fmt2(l.min_y) + "|" + fmt2(l.max_x) + "|" + fmt2(l.max_y) + "|" + fmt2(l.z_level) + "|" + l.depth + "|" + l.sound_loop + "\n";
+			out_str += make_l_line(l.label, l.min_x, l.min_y, l.max_x, l.max_y, l.min_z, l.max_z, l.depth, l.sound_loop) + "\n";
+		}
+		for (uint i = 0; i < hazards.length(); i++) {
+			MapHazard@ hz = hazards[i];
+			out_str += make_h_line(hz.label, hz.min_x, hz.min_y, hz.max_x, hz.max_y, hz.min_z, hz.max_z, hz.damage, hz.interval_ms, hz.sound_file) + "\n";
+		}
+		for (uint i = 0; i < portals.length(); i++) {
+			MapPortal@ pt = portals[i];
+			out_str += make_d_line(pt.label, pt.min_x, pt.min_y, pt.max_x, pt.max_y, pt.min_z, pt.max_z, pt.target_map, pt.dest_x, pt.dest_y, pt.dest_z, pt.dest_facing, pt.auto_step, pt.sound_file) + "\n";
 		}
 		for (uint i = 0; i < resources.length(); i++) {
 			MapResourceSpawn@ r = resources[i];
-			out_str += "R|" + r.type + "|" + fmt2(r.x) + "|" + fmt2(r.y) + "|" + fmt2(r.z) + "|" + r.max_charges + "|" + r.respawn_sec + "\n";
+			out_str += make_r_line(r.type, r.x, r.y, r.z, r.max_charges, r.respawn_sec) + "\n";
 		}
 		for (uint i = 0; i < emitters.length(); i++) {
 			MapEmitter@ e = emitters[i];
-			out_str += "A|" + wire_escape(e.label) + "|" + e.sound_file + "|" + fmt2(e.x) + "|" + fmt2(e.y) + "|" + fmt2(e.z) + "|" + e.range + "|" + fmt2(e.volume) + "\n";
+			out_str += make_a_line(e.label, e.sound_file, e.x, e.y, e.z, e.range, e.volume) + "\n";
 		}
 		return out_str;
 	}
@@ -255,6 +512,7 @@ class WorldMap {
 	string[]@ validate() {
 		string[] errs;
 		if (width < 40 || height < 40) errs.insert_last("Map dimensions below minimum 40x40");
+		if (min_z > max_z) errs.insert_last("Map min_z exceeds max_z");
 		if (spawns.length() == 0) errs.insert_last("Map requires at least 1 S spawn point");
 		for (uint i = 0; i < spawns.length(); i++) {
 			MapSpawn@ s = spawns[i];
@@ -267,27 +525,158 @@ class WorldMap {
 		return errs;
 	}
 
-	MapZone@ zone_at(double x, double y) {
+	// ------------------------------------------------------------------ LINE MANAGER OPS
+
+	bool lm_apply_lines(string[]@ candidate_lines, string&out err) {
+		WorldMap test_map;
+		test_map.slug = slug;
+		if (!test_map.load_from_lines(candidate_lines, err)) return false;
+		DynOccluder@[] preserved_dyn = dyn_occluders;
+		if (!load_from_lines(candidate_lines, err)) return false;
+		dyn_occluders = preserved_dyn;
+		return true;
+	}
+
+	bool lm_append_line(const string&in line_str, string&out err) {
+		string[] cand = raw_lines;
+		cand.insert_last(line_str.trim_whitespace());
+		return lm_apply_lines(cand, err);
+	}
+
+	bool lm_insert_line(int after_idx, const string&in line_str, string&out err) {
+		string clean = line_str.trim_whitespace();
+		if (clean.length() == 0) { err = "Empty line."; return false; }
+		string[] cand = raw_lines;
+		int pos = after_idx + 1;
+		if (pos < 1) pos = 1;
+		if (pos > int(cand.length())) pos = int(cand.length());
+		cand.insert_at(uint(pos), clean);
+		return lm_apply_lines(cand, err);
+	}
+
+	bool lm_replace_line(uint idx, const string&in line_str, string&out err) {
+		if (idx >= raw_lines.length()) { err = "Invalid line index."; return false; }
+		string clean = line_str.trim_whitespace();
+		if (clean.length() == 0) { err = "Empty line."; return false; }
+		if (idx == 0 && !clean.starts_with("M|")) { err = "Line 1 must stay M header."; return false; }
+		string[] cand = raw_lines;
+		cand[idx] = clean;
+		return lm_apply_lines(cand, err);
+	}
+
+	bool lm_duplicate_line(uint idx, string&out err) {
+		if (idx >= raw_lines.length()) { err = "Invalid line index."; return false; }
+		if (idx == 0 || raw_lines[idx].starts_with("M|")) { err = "Cannot duplicate M header."; return false; }
+		string[] cand = raw_lines;
+		cand.insert_at(idx + 1, cand[idx]);
+		return lm_apply_lines(cand, err);
+	}
+
+	bool lm_move_line(uint idx, int delta, string&out err) {
+		if (idx >= raw_lines.length()) { err = "Invalid line index."; return false; }
+		if (idx == 0) { err = "Cannot move M header."; return false; }
+		int target = int(idx) + delta;
+		if (target < 1 || target >= int(raw_lines.length())) { err = "Already at edge."; return false; }
+		string[] cand = raw_lines;
+		string tmp = cand[idx];
+		cand[idx] = cand[uint(target)];
+		cand[uint(target)] = tmp;
+		return lm_apply_lines(cand, err);
+	}
+
+	bool lm_delete_line(uint idx, string&out err) {
+		if (idx >= raw_lines.length()) { err = "Invalid line index."; return false; }
+		if (idx == 0 || raw_lines[idx].starts_with("M|")) { err = "Cannot delete M header."; return false; }
+		string[] cand = raw_lines;
+		cand.remove_at(idx);
+		return lm_apply_lines(cand, err);
+	}
+
+	string line_summary(uint idx) {
+		if (idx >= raw_lines.length()) return "Invalid line";
+		string ln = raw_lines[idx];
+		string[]@ p = split_keep_empty(ln, FIELD_SEP);
+		string tag = field(p, 0, "");
+		string num = "Line " + (idx + 1);
+		if (tag == "M") return num + " [Header]: " + wire_unescape(field(p, 1, "")) + ", " + width + "x" + height + ", Z " + min_z + " to " + max_z + ", " + default_surface;
+		if (tag == "S") return num + " [Spawn]: " + wire_unescape(field(p, 1, "")) + " at X " + field(p, 2) + ", Y " + field(p, 3) + ", Z " + field(p, 4);
+		if (tag == "Z") {
+			string z1 = p.length() >= 11 ? field(p, 6) : "" + min_z;
+			string z2 = p.length() >= 11 ? field(p, 7) : "" + max_z;
+			string sf = p.length() >= 11 ? field(p, 8) : field(p, 6);
+			string safe_s = (p.length() >= 11 ? field(p, 10) : field(p, 8)) == "1" ? ", safe" : "";
+			return num + " [Zone]: " + wire_unescape(field(p, 1)) + ", X " + field(p, 2) + " to " + field(p, 4) + ", Y " + field(p, 3) + " to " + field(p, 5) + ", Z " + z1 + " to " + z2 + ", " + sf + safe_s;
+		}
+		if (tag == "W") return num + " [Wall]: " + wire_unescape(field(p, 1)) + ", X " + field(p, 2) + " to " + field(p, 4) + ", Y " + field(p, 3) + " to " + field(p, 5) + ", Z " + field(p, 6) + " to " + field(p, 7) + ", " + field(p, 8);
+		if (tag == "P") {
+			if (p.length() >= 13) return num + " [" + field(p, 9) + "]: " + wire_unescape(field(p, 1)) + ", X " + field(p, 2) + " to " + field(p, 4) + ", Y " + field(p, 3) + " to " + field(p, 5) + ", Z " + field(p, 6) + " to " + field(p, 7) + ", " + field(p, 8);
+			return num + " [Platform]: " + wire_unescape(field(p, 1)) + ", X " + field(p, 2) + " to " + field(p, 4) + ", Y " + field(p, 3) + " to " + field(p, 5) + ", Z " + field(p, 6) + ", " + field(p, 7);
+		}
+		if (tag == "L") return num + " [Water]: " + wire_unescape(field(p, 1)) + ", X " + field(p, 2) + " to " + field(p, 4) + ", Y " + field(p, 3) + " to " + field(p, 5) + ", " + (p.length() >= 10 ? field(p, 8) : field(p, 7));
+		if (tag == "H") return num + " [Hazard]: " + wire_unescape(field(p, 1)) + ", X " + field(p, 2) + " to " + field(p, 4) + ", Y " + field(p, 3) + " to " + field(p, 5) + ", dmg " + field(p, 8);
+		if (tag == "D") return num + " [Portal]: " + wire_unescape(field(p, 1)) + " to " + field(p, 8) + " at X " + field(p, 2) + ", Y " + field(p, 3) + ", Z " + field(p, 6);
+		if (tag == "R") return num + " [Resource]: " + field(p, 1) + " at X " + field(p, 2) + ", Y " + field(p, 3) + ", Z " + field(p, 4);
+		if (tag == "A") return num + " [Emitter]: " + wire_unescape(field(p, 1)) + " (" + field(p, 2) + ") at X " + field(p, 3) + ", Y " + field(p, 4) + ", Z " + field(p, 5);
+		return num + ": " + ln;
+	}
+
+	void line_anchor_pos(uint idx, double&out ax, double&out ay, double&out az) {
+		ax = double(width) * 0.5; ay = double(height) * 0.5; az = 0.0;
+		if (idx >= raw_lines.length()) return;
+		string[]@ p = split_keep_empty(raw_lines[idx], FIELD_SEP);
+		string tag = field(p, 0, "");
+		if (tag == "S" || tag == "R") {
+			int off = tag == "S" ? 2 : 2;
+			ax = safe_double(field(p, off, "50"), 1.0, double(width - 1), 50.0);
+			ay = safe_double(field(p, off + 1, "50"), 1.0, double(height - 1), 50.0);
+			az = safe_double(field(p, off + 2, "0"), double(min_z), double(max_z), 0.0);
+		} else if (tag == "A") {
+			ax = safe_double(field(p, 3, "50"), 1.0, double(width - 1), 50.0);
+			ay = safe_double(field(p, 4, "50"), 1.0, double(height - 1), 50.0);
+			az = safe_double(field(p, 5, "0"), double(min_z), double(max_z), 0.0);
+		} else if (tag == "Z" || tag == "W" || tag == "P" || tag == "L" || tag == "H" || tag == "D") {
+			double x1 = safe_double(field(p, 2, "10"), 0.0, double(width), 10.0);
+			double y1 = safe_double(field(p, 3, "10"), 0.0, double(height), 10.0);
+			double x2 = safe_double(field(p, 4, "10"), 0.0, double(width), 10.0);
+			double y2 = safe_double(field(p, 5, "10"), 0.0, double(height), 10.0);
+			ax = 0.5 * (x1 + x2);
+			ay = 0.5 * (y1 + y2);
+			if (tag == "Z" && p.length() < 11) az = 0.0;
+			else if (tag == "P" && p.length() < 13) az = safe_double(field(p, 6, "0"), double(min_z), double(max_z), 0.0);
+			else az = safe_double(field(p, 7, "0"), double(min_z), double(max_z), 0.0);
+		} else if (spawns.length() > 0) {
+			ax = spawns[0].x; ay = spawns[0].y; az = spawns[0].z;
+		}
+	}
+
+	// ------------------------------------------------------------------ QUERIES, STAIRS & AIR LAW
+
+	MapZone@ zone_at(double x, double y, double z = 0.0) {
 		for (int i = int(zones.length()) - 1; i >= 0; i--) {
-			MapZone@ z = zones[uint(i)];
-			if (x >= z.min_x && x <= z.max_x && y >= z.min_y && y <= z.max_y) return z;
+			MapZone@ zo = zones[uint(i)];
+			if (x >= zo.min_x && x <= zo.max_x && y >= zo.min_y && y <= zo.max_y && z >= zo.min_z - 0.5 && z <= zo.max_z + 0.5) return zo;
+		}
+		// Fallback ignoring Z if zones are purely 2D
+		for (int i = int(zones.length()) - 1; i >= 0; i--) {
+			MapZone@ zo = zones[uint(i)];
+			if (x >= zo.min_x && x <= zo.max_x && y >= zo.min_y && y <= zo.max_y) return zo;
 		}
 		return null;
 	}
 
-	string zone_name_at(double x, double y) {
-		MapZone@ z = zone_at(x, y);
-		return @z != null ? z.name : "Untamed Wilds";
+	string zone_name_at(double x, double y, double z = 0.0) {
+		MapZone@ zo = zone_at(x, y, z);
+		return @zo != null ? zo.name : "Untamed Wilds";
 	}
 
-	bool is_safe_at(double x, double y) {
-		MapZone@ z = zone_at(x, y);
-		return @z != null && z.is_safe_zone;
+	bool is_safe_at(double x, double y, double z = 0.0) {
+		MapZone@ zo = zone_at(x, y, z);
+		return @zo != null && zo.is_safe_zone;
 	}
 
-	string ambience_at(double x, double y) {
-		MapZone@ z = zone_at(x, y);
-		if (@z != null && z.ambience_loop.length() > 0) return z.ambience_loop;
+	string ambience_at(double x, double y, double z = 0.0) {
+		MapZone@ zo = zone_at(x, y, z);
+		if (@zo != null && zo.ambience_loop.length() > 0) return zo.ambience_loop;
 		return ambience_default;
 	}
 
@@ -295,7 +684,7 @@ class WorldMap {
 		depth_out = "";
 		for (uint i = 0; i < waters.length(); i++) {
 			MapWater@ l = waters[i];
-			if (x >= l.min_x && x <= l.max_x && y >= l.min_y && y <= l.max_y && abs(z - l.z_level) <= 0.6) {
+			if (x >= l.min_x && x <= l.max_x && y >= l.min_y && y <= l.max_y && z >= l.min_z - 0.5 && z <= l.max_z + 0.8) {
 				depth_out = l.depth;
 				return true;
 			}
@@ -303,40 +692,139 @@ class WorldMap {
 		return false;
 	}
 
-	double ground_z_at(double x, double y, double current_z) {
-		double best = 0.0;
-		for (uint i = 0; i < platforms.length(); i++) {
-			MapPlatform@ pl = platforms[i];
-			if (x >= pl.min_x && x <= pl.max_x && y >= pl.min_y && y <= pl.max_y) {
-				double pz = pl.z_level;
-				if (pl.is_ramp) {
-					double t = 0.0;
-					if (pl.ramp_axis == "x") {
-						double span = pl.max_x - pl.min_x;
-						t = span > 0.01 ? clampd((x - pl.min_x) / span, 0.0, 1.0) : 0.0;
-					} else {
-						double span = pl.max_y - pl.min_y;
-						t = span > 0.01 ? clampd((y - pl.min_y) / span, 0.0, 1.0) : 0.0;
-					}
-					if (pl.ramp_dir < 0) t = 1.0 - t;
-					pz = pl.z_level * t;
-				}
-				if (pz <= current_z + 0.8 && pz > best) best = pz;
+	MapPlatform@ find_stair_at(double x, double y, double z) {
+		for (int i = int(platforms.length()) - 1; i >= 0; i--) {
+			MapPlatform@ pl = platforms[uint(i)];
+			if (pl.kind != "stairs") continue;
+			if (x >= pl.min_x && x <= pl.max_x && y >= pl.min_y && y <= pl.max_y && z >= pl.min_z - 0.5 && z <= pl.max_z + 0.5) {
+				return pl;
 			}
 		}
-		return best;
+		return null;
+	}
+
+	MapPortal@ find_portal_at(double x, double y, double z) {
+		for (int i = int(portals.length()) - 1; i >= 0; i--) {
+			MapPortal@ pt = portals[uint(i)];
+			if (x >= pt.min_x && x <= pt.max_x && y >= pt.min_y && y <= pt.max_y && z >= pt.min_z - 0.8 && z <= pt.max_z + 0.8) {
+				return pt;
+			}
+		}
+		return null;
+	}
+
+	MapHazard@ find_hazard_at(double x, double y, double z) {
+		for (int i = int(hazards.length()) - 1; i >= 0; i--) {
+			MapHazard@ hz = hazards[uint(i)];
+			if (x >= hz.min_x && x <= hz.max_x && y >= hz.min_y && y <= hz.max_y && z >= hz.min_z - 0.5 && z <= hz.max_z + 0.5) {
+				return hz;
+			}
+		}
+		return null;
+	}
+
+	bool find_support_at(double x, double y, double z, double&out support_z, string&out support_surf, bool&out is_deep_water, bool&out is_under_roof) {
+		bool found = false;
+		support_z = double(min_z - 10);
+		support_surf = default_surface;
+		is_deep_water = false;
+		is_under_roof = false;
+
+		for (uint i = 0; i < platforms.length(); i++) {
+			MapPlatform@ pl = platforms[i];
+			if (x < pl.min_x || x > pl.max_x || y < pl.min_y || y > pl.max_y) continue;
+			if (pl.is_roof && pl.min_z >= z + 1.4) {
+				is_under_roof = true;
+			}
+			if (pl.kind == "stairs") {
+				// Stairs hold climbers via find_stair_at, and also provide solid footing at their base/top landing.
+				if (abs(z - pl.min_z) <= 0.65 && (!found || pl.min_z > support_z)) {
+					found = true;
+					support_z = pl.min_z;
+					support_surf = pl.surface;
+					is_deep_water = false;
+				}
+				continue;
+			}
+			double pz = pl.max_z;
+			if (pl.kind == "ramp") {
+				double t = 0.0;
+				if (pl.ramp_axis == "x") {
+					double span = pl.max_x - pl.min_x;
+					t = span > 0.01 ? clampd((x - pl.min_x) / span, 0.0, 1.0) : 0.0;
+				} else {
+					double span = pl.max_y - pl.min_y;
+					t = span > 0.01 ? clampd((y - pl.min_y) / span, 0.0, 1.0) : 0.0;
+				}
+				if (pl.ramp_dir < 0) t = 1.0 - t;
+				pz = pl.min_z + (pl.max_z - pl.min_z) * t;
+			}
+			if (pz <= z + 0.85 && (!found || pz > support_z)) {
+				found = true;
+				support_z = pz;
+				support_surf = pl.surface;
+				is_deep_water = false;
+			}
+		}
+
+		for (uint i = 0; i < waters.length(); i++) {
+			MapWater@ l = waters[i];
+			if (x >= l.min_x && x <= l.max_x && y >= l.min_y && y <= l.max_y && l.max_z <= z + 0.85) {
+				if (!found || l.max_z >= support_z) {
+					found = true;
+					support_z = l.max_z;
+					support_surf = "water";
+					is_deep_water = (l.depth == "deep");
+				}
+			}
+		}
+
+		for (uint i = 0; i < dyn_occluders.length(); i++) {
+			DynOccluder@ d = dyn_occluders[i];
+			if (!d.is_floor) continue;
+			if (x >= d.x - d.half_w && x <= d.x + d.half_w && y >= d.y - d.half_w && y <= d.y + d.half_w) {
+				double fz = d.z + d.height;
+				if (fz <= z + 0.85 && (!found || fz > support_z)) {
+					found = true;
+					support_z = fz;
+					support_surf = d.material;
+					is_deep_water = false;
+				}
+			}
+		}
+
+		return found;
+	}
+
+	double ground_z_at(double x, double y, double current_z) {
+		double sz;
+		string ss;
+		bool dw, ur;
+		if (find_support_at(x, y, current_z, sz, ss, dw, ur)) return sz;
+		MapPlatform@ st = find_stair_at(x, y, current_z);
+		if (@st != null) return clampd(current_z, st.min_z, st.max_z);
+		return double(min_z - 10);
 	}
 
 	string surface_at(double x, double y, double z) {
-		string wd;
-		if (is_water_at(x, y, z, wd)) return "water";
-		for (int i = int(platforms.length()) - 1; i >= 0; i--) {
-			MapPlatform@ pl = platforms[uint(i)];
-			if (x >= pl.min_x && x <= pl.max_x && y >= pl.min_y && y <= pl.max_y && abs(z - pl.z_level) <= 0.8) {
-				return pl.surface;
+		MapPlatform@ st = find_stair_at(x, y, z);
+		if (@st != null) return st.surface;
+
+		double sz;
+		string ss;
+		bool dw, ur;
+		if (find_support_at(x, y, z, sz, ss, dw, ur)) {
+			if (ss == "water") return "water";
+			if (abs(z - sz) <= 0.85) {
+				// If a zone explicitly paints a surface on top of a base z=0 ground plate, prefer the zone surface when standing at z~0!
+				if (abs(sz) <= 0.1) {
+					MapZone@ zobj = zone_at(x, y, z);
+					if (@zobj != null && zobj.surface.length() > 0) return zobj.surface;
+				}
+				return ss;
 			}
 		}
-		MapZone@ zobj = zone_at(x, y);
+		MapZone@ zobj = zone_at(x, y, z);
 		if (@zobj != null && zobj.surface.length() > 0) return zobj.surface;
 		return default_surface;
 	}
@@ -400,6 +888,7 @@ class WorldMap {
 		double mid_z = (z1 + z2) * 0.5 + 0.5;
 		for (uint i = 0; i < walls.length(); i++) {
 			MapWall@ w = walls[i];
+			if (!w.occlude_sound) continue;
 			if (mid_z >= w.min_z && mid_z <= w.max_z) {
 				if (segment_hits_box2d(x1, y1, x2, y2, w.min_x, w.min_y, w.max_x, w.max_y)) return true;
 			}
@@ -422,6 +911,12 @@ class WorldMap {
 		}
 		for (uint i = 0; i < waters.length(); i++) {
 			if (waters[i].sound_loop.length() > 0) refs.insert_last(waters[i].sound_loop);
+		}
+		for (uint i = 0; i < hazards.length(); i++) {
+			if (hazards[i].sound_file.length() > 0) refs.insert_last(hazards[i].sound_file);
+		}
+		for (uint i = 0; i < portals.length(); i++) {
+			if (portals[i].sound_file.length() > 0) refs.insert_last(portals[i].sound_file);
 		}
 		for (uint i = 0; i < emitters.length(); i++) {
 			if (emitters[i].sound_file.length() > 0) refs.insert_last(emitters[i].sound_file);

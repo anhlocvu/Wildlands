@@ -42,6 +42,58 @@ class WhoEntry {
 	bool is_friend = false;
 }
 
+class BuilderMapInfo {
+	string slug;
+	string name;
+	int width = 100;
+	int height = 100;
+	int min_z = -20;
+	int max_z = 30;
+	string default_surface = "grass";
+	string ambience_default = "ambience/forest_day.ogg";
+	bool pvp_enabled = true;
+	int player_count = 0;
+	int line_count = 0;
+}
+
+class BuilderLineEntry {
+	int idx = 0;
+	string tag;
+	string summary;
+	string raw;
+}
+
+class StaffMapStat {
+	string slug;
+	string name;
+	int players = 0;
+}
+
+class StaffAccountEntry {
+	string name;
+	int rank = RANK_PLAYER;
+	bool online = false;
+	string map_name;
+	string zone_name;
+	int64 last_seen_epoch = 0;
+	int64 ban_rem_sec = 0;
+	int64 mute_rem_sec = 0;
+	uint64 playtime_sec = 0;
+	string last_ip;
+}
+
+class StaffReportEntry {
+	uint64 id = 0;
+	string reporter;
+	string target;
+	string map_slug;
+	double x = 0.0, y = 0.0, z = 0.0;
+	int64 created_epoch = 0;
+	bool resolved = false;
+	string resolved_by;
+	string message;
+}
+
 class NetClient {
 	network@ net = null;
 	uint64 peer_id = 0;
@@ -67,7 +119,10 @@ class NetClient {
 	// World map assembly
 	WorldMap map;
 	bool map_loaded = false;
+	string expected_map_slug = "wildlands_valley";
 	string expected_map_name = "";
+	string current_map_slug = "wildlands_valley";
+	string current_map_name = "Wildlands Valley";
 	uint expected_map_chunks = 0;
 	string[] map_chunks;
 
@@ -78,6 +133,7 @@ class NetClient {
 	int my_hp = 100, my_hunger = 100, my_thirst = 100, my_stamina = 100, my_warmth = 100;
 	bool is_night = false;
 	bool is_raining = false;
+	bool my_fractured = false;
 	string cur_zone = "";
 	bool snap_received = false;
 	uint64 last_snap_tick = 0;
@@ -101,14 +157,54 @@ class NetClient {
 
 	string last_pm_sender = "";
 
-	// Builder cursor sync
+	// Builder cursor sync, STW Hub & Line Manager
 	bool map_builder_active = false;
+	bool bm_noclip = false;
 	int b_cx = 0, b_cy = 0, b_cz = 0;
 	string b_surf = "grass";
 	string b_zone = "";
 	string b_wall = "-";
 	bool b_mark_set = false;
 	int b_mark_x = 0, b_mark_y = 0;
+	string bm_active_slug = "";
+	BuilderMapInfo@[] bm_maps;
+	uint bm_maps_seq = 0;
+	string bm_lm_slug = "";
+	int bm_lm_total = 0;
+	string[] bm_lm_chunks;
+	BuilderLineEntry@[] bm_lm_lines;
+	uint bm_lm_seq = 0;
+	string bm_last_ok = "";
+	string bm_last_msg = "";
+	uint bm_res_seq = 0;
+
+	// Staff Panel caches
+	uint64 st_uptime_sec = 0;
+	uint64 st_worst_tick_ms = 0;
+	int st_online_count = 0;
+	int st_total_accounts = 0;
+	int st_maps_count = 0;
+	int st_structs_count = 0;
+	int st_mobs_count = 0;
+	int st_open_reports = 0;
+	bool st_maintenance = false;
+	bool st_guests_allowed = false;
+	int st_shutdown_rem = 0;
+	StaffMapStat@[] st_map_stats;
+	uint st_overview_seq = 0;
+
+	int st_acc_total = 0;
+	string[] st_acc_chunks;
+	StaffAccountEntry@[] st_accounts;
+	uint st_acc_seq = 0;
+	string st_detail_text = "";
+	uint st_detail_seq = 0;
+	string[] st_log_chunks;
+	string[] st_logs;
+	uint st_logs_seq = 0;
+	string[] st_rep_chunks;
+	StaffReportEntry@[] st_reports;
+	uint st_rep_seq = 0;
 
 	// Nearby remote entities & structures
 	ClientEnt@[] ents;
@@ -122,10 +218,15 @@ class NetClient {
 
 	void reset_session_state() {
 		map_loaded = false;
+		expected_map_slug = "wildlands_valley";
+		expected_map_name = "";
+		current_map_slug = "wildlands_valley";
+		current_map_name = "Wildlands Valley";
 		expected_map_chunks = 0;
 		map_chunks.resize(0);
 		snap_received = false;
 		last_snap_tick = 0;
+		my_fractured = false;
 		inv.resize(0);
 		belt_slot = 0;
 		chest_obj_id = 0;
@@ -137,7 +238,22 @@ class NetClient {
 		ping_announce_pending = false;
 		last_pm_sender = "";
 		map_builder_active = false;
+		bm_noclip = false;
 		b_mark_set = false;
+		bm_active_slug = "";
+		bm_maps.resize(0);
+		bm_lm_chunks.resize(0);
+		bm_lm_lines.resize(0);
+		bm_last_ok = "";
+		bm_last_msg = "";
+		st_map_stats.resize(0);
+		st_acc_chunks.resize(0);
+		st_accounts.resize(0);
+		st_detail_text = "";
+		st_log_chunks.resize(0);
+		st_logs.resize(0);
+		st_rep_chunks.resize(0);
+		st_reports.resize(0);
 		ents.resize(0);
 		clear_objs();
 		my_name = "";
@@ -377,6 +493,8 @@ class NetClient {
 			if (txt.length() > 0) {
 				if (txt == "Entered Audio Map Builder mode.") map_builder_active = true;
 				else if (txt == "Exited Map Builder mode.") map_builder_active = false;
+				else if (txt == "Builder noclip flight enabled.") bm_noclip = true;
+				else if (txt == "Builder noclip flight disabled.") bm_noclip = false;
 				add_buffer(buf_ch, txt);
 				if (!buffer_is_muted(buf_ch)) say(txt, intr);
 			}
@@ -423,6 +541,9 @@ class NetClient {
 				formatted = sender + " " + text;
 			} else if (scope == "team") {
 				formatted = "Team, " + rtag + sender + ": " + text;
+			} else if (scope == "staff") {
+				cue = "ui/staff_alert.ogg";
+				formatted = "Staff, " + rtag + sender + ": " + text;
 			} else {
 				formatted = rtag + sender + " says: " + text;
 			}
@@ -508,9 +629,25 @@ class NetClient {
 			if (ln.length() > 0) changelog.insert_last(ln);
 			return;
 		}
+		if (op == "MAP_TRANSFER") {
+			current_map_slug = wire_unescape(field(p, 1, "wildlands_valley"));
+			current_map_name = wire_unescape(field(p, 2, current_map_slug));
+			my_x = safe_double(field(p, 3, "50"), 0.0, 5000.0, my_x);
+			my_y = safe_double(field(p, 4, "50"), 0.0, 5000.0, my_y);
+			my_z = safe_double(field(p, 5, "0"), -100.0, 500.0, 0.0);
+			my_facing = wrap_deg(safe_int(field(p, 6, "0"), 0, 359, my_facing));
+			smooth_facing = double(my_facing);
+			ents.resize(0);
+			clear_objs();
+			map_loaded = false;
+			last_snap_tick = 0;
+			snap_received = false;
+			return;
+		}
 		if (op == "MAP_HDR") {
-			expected_map_name = wire_unescape(field(p, 1, "world"));
-			expected_map_chunks = uint(safe_int(field(p, 6, "1"), 1, 256, 1));
+			expected_map_slug = wire_unescape(field(p, 1, "wildlands_valley"));
+			expected_map_name = wire_unescape(field(p, 2, "Wildlands Valley"));
+			expected_map_chunks = uint(safe_int(field(p, 8, "1"), 1, 256, 1));
 			map_chunks.resize(expected_map_chunks);
 			for (uint i = 0; i < expected_map_chunks; i++) map_chunks[i] = "";
 			map_loaded = false;
@@ -531,6 +668,9 @@ class NetClient {
 					string raw_map = wire_unescape(joined);
 					string merr;
 					if (map.load_from_string(raw_map, merr)) {
+						map.slug = expected_map_slug;
+						current_map_slug = expected_map_slug;
+						current_map_name = map.name.length() > 0 ? map.name : expected_map_name;
 						map_loaded = true;
 						sync_client_occluders();
 						g_audio.set_map(map);
@@ -663,7 +803,7 @@ class NetClient {
 		if (op == "BUILDER_POS") {
 			b_cx = safe_int(field(p, 1, "0"), 0, 5000, b_cx);
 			b_cy = safe_int(field(p, 2, "0"), 0, 5000, b_cy);
-			b_cz = safe_int(field(p, 3, "0"), 0, 50, b_cz);
+			b_cz = safe_int(field(p, 3, "0"), -100, 100, b_cz);
 			b_surf = field(p, 4, "grass");
 			b_zone = wire_unescape(field(p, 5, "Wilderness"));
 			b_wall = field(p, 6, "-");
@@ -671,6 +811,255 @@ class NetClient {
 			string desc = "Cursor " + b_cx + ", " + b_cy + ", height " + b_cz + ", " + b_zone + ", " + b_surf;
 			if (b_wall != "-") desc += ", " + b_wall + " wall";
 			say(desc + ".", true);
+			return;
+		}
+		if (op == "BM_MAPS") {
+			bm_active_slug = field(p, 1, current_map_slug);
+			bm_maps.resize(0);
+			string rows_raw = field(p, 2, "-");
+			if (rows_raw != "-" && rows_raw.length() > 0) {
+				string[]@ rows = split_keep_empty(rows_raw, ";");
+				for (uint i = 0; i < rows.length(); i++) {
+					if (rows[i].length() == 0) continue;
+					string[]@ c = split_keep_empty(rows[i], ":");
+					BuilderMapInfo mi;
+					mi.slug = wire_unescape(field(c, 0, ""));
+					mi.name = wire_unescape(field(c, 1, mi.slug));
+					mi.width = safe_int(field(c, 2, "100"), 10, 5000, 100);
+					mi.height = safe_int(field(c, 3, "100"), 10, 5000, 100);
+					mi.min_z = safe_int(field(c, 4, "-20"), -100, 100, -20);
+					mi.max_z = safe_int(field(c, 5, "30"), -100, 100, 30);
+					mi.default_surface = field(c, 6, "grass");
+					mi.ambience_default = wire_unescape(field(c, 7, "ambience/forest_day.ogg"));
+					mi.pvp_enabled = field(c, 8, "1") == "1";
+					mi.player_count = safe_int(field(c, 9, "0"), 0, 1000, 0);
+					mi.line_count = safe_int(field(c, 10, "0"), 0, 50000, 0);
+					if (mi.slug.length() > 0) bm_maps.insert_last(mi);
+				}
+			}
+			bm_maps_seq++;
+			return;
+		}
+		if (op == "BM_LM_HDR") {
+			bm_lm_slug = field(p, 1, "");
+			bm_lm_total = safe_int(field(p, 2, "0"), 0, 50000, 0);
+			uint cnt = uint(safe_int(field(p, 3, "1"), 1, 256, 1));
+			bm_lm_chunks.resize(cnt);
+			for (uint i = 0; i < cnt; i++) bm_lm_chunks[i] = "";
+			return;
+		}
+		if (op == "BM_LM_CHK") {
+			uint idx = uint(safe_int(field(p, 1, "0"), 0, 255, 0));
+			if (idx < bm_lm_chunks.length()) {
+				string raw = field(p, 2, "-");
+				bm_lm_chunks[idx] = (raw == "-") ? "__EMPTY__" : wire_unescape(raw);
+				bool complete = true;
+				for (uint i = 0; i < bm_lm_chunks.length(); i++) {
+					if (bm_lm_chunks[i].length() == 0) { complete = false; break; }
+				}
+				if (complete) {
+					bm_lm_lines.resize(0);
+					string joined = "";
+					for (uint i = 0; i < bm_lm_chunks.length(); i++) {
+						if (bm_lm_chunks[i] == "__EMPTY__" || bm_lm_chunks[i].length() == 0) continue;
+						if (joined.length() > 0) joined += "\n";
+						joined += bm_lm_chunks[i];
+					}
+					if (joined.length() > 0) {
+						string[]@ rows = split_keep_empty(joined, "\n");
+						for (uint i = 0; i < rows.length(); i++) {
+							if (rows[i].length() == 0) continue;
+							string[]@ c = split_keep_empty(rows[i], "~");
+							if (c.length() < 4) continue;
+							BuilderLineEntry le;
+							le.idx = safe_int(c[0], 0, 50000, 0);
+							le.tag = c[1];
+							le.summary = wire_unescape(c[2]);
+							string esc_raw = c[3];
+							for (uint k = 4; k < c.length(); k++) esc_raw += "~" + c[k];
+							le.raw = wire_unescape(esc_raw);
+							bm_lm_lines.insert_last(le);
+						}
+					}
+					bm_lm_seq++;
+				}
+			}
+			return;
+		}
+		if (op == "BM_RES") {
+			bm_last_ok = field(p, 1, "ok");
+			bm_last_msg = wire_unescape(field(p, 2, ""));
+			bm_res_seq++;
+			if (bm_last_ok == "err") g_audio.play_ui_cue("error.ogg", 0.85f);
+			else g_audio.play_ui_cue("ui/confirm.ogg", 0.8f);
+			if (bm_last_msg.length() > 0) {
+				add_buffer(BUF_SYSTEM, bm_last_msg);
+				say(bm_last_msg, true);
+			}
+			return;
+		}
+		if (op == "ST_OVERVIEW") {
+			st_uptime_sec = uint64(parse_int(field(p, 1, "0")));
+			st_worst_tick_ms = uint64(parse_int(field(p, 2, "0")));
+			st_online_count = safe_int(field(p, 3, "0"), 0, 5000, 0);
+			st_total_accounts = safe_int(field(p, 4, "0"), 0, 50000, 0);
+			st_maps_count = safe_int(field(p, 5, "1"), 0, 500, 1);
+			st_structs_count = safe_int(field(p, 6, "0"), 0, 100000, 0);
+			st_mobs_count = safe_int(field(p, 7, "0"), 0, 10000, 0);
+			st_open_reports = safe_int(field(p, 8, "0"), 0, 10000, 0);
+			st_maintenance = field(p, 9, "0") == "1";
+			st_guests_allowed = field(p, 10, "0") == "1";
+			st_shutdown_rem = safe_int(field(p, 11, "0"), 0, 3600, 0);
+			st_map_stats.resize(0);
+			string mraw = field(p, 12, "-");
+			if (mraw != "-" && mraw.length() > 0) {
+				string[]@ rows = split_keep_empty(mraw, ";");
+				for (uint i = 0; i < rows.length(); i++) {
+					if (rows[i].length() == 0) continue;
+					string[]@ c = split_keep_empty(rows[i], "~");
+					StaffMapStat ms;
+					ms.slug = wire_unescape(field(c, 0, ""));
+					ms.name = wire_unescape(field(c, 1, ms.slug));
+					ms.players = safe_int(field(c, 2, "0"), 0, 5000, 0);
+					if (ms.slug.length() > 0) st_map_stats.insert_last(ms);
+				}
+			}
+			st_overview_seq++;
+			return;
+		}
+		if (op == "ST_ACC_HDR") {
+			st_acc_total = safe_int(field(p, 1, "0"), 0, 50000, 0);
+			uint cnt = uint(safe_int(field(p, 2, "1"), 1, 256, 1));
+			st_acc_chunks.resize(cnt);
+			for (uint i = 0; i < cnt; i++) st_acc_chunks[i] = "";
+			return;
+		}
+		if (op == "ST_ACC_CHK") {
+			uint idx = uint(safe_int(field(p, 1, "0"), 0, 255, 0));
+			if (idx < st_acc_chunks.length()) {
+				string raw = field(p, 2, "-");
+				st_acc_chunks[idx] = (raw == "-") ? "__EMPTY__" : raw;
+				bool complete = true;
+				for (uint i = 0; i < st_acc_chunks.length(); i++) {
+					if (st_acc_chunks[i].length() == 0) { complete = false; break; }
+				}
+				if (complete) {
+					st_accounts.resize(0);
+					string joined = "";
+					for (uint i = 0; i < st_acc_chunks.length(); i++) {
+						if (st_acc_chunks[i] == "__EMPTY__" || st_acc_chunks[i].length() == 0) continue;
+						if (joined.length() > 0) joined += ";";
+						joined += st_acc_chunks[i];
+					}
+					if (joined.length() > 0) {
+						string[]@ rows = split_keep_empty(joined, ";");
+						for (uint i = 0; i < rows.length(); i++) {
+							if (rows[i].length() == 0) continue;
+							string[]@ c = split_keep_empty(rows[i], ",");
+							StaffAccountEntry ae;
+							ae.name = sanitize_name(wire_unescape(field(c, 0, "")));
+							ae.rank = safe_int(field(c, 1, "0"), RANK_PLAYER, RANK_DEV, RANK_PLAYER);
+							ae.online = field(c, 2, "0") == "1";
+							ae.map_name = wire_unescape(field(c, 3, "Wildlands Valley"));
+							ae.zone_name = wire_unescape(field(c, 4, "Wilderness"));
+							ae.last_seen_epoch = parse_int(field(c, 5, "0"));
+							ae.ban_rem_sec = parse_int(field(c, 6, "0"));
+							ae.mute_rem_sec = parse_int(field(c, 7, "0"));
+							ae.playtime_sec = uint64(parse_int(field(c, 8, "0")));
+							ae.last_ip = wire_unescape(field(c, 9, "-"));
+							if (ae.name.length() > 0) st_accounts.insert_last(ae);
+						}
+					}
+					st_acc_seq++;
+				}
+			}
+			return;
+		}
+		if (op == "ST_DETAIL") {
+			st_detail_text = wire_unescape(field(p, 1, ""));
+			st_detail_seq++;
+			return;
+		}
+		if (op == "ST_LOGS") {
+			uint idx = uint(safe_int(field(p, 1, "0"), 0, 255, 0));
+			uint cnt = uint(safe_int(field(p, 2, "1"), 1, 256, 1));
+			if (idx == 0 || st_log_chunks.length() != cnt) {
+				st_log_chunks.resize(cnt);
+				for (uint i = 0; i < cnt; i++) st_log_chunks[i] = "";
+			}
+			if (idx < st_log_chunks.length()) {
+				string raw = field(p, 3, "-");
+				st_log_chunks[idx] = (raw == "-") ? "__EMPTY__" : raw;
+				bool complete = true;
+				for (uint i = 0; i < st_log_chunks.length(); i++) {
+					if (st_log_chunks[i].length() == 0) { complete = false; break; }
+				}
+				if (complete) {
+					st_logs.resize(0);
+					string joined = "";
+					for (uint i = 0; i < st_log_chunks.length(); i++) {
+						if (st_log_chunks[i] == "__EMPTY__" || st_log_chunks[i].length() == 0) continue;
+						if (joined.length() > 0) joined += "\n";
+						joined += st_log_chunks[i];
+					}
+					if (joined.length() > 0) {
+						string[]@ rows = split_keep_empty(joined, "\n");
+						for (uint i = 0; i < rows.length(); i++) {
+							string dl = wire_unescape(rows[i]);
+							if (dl.length() > 0) st_logs.insert_last(dl);
+						}
+					}
+					st_logs_seq++;
+				}
+			}
+			return;
+		}
+		if (op == "ST_REPORTS") {
+			uint idx = uint(safe_int(field(p, 1, "0"), 0, 255, 0));
+			uint cnt = uint(safe_int(field(p, 2, "1"), 1, 256, 1));
+			if (idx == 0 || st_rep_chunks.length() != cnt) {
+				st_rep_chunks.resize(cnt);
+				for (uint i = 0; i < cnt; i++) st_rep_chunks[i] = "";
+			}
+			if (idx < st_rep_chunks.length()) {
+				string raw = field(p, 3, "-");
+				st_rep_chunks[idx] = (raw == "-") ? "__EMPTY__" : wire_unescape(raw);
+				bool complete = true;
+				for (uint i = 0; i < st_rep_chunks.length(); i++) {
+					if (st_rep_chunks[i].length() == 0) { complete = false; break; }
+				}
+				if (complete) {
+					st_reports.resize(0);
+					string joined = "";
+					for (uint i = 0; i < st_rep_chunks.length(); i++) {
+						if (st_rep_chunks[i] == "__EMPTY__" || st_rep_chunks[i].length() == 0) continue;
+						if (joined.length() > 0) joined += "\n";
+						joined += st_rep_chunks[i];
+					}
+					if (joined.length() > 0) {
+						string[]@ rows = split_keep_empty(joined, "\n");
+						for (uint i = 0; i < rows.length(); i++) {
+							if (rows[i].length() == 0) continue;
+							string[]@ c = split_keep_empty(rows[i], "~");
+							if (c.length() < 11) continue;
+							StaffReportEntry sr;
+							sr.id = uint64(parse_int(c[0]));
+							sr.reporter = sanitize_name(wire_unescape(c[1]));
+							sr.target = wire_unescape(c[2]);
+							sr.map_slug = wire_unescape(c[3]);
+							sr.x = safe_double(c[4], -5000.0, 5000.0, 0.0);
+							sr.y = safe_double(c[5], -5000.0, 5000.0, 0.0);
+							sr.z = safe_double(c[6], -100.0, 500.0, 0.0);
+							sr.created_epoch = parse_int(c[7]);
+							sr.resolved = c[8] == "1";
+							sr.resolved_by = wire_unescape(c[9]);
+							sr.message = wire_unescape(c[10]);
+							st_reports.insert_last(sr);
+						}
+					}
+					st_rep_seq++;
+				}
+			}
 			return;
 		}
 	}
@@ -697,8 +1086,9 @@ class NetClient {
 		is_night = field(p, 11, "0") == "1";
 		is_raining = field(p, 12, "0") == "1";
 		cur_zone = wire_unescape(field(p, 13, "Wilderness"));
+		my_fractured = field(p, 14, "0") == "1";
 
-		string raw_ents = field(p, 14, "-");
+		string raw_ents = field(p, 15, "-");
 		if (raw_ents != "-" && raw_ents.length() > 0) {
 			string[]@ rows = split_keep_empty(raw_ents, ";");
 			for (uint i = 0; i < rows.length(); i++) {
@@ -743,12 +1133,17 @@ class NetClient {
 			e.cur_z = e.prev_z + (e.target_z - e.prev_z) * t;
 		}
 		string amb = "ambience/forest_day.ogg";
+		bool under_roof = false;
 		if (map_loaded) {
-			MapZone@ z = map.zone_at(my_x, my_y);
+			MapZone@ z = map.zone_at(my_x, my_y, my_z);
 			if (@z != null && z.ambience_loop.length() > 0) amb = z.ambience_loop;
 			else if (map.ambience_default.length() > 0) amb = map.ambience_default;
+			double sz;
+			string ss;
+			bool dw;
+			map.find_support_at(my_x, my_y, my_z, sz, ss, dw, under_roof);
 		}
-		g_audio.update_world(my_x, my_y, my_z, my_facing, is_night, is_raining, amb);
+		g_audio.update_world(my_x, my_y, my_z, my_facing, is_night, is_raining, amb, under_roof);
 	}
 
 	void tick_periodic_cues() {

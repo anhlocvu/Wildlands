@@ -1,7 +1,29 @@
-// Survival structure placement menu, chest storage transfer UI, and Interactive Audio Map Builder palette.
+// Survival building menu, chest transfer UI, and STW-style F8 Audio Map Builder Hub + Line Manager.
 
 #include "net_client.nvgt"
 #include "menu.nvgt"
+
+string[] g_builder_surfaces = {"grass", "dirt", "stone", "wood", "sand", "water", "carpet"};
+string[] g_builder_amb_paths = {
+	"ambience/forest_day.ogg",
+	"ambience/forest_night.ogg",
+	"ambience/rain_loop.ogg",
+	"ambience/river_loop.ogg",
+	"ambience/settlement_hearth.ogg",
+	"ambience/wind_gust.ogg",
+	"ambience/cave_loop.ogg",
+	"ambience/indoor_room.ogg"
+};
+string[] g_builder_amb_labels = {
+	"Forest Day",
+	"Forest Night",
+	"Rain Loop",
+	"River Water Loop",
+	"Settlement Hearth",
+	"Mountain Wind",
+	"Cavern Echoes",
+	"Quiet Indoor Room"
+};
 
 void init_std_menu(menu@ m, const string&in intro) {
 	m.reset(true);
@@ -18,17 +40,74 @@ void init_std_menu(menu@ m, const string&in intro) {
 	m.focus_first_item = true;
 }
 
+bool bm_wait_seq(NetClient@ nc, uint prev_seq, int kind, uint timeout_ms = 1400) {
+	timer wt;
+	while (wt.elapsed < timeout_ms && nc.state == CONN_READY) {
+		wait(5);
+		nc.pump();
+		g_audio.tick_menu_audio();
+		if (kind == 0 && nc.bm_maps_seq != prev_seq) return true;
+		if (kind == 1 && nc.bm_lm_seq != prev_seq) return true;
+		if (kind == 2 && nc.bm_res_seq != prev_seq) return true;
+	}
+	return false;
+}
+
+string resolve_doc_path(const string&in doc_name) {
+	string[] cands = {"docs/" + doc_name, "../docs/" + doc_name};
+	for (uint i = 0; i < cands.length(); i++) {
+		if (file_exists(cands[i])) return cands[i];
+	}
+	return "";
+}
+
+void run_doc_reader(NetClient@ nc, const string&in title, const string&in doc_name, const string&in fallback_txt) {
+	string raw = fallback_txt;
+	string dp = resolve_doc_path(doc_name);
+	if (dp.length() > 0) {
+		string disk = file_get_contents(dp);
+		if (disk.length() > 0) raw = disk;
+	}
+	raw = raw.replace("\r", "");
+	string[]@ raw_lines = split_keep_empty(raw, "\n");
+	string[] entries;
+	for (uint i = 0; i < raw_lines.length(); i++) {
+		string t = raw_lines[i].trim_whitespace();
+		if (t.length() > 0) entries.insert_last(t);
+	}
+	if (entries.length() == 0) entries.insert_last(fallback_txt);
+
+	while (@nc != null && nc.state == CONN_READY || @nc == null) {
+		menu m;
+		init_std_menu(m, title + ". " + entries.length() + " lines. Up and Down to read, Enter to repeat or Escape to close.");
+		for (uint i = 0; i < entries.length(); i++) {
+			m.add_item(entries[i], "" + i);
+		}
+		m.add_item("Close Guide", "__close");
+		while (m.monitor()) {
+			wait(5);
+			if (@nc != null) {
+				nc.pump();
+				if (nc.state != CONN_READY) return;
+			}
+			g_audio.tick_menu_audio();
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__close") break;
+		int idx = safe_int(sel, 0, int(entries.length()) - 1, -1);
+		if (idx >= 0) say(entries[uint(idx)], true);
+	}
+}
+
 void run_survival_build_menu(NetClient@ nc) {
 	menu m;
 	init_std_menu(m, "Survival Building Menu. %0 options.");
 
-	string[] kit_ids;
 	for (uint i = 0; i < g_items.length(); i++) {
 		ItemDef@ idf = g_items[i];
 		if (idf.category != "kit") continue;
 		int have = nc.count_inv(idf.id);
 		m.add_item(idf.name + ", you have " + have, idf.build_type.length() > 0 ? idf.build_type : idf.id);
-		kit_ids.insert_last(idf.id);
 	}
 	m.add_item("Lock or unlock nearby door or chest (L)", "__lock");
 	m.add_item("Repair nearby structure (R)", "__repair");
@@ -90,7 +169,6 @@ void run_chest_menu(NetClient@ nc) {
 			string op = sel.substr(0, uint(col));
 			string idx_s = sel.substr(uint(col) + 1);
 			nc.send_control(pkt_5("CHEST", op, "" + nc.chest_obj_id, idx_s, "1"));
-			// Briefly pump to receive CHEST_DATA update before rebuilding list
 			timer wt;
 			uint cur_seq = nc.chest_seq;
 			while (wt.elapsed < 600 && nc.chest_seq == cur_seq && nc.state == CONN_READY) {
@@ -106,15 +184,770 @@ void run_chest_menu(NetClient@ nc) {
 string pick_surface_menu(NetClient@ nc, const string&in title) {
 	menu m;
 	init_std_menu(m, title);
-	string[] surfs = {"grass", "dirt", "stone", "wood", "sand", "water"};
-	for (uint i = 0; i < surfs.length(); i++) m.add_item(surfs[i], surfs[i]);
-	while (m.monitor()) { wait(5); nc.pump(); }
+	for (uint i = 0; i < g_builder_surfaces.length(); i++) {
+		m.add_item(g_builder_surfaces[i], g_builder_surfaces[i]);
+	}
+	while (m.monitor()) {
+		wait(5);
+		nc.pump();
+		g_audio.tick_menu_audio();
+		if (nc.state != CONN_READY) return "";
+	}
 	return m.selected_item_id;
+}
+
+int add_surface_list_items(audio_form@ f, int ctrl, const string&in pre_surf) {
+	int match = 0;
+	for (uint i = 0; i < g_builder_surfaces.length(); i++) {
+		bool sel = (g_builder_surfaces[i] == pre_surf);
+		if (sel) match = int(i);
+		f.add_list_item(ctrl, g_builder_surfaces[i], g_builder_surfaces[i], -1, sel, false);
+	}
+	f.set_list_position(ctrl, match, false);
+	return match;
+}
+
+int add_amb_list_items(audio_form@ f, int ctrl, const string&in pre_amb) {
+	int match = 0;
+	for (uint i = 0; i < g_builder_amb_paths.length(); i++) {
+		bool sel = (g_builder_amb_paths[i] == pre_amb);
+		if (sel) match = int(i);
+		f.add_list_item(ctrl, g_builder_amb_labels[i] + " (" + g_builder_amb_paths[i] + ")", g_builder_amb_paths[i], -1, sel, false);
+	}
+	f.set_list_position(ctrl, match, false);
+	return match;
+}
+
+string list_selected_id_or(audio_form@ f, int ctrl, const string&in fallback) {
+	int pos = f.get_list_position(ctrl);
+	if (pos < 0) return fallback;
+	string id = f.get_list_item_id(ctrl, pos);
+	return id.length() > 0 ? id : fallback;
+}
+
+bool bm_enter_on_checkbox(audio_form@ f, int chk_id) {
+	return (key_pressed(KEY_RETURN) || key_pressed(KEY_NUMPAD_ENTER)) && (f.get_current_focus() == chk_id);
+}
+
+BuilderMapInfo@ bm_find_active_info(NetClient@ nc) {
+	for (uint i = 0; i < nc.bm_maps.length(); i++) {
+		if (nc.bm_maps[i].slug == nc.bm_active_slug) return nc.bm_maps[i];
+	}
+	for (uint i = 0; i < nc.bm_maps.length(); i++) {
+		if (nc.bm_maps[i].slug == nc.current_map_slug) return nc.bm_maps[i];
+	}
+	return nc.bm_maps.length() > 0 ? nc.bm_maps[0] : null;
+}
+
+// ------------------------------------------------------------------ CREATE NEW MAP FORM
+
+void bm_create_map_form(NetClient@ nc) {
+	audio_form f;
+	f.create_window("Create New Map", false, true);
+	int f_slug = f.create_input_box("Map file slug (letters, numbers, underscore)", "frontier_outpost", "", 32);
+	int f_name = f.create_input_box("Display Name", "Frontier Outpost", "", 40);
+	int f_w = f.create_input_box("Width X (40 to 500)", "120", "", 5);
+	int f_h = f.create_input_box("Height Y (40 to 500)", "120", "", 5);
+	int f_minz = f.create_input_box("Minimum Z elevation (-50 to 0)", "-20", "", 5);
+	int f_maxz = f.create_input_box("Maximum Z elevation (5 to 100)", "30", "", 5);
+	int f_surf = f.create_list("Default Ground Surface");
+	add_surface_list_items(f, f_surf, "grass");
+	int f_amb = f.create_list("Default Ambience Loop");
+	add_amb_list_items(f, f_amb, "ambience/forest_day.ogg");
+	int f_sx = f.create_input_box("Initial Spawn X", "60", "", 5);
+	int f_sy = f.create_input_box("Initial Spawn Y", "60", "", 5);
+	int f_sz = f.create_input_box("Initial Spawn Z", "0", "", 5);
+	int f_floor = f.create_checkbox("Create full base floor slab at Spawn Z", true);
+	int f_ok = f.create_button("Create Map", true, false);
+	int f_cancel = f.create_button("Cancel", false, true);
+	f.focus(f_slug);
+
+	while (true) {
+		wait(5);
+		nc.pump();
+		g_audio.tick_menu_audio();
+		if (nc.state != CONN_READY) return;
+		bool enter_chk = bm_enter_on_checkbox(f, f_floor);
+		f.monitor();
+		if (f.is_pressed(f_cancel)) { g_audio.play_ui_cue("menu_back.ogg", 0.8f); return; }
+		if (f.is_pressed(f_ok) || enter_chk) {
+			string slug = slugify_map_id(f.get_text(f_slug).trim_whitespace());
+			string dname = strip_control_chars(f.get_text(f_name).trim_whitespace(), 40);
+			if (slug.length() < 2) { say("Map slug must contain at least 2 characters.", true); f.focus(f_slug); continue; }
+			if (dname.length() < 2) dname = slug;
+			int w = safe_int(f.get_text(f_w), 40, 500, 120);
+			int h = safe_int(f.get_text(f_h), 40, 500, 120);
+			int minz = safe_int(f.get_text(f_minz), MAP_MIN_Z, 0, -20);
+			int maxz = safe_int(f.get_text(f_maxz), 5, MAP_MAX_Z, 30);
+			string surf = list_selected_id_or(f, f_surf, "grass");
+			string amb = list_selected_id_or(f, f_amb, "ambience/forest_day.ogg");
+			string sx = f.get_text(f_sx).trim_whitespace();
+			string sy = f.get_text(f_sy).trim_whitespace();
+			string sz = f.get_text(f_sz).trim_whitespace();
+			string fl = f.is_checked(f_floor) ? "1" : "0";
+			uint s_res = nc.bm_res_seq;
+			nc.send_control(pkt_build("BUILDMAP", {
+				"create_map", slug, wire_escape(dname), "" + w, "" + h, "" + minz, "" + maxz,
+				surf, amb, fl, sx, sy, sz
+			}));
+			bm_wait_seq(nc, s_res, 2, 1800);
+			return;
+		}
+	}
+}
+
+void bm_edit_header_form(NetClient@ nc, BuilderMapInfo@ cur_m) {
+	if (@cur_m == null) { say("No active map loaded.", true); return; }
+	audio_form f;
+	f.create_window("Edit Map Properties: " + cur_m.name, false, true);
+	int f_name = f.create_input_box("Display Name", cur_m.name, "", 40);
+	int f_w = f.create_input_box("Width X (40 to 500)", "" + cur_m.width, "", 5);
+	int f_h = f.create_input_box("Height Y (40 to 500)", "" + cur_m.height, "", 5);
+	int f_minz = f.create_input_box("Minimum Z (-50 to 0)", "" + cur_m.min_z, "", 5);
+	int f_maxz = f.create_input_box("Maximum Z (5 to 100)", "" + cur_m.max_z, "", 5);
+	int f_surf = f.create_list("Default Ground Surface");
+	add_surface_list_items(f, f_surf, cur_m.default_surface);
+	int f_amb = f.create_list("Default Ambience Loop");
+	add_amb_list_items(f, f_amb, cur_m.ambience_default);
+	int f_pvp = f.create_checkbox("Allow PvP Duels outside Safe Zones", cur_m.pvp_enabled);
+	int f_ok = f.create_button("Apply Properties", true, false);
+	int f_cancel = f.create_button("Cancel", false, true);
+	f.focus(f_name);
+
+	while (true) {
+		wait(5);
+		nc.pump();
+		g_audio.tick_menu_audio();
+		if (nc.state != CONN_READY) return;
+		bool enter_chk = bm_enter_on_checkbox(f, f_pvp);
+		f.monitor();
+		if (f.is_pressed(f_cancel)) { g_audio.play_ui_cue("menu_back.ogg", 0.8f); return; }
+		if (f.is_pressed(f_ok) || enter_chk) {
+			string dname = strip_control_chars(f.get_text(f_name).trim_whitespace(), 40);
+			if (dname.length() < 2) { say("Name must be at least 2 characters.", true); f.focus(f_name); continue; }
+			uint s_res = nc.bm_res_seq;
+			nc.send_control(pkt_build("BUILDMAP", {
+				"edit_header", wire_escape(dname),
+				"" + safe_int(f.get_text(f_w), 40, 500, cur_m.width),
+				"" + safe_int(f.get_text(f_h), 40, 500, cur_m.height),
+				"" + safe_int(f.get_text(f_minz), MAP_MIN_Z, 0, cur_m.min_z),
+				"" + safe_int(f.get_text(f_maxz), 5, MAP_MAX_Z, cur_m.max_z),
+				list_selected_id_or(f, f_surf, cur_m.default_surface),
+				list_selected_id_or(f, f_amb, cur_m.ambience_default),
+				f.is_checked(f_pvp) ? "1" : "0"
+			}));
+			bm_wait_seq(nc, s_res, 2, 1800);
+			return;
+		}
+	}
+}
+
+// ------------------------------------------------------------------ 6-AXIS BOX ELEMENT FORMS (ADD & LINE MANAGER EDIT)
+
+void bm_emit_box_cmd(NetClient@ nc, int replace_idx, const string&in kind, string[]@ payload_args) {
+	string[] args;
+	if (replace_idx >= 0) {
+		args.insert_last("lm_replace_box");
+		args.insert_last("" + replace_idx);
+		args.insert_last(kind);
+	} else {
+		args.insert_last("add_box");
+		args.insert_last(kind);
+	}
+	for (uint i = 0; i < payload_args.length(); i++) args.insert_last(payload_args[i]);
+	uint s_res = nc.bm_res_seq;
+	nc.send_control(pkt_build("BUILDMAP", args));
+	bm_wait_seq(nc, s_res, 2, 1800);
+}
+
+void bm_collect_emitter_sounds(string[]&out rels) {
+	rels.resize(0);
+	for (uint i = 0; i < g_builder_amb_paths.length(); i++) rels.insert_last(g_builder_amb_paths[i]);
+	string[] extras = {
+		"builder/beacon_ping.ogg",
+		"survival/campfire_loop.ogg",
+		"world/portal_travel.ogg",
+		"ui/track_beacon.ogg"
+	};
+	for (uint i = 0; i < extras.length(); i++) rels.insert_last(extras[i]);
+}
+
+bool bm_box_form(NetClient@ nc, BuilderMapInfo@ cur_m, const string&in kind, int replace_idx = -1, const string&in raw_line = "") {
+	string[]@ tok = raw_line.length() > 0 ? split_keep_empty(raw_line, FIELD_SEP) : array<string>();
+	int px = int(nc.my_x);
+	int py = int(nc.my_y);
+	int pz = int(nc.my_z);
+
+	if (kind == "floor" || kind == "stairs" || kind == "ramp" || kind == "wall" || kind == "zone" || kind == "water" || kind == "hazard" || kind == "portal") {
+		string def_lbl = kind == "floor" ? "Deck" : (kind == "stairs" ? "Staircase" : (kind == "ramp" ? "Slope Ramp" : (kind == "wall" ? "Wall" : (kind == "zone" ? "Zone" : (kind == "water" ? "Water Pool" : (kind == "hazard" ? "Hazard" : "Portal Gate"))))));
+		string d_x1 = "" + px, d_x2 = "" + (px + 8), d_y1 = "" + py, d_y2 = "" + (py + 8);
+		string d_z1 = "" + pz, d_z2 = kind == "stairs" ? "" + (pz + 10) : (kind == "wall" ? "" + (pz + 4) : (kind == "hazard" ? "" + (pz + 2) : (kind == "portal" ? "" + (pz + 3) : "" + pz)));
+		string d_surf = kind == "water" ? "shallow" : (kind == "wall" ? "wood" : (kind == "zone" ? "grass" : "wood"));
+		bool d_flag = (kind == "wall");
+		string d_extra1 = kind == "ramp" ? "y" : (kind == "zone" ? "ambience/forest_day.ogg" : (kind == "water" ? "ambience/river_loop.ogg" : (kind == "hazard" ? "15" : "wildlands_valley")));
+		string d_extra2 = kind == "ramp" ? "1" : (kind == "hazard" ? "1200" : "50");
+		string d_extra3 = "50";
+		string d_extra4 = "0";
+		string d_extra5 = "0";
+		string d_extra6 = kind == "portal" ? "world/portal_travel.ogg" : "world/hazard_hit.ogg";
+
+		if (replace_idx >= 0 && tok.length() >= 8) {
+			def_lbl = wire_unescape(tok[1]);
+			d_x1 = tok[2]; d_y1 = tok[3]; d_x2 = tok[4]; d_y2 = tok[5]; d_z1 = tok[6]; d_z2 = tok[7];
+			if (tok.length() > 8) d_surf = tok[8];
+			if (kind == "floor" || kind == "stairs" || kind == "ramp") {
+				d_flag = field(tok, 10, "0") == "1";
+				d_extra1 = field(tok, 11, "y");
+				d_extra2 = field(tok, 12, "1");
+			} else if (kind == "wall") {
+				d_flag = field(tok, 9, "1") == "1";
+			} else if (kind == "zone") {
+				d_extra1 = field(tok, 9, "ambience/forest_day.ogg");
+				d_flag = field(tok, 10, "0") == "1";
+			} else if (kind == "water") {
+				d_extra1 = field(tok, 9, "ambience/river_loop.ogg");
+			} else if (kind == "hazard") {
+				d_extra1 = field(tok, 8, "15");
+				d_extra2 = field(tok, 9, "1200");
+				d_extra6 = field(tok, 10, "world/hazard_hit.ogg");
+			} else if (kind == "portal") {
+				d_extra1 = field(tok, 8, "wildlands_valley");
+				d_extra2 = field(tok, 9, "50");
+				d_extra3 = field(tok, 10, "50");
+				d_extra4 = field(tok, 11, "0");
+				d_extra5 = field(tok, 12, "0");
+				d_flag = field(tok, 13, "0") == "1";
+				d_extra6 = field(tok, 14, "world/portal_travel.ogg");
+			}
+		}
+
+		audio_form f;
+		f.create_window((replace_idx >= 0 ? "Edit " : "Add ") + kind + " by 6-Axis Box", false, true);
+		int f_lbl = f.create_input_box("Label", def_lbl, "", 48);
+		int f_x1 = f.create_input_box("Minimum X", d_x1, "", 10);
+		int f_x2 = f.create_input_box("Maximum X", d_x2, "", 10);
+		int f_y1 = f.create_input_box("Minimum Y", d_y1, "", 10);
+		int f_y2 = f.create_input_box("Maximum Y", d_y2, "", 10);
+		int f_z1 = f.create_input_box("Minimum Z", d_z1, "", 10);
+		int f_z2 = f.create_input_box("Maximum Z", d_z2, "", 10);
+
+		int f_surf = -1, f_chk = -1, f_list2 = -1, f_in1 = -1, f_in2 = -1, f_in3 = -1, f_in4 = -1;
+		if (kind == "floor" || kind == "stairs" || kind == "ramp" || kind == "zone") {
+			f_surf = f.create_list(kind == "stairs" ? "Stair Step Footstep Surface" : "Surface Material");
+			add_surface_list_items(f, f_surf, d_surf);
+		} else if (kind == "wall") {
+			f_surf = f.create_list("Wall Material");
+			f.add_list_item(f_surf, "wood", "wood", -1, d_surf == "wood", false);
+			f.add_list_item(f_surf, "stone", "stone", -1, d_surf == "stone", false);
+			f.set_list_position(f_surf, d_surf == "stone" ? 1 : 0, false);
+		} else if (kind == "water") {
+			f_surf = f.create_list("Water Depth");
+			f.add_list_item(f_surf, "shallow (wadeable)", "shallow", -1, d_surf != "deep", false);
+			f.add_list_item(f_surf, "deep (cushions falls)", "deep", -1, d_surf == "deep", false);
+			f.set_list_position(f_surf, d_surf == "deep" ? 1 : 0, false);
+		}
+
+		if (kind == "floor") f_chk = f.create_checkbox("Is overhead roof (muffles rain when underneath)", d_flag);
+		else if (kind == "wall") f_chk = f.create_checkbox("Occludes 3D audio and sonar (low-pass filter)", d_flag);
+		else if (kind == "zone") {
+			f_list2 = f.create_list("Zone Ambience Loop");
+			add_amb_list_items(f, f_list2, d_extra1);
+			f_chk = f.create_checkbox("Safe zone (disables PvP & monsters)", d_flag);
+		} else if (kind == "ramp") {
+			f_list2 = f.create_list("Ramp Climb Axis and Direction");
+			string cur_ax = d_extra1 + ":" + d_extra2;
+			string[] rids = {"y:1", "y:-1", "x:1", "x:-1"};
+			string[] rlbls = {"South to North (Y+ rises)", "North to South (Y- rises)", "West to East (X+ rises)", "East to West (X- rises)"};
+			int rpos = 0;
+			for (uint i = 0; i < rids.length(); i++) {
+				if (rids[i] == cur_ax) rpos = int(i);
+				f.add_list_item(f_list2, rlbls[i], rids[i], -1, rids[i] == cur_ax, false);
+			}
+			f.set_list_position(f_list2, rpos, false);
+		} else if (kind == "hazard") {
+			f_in1 = f.create_input_box("Damage per hit (1 to 100)", d_extra1, "", 4);
+			f_in2 = f.create_input_box("Hit Interval milliseconds (250 to 10000)", d_extra2, "", 6);
+		} else if (kind == "portal") {
+			f_list2 = f.create_list("Destination Map");
+			int mpos = 0;
+			for (uint i = 0; i < nc.bm_maps.length(); i++) {
+				bool sel = (nc.bm_maps[i].slug == d_extra1);
+				if (sel) mpos = int(i);
+				f.add_list_item(f_list2, nc.bm_maps[i].name + " (" + nc.bm_maps[i].slug + ")", nc.bm_maps[i].slug, -1, sel, false);
+			}
+			f.set_list_position(f_list2, mpos, false);
+			f_in1 = f.create_input_box("Destination X", d_extra2, "", 8);
+			f_in2 = f.create_input_box("Destination Y", d_extra3, "", 8);
+			f_in3 = f.create_input_box("Destination Z", d_extra4, "", 8);
+			f_in4 = f.create_input_box("Destination Facing degrees (0-359)", d_extra5, "", 5);
+			f_chk = f.create_checkbox("Auto-trigger portal upon stepping inside box", d_flag);
+		}
+
+		int f_ok = f.create_button(replace_idx >= 0 ? "Save Line Changes" : "Add to Map", true, false);
+		int f_cancel = f.create_button("Cancel", false, true);
+		f.focus(f_lbl);
+
+		while (true) {
+			wait(5);
+			nc.pump();
+			g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return false;
+			bool enter_chk = (f_chk >= 0) ? bm_enter_on_checkbox(f, f_chk) : false;
+			f.monitor();
+			if (f.is_pressed(f_cancel)) { g_audio.play_ui_cue("menu_back.ogg", 0.8f); return false; }
+			if (f.is_pressed(f_ok) || enter_chk) {
+				string lbl = wire_escape(strip_control_chars(f.get_text(f_lbl).trim_whitespace(), 48));
+				string x1 = f.get_text(f_x1).trim_whitespace();
+				string x2 = f.get_text(f_x2).trim_whitespace();
+				string y1 = f.get_text(f_y1).trim_whitespace();
+				string y2 = f.get_text(f_y2).trim_whitespace();
+				string z1 = f.get_text(f_z1).trim_whitespace();
+				string z2 = f.get_text(f_z2).trim_whitespace();
+				string surf_v = f_surf >= 0 ? list_selected_id_or(f, f_surf, d_surf) : d_surf;
+				string[] args = {lbl, x1, x2, y1, y2, z1, z2};
+				if (kind == "floor" || kind == "stairs" || kind == "ramp") {
+					args.insert_last(surf_v);
+					args.insert_last((f_chk >= 0 && f.is_checked(f_chk)) ? "1" : "0");
+					if (kind == "ramp") {
+						string rp = list_selected_id_or(f, f_list2, "y:1");
+						string[]@ rtok = split_keep_empty(rp, ":");
+						args.insert_last(field(rtok, 0, "y"));
+						args.insert_last(field(rtok, 1, "1"));
+					} else {
+						args.insert_last("y");
+						args.insert_last("1");
+					}
+				} else if (kind == "wall") {
+					args.insert_last(surf_v);
+					args.insert_last(f.is_checked(f_chk) ? "1" : "0");
+				} else if (kind == "zone") {
+					args.insert_last(surf_v);
+					args.insert_last(list_selected_id_or(f, f_list2, "ambience/forest_day.ogg"));
+					args.insert_last(f.is_checked(f_chk) ? "1" : "0");
+				} else if (kind == "water") {
+					args.insert_last(surf_v);
+					args.insert_last("ambience/river_loop.ogg");
+				} else if (kind == "hazard") {
+					args.insert_last(f.get_text(f_in1).trim_whitespace());
+					args.insert_last(f.get_text(f_in2).trim_whitespace());
+					args.insert_last(d_extra6);
+				} else if (kind == "portal") {
+					args.insert_last(list_selected_id_or(f, f_list2, "wildlands_valley"));
+					args.insert_last(f.get_text(f_in1).trim_whitespace());
+					args.insert_last(f.get_text(f_in2).trim_whitespace());
+					args.insert_last(f.get_text(f_in3).trim_whitespace());
+					args.insert_last(f.get_text(f_in4).trim_whitespace());
+					args.insert_last(f.is_checked(f_chk) ? "1" : "0");
+					args.insert_last(d_extra6);
+				}
+				bm_emit_box_cmd(nc, replace_idx, kind, args);
+				return true;
+			}
+		}
+	}
+
+	if (kind == "resource") {
+		string rtype = replace_idx >= 0 ? field(tok, 1, "tree") : "tree";
+		string rx = replace_idx >= 0 ? field(tok, 2, "" + px) : "" + px;
+		string ry = replace_idx >= 0 ? field(tok, 3, "" + py) : "" + py;
+		string rz = replace_idx >= 0 ? field(tok, 4, "" + pz) : "" + pz;
+		string chg = replace_idx >= 0 ? field(tok, 5, "4") : "4";
+		string rsec = replace_idx >= 0 ? field(tok, 6, "45") : "45";
+		audio_form f;
+		f.create_window((replace_idx >= 0 ? "Edit" : "Add") + " Resource Node", false, true);
+		int f_rt = f.create_list("Resource Type");
+		string[] rts = {"tree", "rock", "iron_vein", "berry_bush", "herb_patch"};
+		int rpos = 0;
+		for (uint i = 0; i < rts.length(); i++) {
+			if (rts[i] == rtype) rpos = int(i);
+			f.add_list_item(f_rt, rts[i], rts[i], -1, rts[i] == rtype, false);
+		}
+		f.set_list_position(f_rt, rpos, false);
+		int f_x = f.create_input_box("X Coordinate", rx, "", 10);
+		int f_y = f.create_input_box("Y Coordinate", ry, "", 10);
+		int f_z = f.create_input_box("Z Elevation", rz, "", 10);
+		int f_chg = f.create_input_box("Gather Charges (1 to 20)", chg, "", 4);
+		int f_rs = f.create_input_box("Respawn Seconds (5 to 3600)", rsec, "", 6);
+		int f_ok = f.create_button(replace_idx >= 0 ? "Save Resource" : "Add Resource", true, false);
+		int f_cancel = f.create_button("Cancel", false, true);
+		f.focus(f_rt);
+		while (true) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return false;
+			f.monitor();
+			if (f.is_pressed(f_cancel)) { g_audio.play_ui_cue("menu_back.ogg", 0.8f); return false; }
+			if (f.is_pressed(f_ok)) {
+				string[] args = {
+					list_selected_id_or(f, f_rt, "tree"),
+					f.get_text(f_x).trim_whitespace(),
+					f.get_text(f_y).trim_whitespace(),
+					f.get_text(f_z).trim_whitespace(),
+					f.get_text(f_chg).trim_whitespace(),
+					f.get_text(f_rs).trim_whitespace()
+				};
+				bm_emit_box_cmd(nc, replace_idx, "resource", args);
+				return true;
+			}
+		}
+	}
+
+	if (kind == "emitter") {
+		string lbl = replace_idx >= 0 ? wire_unescape(field(tok, 1, "Landmark")) : "Landmark";
+		string snd = replace_idx >= 0 ? field(tok, 2, "builder/beacon_ping.ogg") : "builder/beacon_ping.ogg";
+		string ex = replace_idx >= 0 ? field(tok, 3, "" + px) : "" + px;
+		string ey = replace_idx >= 0 ? field(tok, 4, "" + py) : "" + py;
+		string ez = replace_idx >= 0 ? field(tok, 5, "" + pz) : "" + pz;
+		string rng = replace_idx >= 0 ? field(tok, 6, "24") : "24";
+		string vol = replace_idx >= 0 ? field(tok, 7, "0.65") : "0.65";
+		string[] em_rels;
+		bm_collect_emitter_sounds(em_rels);
+
+		audio_form f;
+		f.create_window((replace_idx >= 0 ? "Edit" : "Add") + " Ambient Emitter", false, true);
+		int f_lbl = f.create_input_box("Emitter Label", lbl, "", 40);
+		int f_snd = f.create_list("Sound Loop File");
+		int spos = 0;
+		for (uint i = 0; i < em_rels.length(); i++) {
+			if (em_rels[i] == snd) spos = int(i);
+			f.add_list_item(f_snd, em_rels[i], em_rels[i], -1, em_rels[i] == snd, false);
+		}
+		f.set_list_position(f_snd, spos, false);
+		int f_prev = f.create_button("Preview Selected Sound", false, false);
+		int f_x = f.create_input_box("X Coordinate", ex, "", 10);
+		int f_y = f.create_input_box("Y Coordinate", ey, "", 10);
+		int f_z = f.create_input_box("Z Elevation", ez, "", 10);
+		int f_rng = f.create_input_box("Hearing Range (2 to 100)", rng, "", 4);
+		int f_vol = f.create_input_box("Volume (0.05 to 1.0)", vol, "", 5);
+		int f_ok = f.create_button(replace_idx >= 0 ? "Save Emitter" : "Add Emitter", true, false);
+		int f_cancel = f.create_button("Cancel", false, true);
+		f.focus(f_lbl);
+		while (true) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return false;
+			f.monitor();
+			if (f.is_pressed(f_prev)) {
+				g_audio.play_ui_cue(list_selected_id_or(f, f_snd, "builder/beacon_ping.ogg"), 0.8f);
+			}
+			if (f.is_pressed(f_cancel)) { g_audio.play_ui_cue("menu_back.ogg", 0.8f); return false; }
+			if (f.is_pressed(f_ok)) {
+				string[] args = {
+					wire_escape(strip_control_chars(f.get_text(f_lbl).trim_whitespace(), 40)),
+					list_selected_id_or(f, f_snd, "builder/beacon_ping.ogg"),
+					f.get_text(f_x).trim_whitespace(),
+					f.get_text(f_y).trim_whitespace(),
+					f.get_text(f_z).trim_whitespace(),
+					f.get_text(f_rng).trim_whitespace(),
+					f.get_text(f_vol).trim_whitespace()
+				};
+				bm_emit_box_cmd(nc, replace_idx, "emitter", args);
+				return true;
+			}
+		}
+	}
+
+	if (kind == "spawn") {
+		string lbl = replace_idx >= 0 ? wire_unescape(field(tok, 1, "Spawn")) : "Spawn";
+		string sx = replace_idx >= 0 ? field(tok, 2, "" + px) : "" + px;
+		string sy = replace_idx >= 0 ? field(tok, 3, "" + py) : "" + py;
+		string sz = replace_idx >= 0 ? field(tok, 4, "" + pz) : "" + pz;
+		string sfac = replace_idx >= 0 ? field(tok, 5, "0") : "" + nc.my_facing;
+		audio_form f;
+		f.create_window((replace_idx >= 0 ? "Edit" : "Add") + " Spawn Point", false, true);
+		int f_lbl = f.create_input_box("Spawn Label", lbl, "", 40);
+		int f_x = f.create_input_box("X Coordinate", sx, "", 10);
+		int f_y = f.create_input_box("Y Coordinate", sy, "", 10);
+		int f_z = f.create_input_box("Z Elevation", sz, "", 10);
+		int f_fac = f.create_input_box("Facing degrees (0 to 359)", sfac, "", 5);
+		int f_ok = f.create_button(replace_idx >= 0 ? "Save Spawn" : "Add Spawn", true, false);
+		int f_cancel = f.create_button("Cancel", false, true);
+		f.focus(f_lbl);
+		while (true) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return false;
+			f.monitor();
+			if (f.is_pressed(f_cancel)) { g_audio.play_ui_cue("menu_back.ogg", 0.8f); return false; }
+			if (f.is_pressed(f_ok)) {
+				string[] args = {
+					wire_escape(strip_control_chars(f.get_text(f_lbl).trim_whitespace(), 40)),
+					f.get_text(f_x).trim_whitespace(),
+					f.get_text(f_y).trim_whitespace(),
+					f.get_text(f_z).trim_whitespace(),
+					f.get_text(f_fac).trim_whitespace()
+				};
+				bm_emit_box_cmd(nc, replace_idx, "spawn", args);
+				return true;
+			}
+		}
+	}
+	return false;
+}
+
+void bm_add_element_menu(NetClient@ nc, BuilderMapInfo@ cur_m) {
+	while (nc.state == CONN_READY) {
+		menu m;
+		init_std_menu(m, "Add Element by 6-Axis Box Coordinates on " + (@cur_m != null ? cur_m.name : nc.current_map_name) + ". %0 types.");
+		m.add_item("Floor or Roof Platform (Min/Max X, Y, Z)", "floor");
+		m.add_item("Staircase Climbable via Page Up and Page Down (chooses footstep surface)", "stairs");
+		m.add_item("Sloped Walkable Ramp", "ramp");
+		m.add_item("Solid Wall (Wood or Stone)", "wall");
+		m.add_item("Audio Zone (Ambience, Surface, Safe Flag)", "zone");
+		m.add_item("Water Body (Shallow or Deep Fall Cushion)", "water");
+		m.add_item("Damage Hazard Box", "hazard");
+		m.add_item("Map Travel Portal", "portal");
+		m.add_item("Resource Node (Tree, Rock, Iron, Berry, Herb)", "resource");
+		m.add_item("3D Ambient Emitter", "emitter");
+		m.add_item("Spawn Point", "spawn");
+		m.add_item("Back to Builder Hub", "__back");
+		while (m.monitor()) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return;
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__back") return;
+		bm_box_form(nc, cur_m, sel, -1, "");
+	}
+}
+
+// ------------------------------------------------------------------ LINE MANAGER
+
+string bm_box_kind_for_entry(BuilderLineEntry@ le) {
+	if (le.tag == "P") {
+		if (le.raw.find("|stairs|") >= 0) return "stairs";
+		if (le.raw.find("|ramp|") >= 0) return "ramp";
+		return "floor";
+	}
+	if (le.tag == "W") return "wall";
+	if (le.tag == "Z") return "zone";
+	if (le.tag == "L") return "water";
+	if (le.tag == "H") return "hazard";
+	if (le.tag == "D") return "portal";
+	if (le.tag == "R") return "resource";
+	if (le.tag == "A") return "emitter";
+	if (le.tag == "S") return "spawn";
+	return "";
+}
+
+void bm_line_actions_menu(NetClient@ nc, BuilderMapInfo@ cur_m, BuilderLineEntry@ le) {
+	while (nc.state == CONN_READY) {
+		menu m;
+		init_std_menu(m, "Line " + (le.idx + 1) + ": " + le.summary + ". %0 actions.");
+		string box_k = bm_box_kind_for_entry(le);
+		if (box_k.length() > 0) m.add_item("Edit Using 6-Axis Coordinate Form", "edit_form");
+		m.add_item("Edit Raw Map Line Text", "edit_raw");
+		m.add_item("Teleport to Element Center", "tp");
+		m.add_item("Insert New Raw Line After This Line", "insert_after");
+		m.add_item("Duplicate This Line", "dup");
+		if (le.idx > 1) m.add_item("Move Line Up (Higher Priority)", "up");
+		if (le.idx >= 1) m.add_item("Move Line Down", "down");
+		if (le.tag != "M") m.add_item("Delete This Line", "del");
+		m.add_item("Back to Line List", "__back");
+
+		while (m.monitor()) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return;
+		}
+		string act = m.selected_item_id;
+		if (act.length() == 0 || act == "__back") return;
+
+		if (act == "edit_form") {
+			if (bm_box_form(nc, cur_m, box_k, le.idx, le.raw)) return;
+			continue;
+		}
+		if (act == "edit_raw") {
+			string edited;
+			if (!show_text_prompt("Edit Raw Line " + (le.idx + 1), "Raw map line", le.raw, edited, 300)) continue;
+			uint s_res = nc.bm_res_seq;
+			nc.send_control(pkt_build("BUILDMAP", {"lm_raw_edit", "" + le.idx, wire_escape(edited)}));
+			bm_wait_seq(nc, s_res, 2, 1600);
+			return;
+		}
+		if (act == "insert_after") {
+			string newl;
+			if (!show_text_prompt("Insert Line After " + (le.idx + 1), "Enter raw .map line (for example W|Fence|10|10|20|11|0|3|wood|1)", "", newl, 300)) continue;
+			uint s_res = nc.bm_res_seq;
+			nc.send_control(pkt_build("BUILDMAP", {"lm_insert", "" + le.idx, wire_escape(newl)}));
+			bm_wait_seq(nc, s_res, 2, 1600);
+			return;
+		}
+		if (act == "tp") {
+			nc.send_control(pkt_build("BUILDMAP", {"lm_tp", "" + le.idx}));
+			return;
+		}
+		if (act == "dup") {
+			uint s_res = nc.bm_res_seq;
+			nc.send_control(pkt_build("BUILDMAP", {"lm_dup", "" + le.idx}));
+			bm_wait_seq(nc, s_res, 2, 1600);
+			return;
+		}
+		if (act == "up" || act == "down") {
+			uint s_res = nc.bm_res_seq;
+			nc.send_control(pkt_build("BUILDMAP", {"lm_move", "" + le.idx, act == "up" ? "-1" : "1"}));
+			bm_wait_seq(nc, s_res, 2, 1600);
+			return;
+		}
+		if (act == "del") {
+			menu cf;
+			init_std_menu(cf, "Delete line " + (le.idx + 1) + ", " + le.summary + "?");
+			cf.add_item("Cancel, keep line", "no");
+			cf.add_item("Yes, delete line", "yes");
+			while (cf.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+			if (cf.selected_item_id == "yes") {
+				uint s_res = nc.bm_res_seq;
+				nc.send_control(pkt_build("BUILDMAP", {"lm_del", "" + le.idx}));
+				bm_wait_seq(nc, s_res, 2, 1600);
+				return;
+			}
+		}
+	}
+}
+
+void bm_line_manager_menu(NetClient@ nc, BuilderMapInfo@ cur_m) {
+	string cur_filter = "ALL";
+	while (nc.state == CONN_READY) {
+		uint s_lm = nc.bm_lm_seq;
+		nc.send_control(pkt_build("BUILDMAP", {"lm_list", cur_filter}));
+		bm_wait_seq(nc, s_lm, 1, 1800);
+
+		menu m;
+		init_std_menu(m, "Line Manager on " + (nc.bm_lm_slug.length() > 0 ? nc.bm_lm_slug : nc.current_map_slug)
+			+ ", filter " + cur_filter + ", " + nc.bm_lm_lines.length() + " lines shown. %0 items.");
+		m.add_item("Change Line Filter (Current: " + cur_filter + ")", "__filter");
+		for (uint i = 0; i < nc.bm_lm_lines.length(); i++) {
+			BuilderLineEntry@ le = nc.bm_lm_lines[i];
+			m.add_item("Line " + (le.idx + 1) + ": " + le.summary, "" + i);
+		}
+		m.add_item("Refresh Line List", "__refresh");
+		m.add_item("Back to Builder Hub", "__back");
+
+		while (m.monitor()) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return;
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__back") return;
+		if (sel == "__refresh") continue;
+		if (sel == "__filter") {
+			menu fm;
+			init_std_menu(fm, "Filter map lines by element type.");
+			string[] flts = {"ALL", "M", "FLOOR", "STAIRS", "P", "W", "Z", "L", "H", "D", "R", "A", "S"};
+			string[] flbl = {"All Lines", "Header (M)", "Floors & Ramps", "Staircases Only", "All Platforms (P)", "Walls (W)", "Zones (Z)", "Water (L)", "Hazards (H)", "Portals (D)", "Resources (R)", "Emitters (A)", "Spawns (S)"};
+			for (uint i = 0; i < flts.length(); i++) fm.add_item(flbl[i], flts[i]);
+			while (fm.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+			if (fm.selected_item_id.length() > 0) cur_filter = fm.selected_item_id;
+			continue;
+		}
+		int ridx = safe_int(sel, 0, int(nc.bm_lm_lines.length()) - 1, -1);
+		if (ridx >= 0) bm_line_actions_menu(nc, cur_m, nc.bm_lm_lines[uint(ridx)]);
+	}
+}
+
+// ------------------------------------------------------------------ STW F8 BUILDER HUB
+
+void bm_switch_map_menu(NetClient@ nc) {
+	menu m;
+	init_std_menu(m, "Switch Active Builder Map. " + nc.bm_maps.length() + " maps on server.");
+	for (uint i = 0; i < nc.bm_maps.length(); i++) {
+		BuilderMapInfo@ mi = nc.bm_maps[i];
+		string act_tag = (mi.slug == nc.bm_active_slug) ? " [Active]" : "";
+		m.add_item(mi.name + act_tag + ", " + mi.width + " by " + mi.height + ", Z " + mi.min_z + " to " + mi.max_z
+			+ ", " + mi.player_count + " players, " + mi.line_count + " lines", mi.slug);
+	}
+	m.add_item("Back", "__back");
+	while (m.monitor()) {
+		wait(5); nc.pump(); g_audio.tick_menu_audio();
+		if (nc.state != CONN_READY) return;
+	}
+	string slug = m.selected_item_id;
+	if (slug.length() == 0 || slug == "__back") return;
+
+	menu actm;
+	init_std_menu(actm, "Select action for map " + slug + ".");
+	actm.add_item("Edit Map Only (Stay at current location)", "edit");
+	actm.add_item("Edit Map and Teleport to Its Spawn", "tp");
+	actm.add_item("Cancel", "__cancel");
+	while (actm.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+	string act = actm.selected_item_id;
+	if (act == "edit" || act == "tp") {
+		uint s_maps = nc.bm_maps_seq;
+		nc.send_control(pkt_build("BUILDMAP", {"select_map", slug, act == "tp" ? "1" : "0"}));
+		bm_wait_seq(nc, s_maps, 0, 1400);
+	}
+}
+
+void run_map_builder_hub(NetClient@ nc) {
+	if (nc.my_rank < RANK_BUILDER) {
+		say("Builder rank or higher is required for Map Builder.", true);
+		return;
+	}
+	while (nc.state == CONN_READY) {
+		uint s_maps = nc.bm_maps_seq;
+		nc.send_control("BUILDMAP|hub_sync");
+		bm_wait_seq(nc, s_maps, 0, 1200);
+		BuilderMapInfo@ cur_m = bm_find_active_info(nc);
+		string cname = @cur_m != null ? cur_m.name : nc.current_map_name;
+		string cline_s = @cur_m != null ? ("" + cur_m.line_count + " lines") : "";
+
+		menu m;
+		init_std_menu(m, "STW Audio Map Builder Hub. Editing " + cname + (cline_s.length() > 0 ? ", " + cline_s : "") + ". %0 options.");
+		m.add_item("Add Element by 6-Axis Box Coordinates (Min/Max X, Y, Z)", "add_box");
+		m.add_item("Line Manager (Browse, Edit, Move, Duplicate, Delete)", "line_mgr");
+		m.add_item("Create New Map", "create_map");
+		m.add_item("Switch Active Map or Teleport to Another Map (" + nc.bm_maps.length() + " maps)", "switch_map");
+		m.add_item("Edit Active Map Properties (Header & Ambience)", "edit_header");
+		m.add_item("Undo Last Map Change", "undo");
+		m.add_item((nc.bm_noclip ? "Disable" : "Enable") + " Builder Noclip Flight (Ignore Walls & Air)", "noclip");
+		m.add_item(nc.map_builder_active ? "Resume Free-Roam Cursor Mode" : "Enter Free-Roam Cursor Mode", "cursor");
+		m.add_item("Open Quick Cursor Palette", "palette");
+		m.add_item("Validate Active Map Integrity", "validate");
+		m.add_item("Save Active Map to Disk (Atomic Backup)", "save");
+		m.add_item("Reload Active Map Live from Disk", "reload");
+		m.add_item("Delete Active Map", "delete_map");
+		m.add_item("Read Audio Map Builder Guide", "guide");
+		m.add_item("Close Builder Hub", "__close");
+
+		while (m.monitor()) {
+			wait(5);
+			nc.pump();
+			g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) return;
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__close") break;
+
+		if (sel == "add_box") bm_add_element_menu(nc, cur_m);
+		else if (sel == "line_mgr") bm_line_manager_menu(nc, cur_m);
+		else if (sel == "create_map") bm_create_map_form(nc);
+		else if (sel == "switch_map") bm_switch_map_menu(nc);
+		else if (sel == "edit_header") bm_edit_header_form(nc, cur_m);
+		else if (sel == "undo") { uint sr = nc.bm_res_seq; nc.send_control("BUILDMAP|undo"); bm_wait_seq(nc, sr, 2, 1500); }
+		else if (sel == "validate") { uint sr = nc.bm_res_seq; nc.send_control("BUILDMAP|validate"); bm_wait_seq(nc, sr, 2, 1500); }
+		else if (sel == "save") { uint sr = nc.bm_res_seq; nc.send_control("BUILDMAP|save"); bm_wait_seq(nc, sr, 2, 1500); }
+		else if (sel == "reload") { uint sr = nc.bm_res_seq; nc.send_control("BUILDMAP|reload"); bm_wait_seq(nc, sr, 2, 1500); }
+		else if (sel == "noclip") { nc.bm_noclip = !nc.bm_noclip; nc.send_control(pkt_3("BUILDMAP", "noclip", nc.bm_noclip ? "1" : "0")); }
+		else if (sel == "cursor") { nc.send_control("BUILDMAP|toggle"); return; }
+		else if (sel == "palette") { if (!nc.map_builder_active) nc.send_control("BUILDMAP|toggle"); run_map_builder_palette(nc); return; }
+		else if (sel == "guide") {
+			run_doc_reader(nc, "Audio Map Builder Guide", "BUILDER_GUIDE.md",
+				"Use F8 to open the STW Builder Hub. Enter 6-axis bounds Min X, Max X, Min Y, Max Y, Min Z, Max Z for floors, staircases, ramps, walls, zones, waters, hazards, and portals.");
+		} else if (sel == "delete_map" && @cur_m != null) {
+			menu cf;
+			init_std_menu(cf, "Permanently archive and remove map " + cur_m.name + " (" + cur_m.slug + ")?");
+			cf.add_item("Cancel", "no");
+			cf.add_item("Yes, delete " + cur_m.slug, "yes");
+			while (cf.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
+			if (cf.selected_item_id == "yes") {
+				uint sr = nc.bm_res_seq;
+				nc.send_control(pkt_3("BUILDMAP", "delete_map", cur_m.slug));
+				bm_wait_seq(nc, sr, 2, 1600);
+			}
+		}
+	}
 }
 
 void run_map_builder_palette(NetClient@ nc) {
 	menu m;
-	init_std_menu(m, "Audio Map Builder Palette at cursor " + nc.b_cx + ", " + nc.b_cy + ", height " + nc.b_cz + ". %0 tools.");
+	init_std_menu(m, "Quick Cursor Builder Palette at cursor " + nc.b_cx + ", " + nc.b_cy + ", height " + nc.b_cz + ". %0 tools.");
+	m.add_item("Open Full STW Builder Hub and Line Manager", "hub");
 	m.add_item("Mark Corner 1 at cursor (M)", "mark");
 	m.add_item("Create Audio Zone", "zone");
 	m.add_item("Place Wall (Wood or Stone)", "wall");
@@ -123,10 +956,9 @@ void run_map_builder_palette(NetClient@ nc) {
 	m.add_item("Place Resource Node (Tree, Rock, Iron, Berry, Herb)", "resource");
 	m.add_item("Place Ambient Sound Emitter Landmark", "emitter");
 	m.add_item("Place Spawn Point", "spawn");
-	m.add_item("Erase Object at Cursor", "erase");
 	m.add_item("Validate and Save .map File (Ctrl+S)", "save");
 	m.add_item("Reload Saved Map Live on Server", "reload");
-	m.add_item("Exit Map Builder Mode", "exit");
+	m.add_item("Exit Cursor Mode", "exit");
 
 	while (m.monitor()) {
 		wait(5);
@@ -137,8 +969,8 @@ void run_map_builder_palette(NetClient@ nc) {
 	string cmd = m.selected_item_id;
 	if (cmd.length() == 0) return;
 
+	if (cmd == "hub") { run_map_builder_hub(nc); return; }
 	if (cmd == "mark") { nc.send_control("BUILDMAP|mark"); return; }
-	if (cmd == "erase") { nc.send_control("BUILDMAP|erase"); return; }
 	if (cmd == "save") { nc.send_control("BUILDMAP|save"); return; }
 	if (cmd == "reload") { nc.send_control("BUILDMAP|reload"); return; }
 	if (cmd == "exit") { nc.send_control("BUILDMAP|toggle"); return; }
@@ -151,11 +983,10 @@ void run_map_builder_palette(NetClient@ nc) {
 		string amb = "ambience/forest_day.ogg";
 		if (surf == "stone") amb = "ambience/wind_gust.ogg";
 		else if (surf == "water") amb = "ambience/river_loop.ogg";
-		else if (surf == "wood") amb = "ambience/settlement_hearth.ogg";
-		nc.send_control(pkt_build("BUILDMAP", {"zone", wire_escape(zname), surf, amb, surf == "wood" ? "1" : "0"}));
+		else if (surf == "wood" || surf == "carpet") amb = "ambience/indoor_room.ogg";
+		nc.send_control(pkt_build("BUILDMAP", {"zone", wire_escape(zname), surf, amb, (surf == "wood" || surf == "carpet") ? "1" : "0"}));
 		return;
 	}
-
 	if (cmd == "wall") {
 		menu wm;
 		init_std_menu(wm, "Choose wall material.");
@@ -167,7 +998,6 @@ void run_map_builder_palette(NetClient@ nc) {
 		nc.send_control(pkt_build("BUILDMAP", {"wall", wire_escape("Custom Wall"), wp[0], wp[1]}));
 		return;
 	}
-
 	if (cmd == "platform") {
 		menu pm;
 		init_std_menu(pm, "Choose platform or ramp type.");
@@ -183,12 +1013,10 @@ void run_map_builder_palette(NetClient@ nc) {
 		nc.send_control(pkt_build("BUILDMAP", {"platform", wire_escape("Builder Platform"), pp[0], pp[1], pp[2], pp[3]}));
 		return;
 	}
-
 	if (cmd == "water") {
 		nc.send_control(pkt_build("BUILDMAP", {"water", wire_escape("Stream"), "shallow"}));
 		return;
 	}
-
 	if (cmd == "resource") {
 		menu rm;
 		init_std_menu(rm, "Choose resource type to spawn at cursor.");
@@ -202,13 +1030,12 @@ void run_map_builder_palette(NetClient@ nc) {
 		nc.send_control(pkt_build("BUILDMAP", {"resource", rm.selected_item_id, "4", "45"}));
 		return;
 	}
-
 	if (cmd == "emitter") {
 		menu em;
 		init_std_menu(em, "Choose ambient 3D emitter sound.");
-		em.add_item("River Water Loop", "River:ambience/river_loop.ogg");
-		em.add_item("Settlement Hearth Loop", "Hearth:ambience/settlement_hearth.ogg");
-		em.add_item("Wind Gust Loop", "Wind:ambience/wind_gust.ogg");
+		for (uint i = 0; i < g_builder_amb_paths.length(); i++) {
+			em.add_item(g_builder_amb_labels[i], g_builder_amb_labels[i] + ":" + g_builder_amb_paths[i]);
+		}
 		em.add_item("Audio Beacon Ping", "Beacon:builder/beacon_ping.ogg");
 		while (em.monitor()) { wait(5); nc.pump(); }
 		if (em.selected_item_id.length() == 0) return;
@@ -216,7 +1043,6 @@ void run_map_builder_palette(NetClient@ nc) {
 		nc.send_control(pkt_build("BUILDMAP", {"emitter", wire_escape(ep[0]), ep[1], "24", "0.65"}));
 		return;
 	}
-
 	if (cmd == "spawn") {
 		string sname;
 		if (!show_text_prompt("New Spawn Point", "Spawn label", "Outpost", sname, 32)) return;

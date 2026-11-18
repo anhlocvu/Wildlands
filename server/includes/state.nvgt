@@ -1,4 +1,4 @@
-// Shared authoritative server state, session structures, and network helper methods.
+// Shared authoritative server state, multi-map MapInstance, session structures, and network helper methods.
 
 #include "../../common/map.nvgt"
 #include "../../common/items.nvgt"
@@ -11,6 +11,7 @@ const uint AI_ROAM = 1;
 const uint AI_FLEE = 2;
 const uint AI_STALK = 3;
 const uint AI_WINDUP = 4;
+const uint MAX_UNDO_STEPS = 15;
 
 class PlayerSession {
 	uint64 peer_id = 0;
@@ -23,11 +24,16 @@ class PlayerSession {
 
 	string name = "";
 	int rank = RANK_PLAYER;
+	string current_map = "wildlands_valley";
 	double x = 50.0, y = 46.0, z = 0.0;
 	double vx = 0.0, vy = 0.0, vz = 0.0;
 	int facing = 0;
 	bool on_ground = true;
 	double fall_start_z = 0.0;
+	bool fall_air_sfx_sent = false;
+	uint64 fracture_until_ms = 0;
+	uint64 last_climb_ms = 0;
+	uint64 last_hazard_ms = 0;
 
 	int hp = 100;
 	int hunger = 100;
@@ -56,6 +62,8 @@ class PlayerSession {
 	int belt_slot = 0;
 
 	bool builder_mode = false;
+	bool builder_noclip = false;
+	string builder_edit_map = "wildlands_valley";
 	int builder_cx = 50, builder_cy = 46, builder_cz = 0;
 	bool builder_has_mark = false;
 	int builder_mx = 0, builder_my = 0, builder_mz = 0;
@@ -69,6 +77,10 @@ class PlayerSession {
 	uint64 grace_until_ms = 0;
 	uint64 join_ms = 0;
 	uint64 last_playtime_ms = 0;
+
+	bool is_fractured(uint64 now_ms) const {
+		return fracture_until_ms > now_ms;
+	}
 
 	void init_starter_inv() {
 		inv.resize(0);
@@ -193,12 +205,35 @@ class WildlifeMob {
 	bool is_bot = false;
 }
 
+class MapInstance {
+	string slug;
+	string file_path;
+	WorldMap map;
+	ResourceNode@[] nodes;
+	WildlifeMob@[] mobs;
+	LootDrop@[] drops;
+	ArrowProjectile@[] arrows;
+	string[][] undo_history;
+
+	void push_undo() {
+		string[] snap = map.raw_lines;
+		undo_history.insert_last(snap);
+		while (undo_history.length() > MAX_UNDO_STEPS) {
+			undo_history.remove_at(0);
+		}
+	}
+}
+
 class ServerCtx {
 	network@ net = null;
 	ServerLogger logger;
 	AccountStore accounts;
-	WorldMap map;
+	StaffReportStore report_store;
+
+	MapInstance@[] maps;
+	string default_map_slug = "wildlands_valley";
 	string active_map_path = "maps/wildlands_valley.map";
+	string maps_dir = "maps";
 	string data_dir = "data";
 	string objects_db_path = "data/world_objects.dat";
 
@@ -206,29 +241,74 @@ class ServerCtx {
 	bool test_mode = false;
 	bool allow_guests = false;
 	bool headless = false;
+	bool maintenance_mode = false;
+	uint64 bind_delay_ms = 0;
 	int target_wildlife = 12;
 	int target_bots = 0;
 	int guest_seq = 1;
 	uint64 next_entity_id = 1;
 	uint64 tick_count = 0;
+	uint64 started_ms = 0;
+	uint64 worst_tick_ms_report = 0;
+
+	// Shutdown / Restart lifecycle
+	bool shutdown_pending = false;
+	bool restart_pending = false;
+	uint64 shutdown_at_ms = 0;
+	uint64 next_shutdown_announce_ms = 0;
+	string shutdown_reason = "";
 
 	// Environment & News
 	string server_name = "Wildlands Valley Official";
 	string motd = "Welcome to Wildlands Online!";
 	string[] changelog;
-	int cycle_sec = 300; // starts mid-morning
+	int cycle_sec = 300;
 	bool is_night = false;
 	bool is_raining = false;
 	uint64 next_weather_ms = 0;
 	uint64 next_autosave_ms = 0;
 
 	PlayerSession@[] sessions;
-	ResourceNode@[] nodes;
 	WorldStructure@[] structures;
-	LootDrop@[] drops;
-	ArrowProjectile@[] arrows;
-	WildlifeMob@[] mobs;
 	bool objects_dirty = false;
+
+	MapInstance@ find_map(const string&in key) {
+		string low = key.trim_whitespace().lower();
+		if (low.length() == 0) return null;
+		for (uint i = 0; i < maps.length(); i++) {
+			if (maps[i].slug.lower() == low || maps[i].map.name.lower() == low) return maps[i];
+		}
+		return null;
+	}
+
+	MapInstance@ default_map() {
+		MapInstance@ m = find_map(default_map_slug);
+		if (@m != null) return m;
+		return maps.length() > 0 ? maps[0] : null;
+	}
+
+	MapInstance@ player_map(PlayerSession@ ps) {
+		if (@ps != null) {
+			MapInstance@ m = find_map(ps.current_map);
+			if (@m != null) return m;
+		}
+		return default_map();
+	}
+
+	bool struct_on_map(WorldStructure@ st, MapInstance@ mi) {
+		if (@st == null || @mi == null) return false;
+		string sn = st.map_name.lower();
+		return sn == mi.slug.lower() || sn == mi.map.name.lower();
+	}
+
+	int count_players_on_map(const string&in slug) {
+		string low = slug.lower();
+		int c = 0;
+		for (uint i = 0; i < sessions.length(); i++) {
+			if (sessions[i].authed && sessions[i].peer_id != 0 && sessions[i].current_map.lower() == low) c++;
+		}
+		return c;
+	}
 
 	PlayerSession@ find_session_by_peer(uint64 peer_id) {
 		if (peer_id == 0) return null;
@@ -266,17 +346,39 @@ class ServerCtx {
 		}
 	}
 
+	void broadcast_speech_map(const string&in map_slug, uint buf_ch, bool interrupt, const string&in text) {
+		string pkt = pkt_4("SPEAK", "" + buf_ch, interrupt ? "1" : "0", wire_escape(text));
+		for (uint i = 0; i < sessions.length(); i++) {
+			PlayerSession@ p = sessions[i];
+			if (p.authed && p.peer_id != 0 && p.current_map.lower() == map_slug.lower()) {
+				send_ch(p.peer_id, CH_SPEECH, pkt, true);
+			}
+		}
+	}
+
+	void broadcast_staff_speech(const string&in text, bool with_alert = false) {
+		string pkt = pkt_4("SPEAK", "" + MBUF_SYSTEM, "0", wire_escape(text));
+		for (uint i = 0; i < sessions.length(); i++) {
+			PlayerSession@ p = sessions[i];
+			if (p.authed && p.peer_id != 0 && p.rank >= RANK_MOD) {
+				send_ch(p.peer_id, CH_SPEECH, pkt, true);
+				if (with_alert) send_sfx_to(p, "self", "ui/staff_alert.ogg", p.x, p.y, p.z, 0.8);
+			}
+		}
+	}
+
 	void send_sfx_to(PlayerSession@ ps, const string&in layer, const string&in sfx, double sx, double sy, double sz, double vol = 1.0) {
 		if (@ps == null || ps.peer_id == 0) return;
 		string pkt = pkt_build("SFX", {layer, sfx, fmt2(sx), fmt2(sy), fmt2(sz), fmt2(vol), "1"});
 		send_ch(ps.peer_id, CH_AUDIO, pkt, true);
 	}
 
-	void broadcast_sfx_3d(const string&in layer, const string&in sfx, double sx, double sy, double sz, double vol = 1.0, double max_dist = EARSHOT_RADIUS) {
+	void broadcast_sfx_3d(const string&in map_slug, const string&in layer, const string&in sfx, double sx, double sy, double sz, double vol = 1.0, double max_dist = EARSHOT_RADIUS) {
 		string pkt = pkt_build("SFX", {layer, sfx, fmt2(sx), fmt2(sy), fmt2(sz), fmt2(vol), "1"});
+		string mlow = map_slug.lower();
 		for (uint i = 0; i < sessions.length(); i++) {
 			PlayerSession@ ps = sessions[i];
-			if (!ps.authed || ps.peer_id == 0) continue;
+			if (!ps.authed || ps.peer_id == 0 || ps.current_map.lower() != mlow) continue;
 			if (get_3d_distance(ps.x, ps.y, ps.z, sx, sy, sz) <= max_dist) {
 				send_ch(ps.peer_id, CH_AUDIO, pkt, true);
 			}
@@ -307,16 +409,22 @@ class ServerCtx {
 
 	void broadcast_obj(const string&in op, WorldStructure@ st) {
 		string pkt = "MAP_OBJ|" + op + "|" + encode_obj(st);
+		MapInstance@ mi = find_map(st.map_name);
+		string slug_l = @mi != null ? mi.slug.lower() : st.map_name.lower();
 		for (uint i = 0; i < sessions.length(); i++) {
-			if (sessions[i].authed && sessions[i].peer_id != 0) send_ch(sessions[i].peer_id, CH_CONTROL, pkt, true);
+			PlayerSession@ p = sessions[i];
+			if (p.authed && p.peer_id != 0 && p.current_map.lower() == slug_l) {
+				send_ch(p.peer_id, CH_CONTROL, pkt, true);
+			}
 		}
 	}
 
-	void sync_map_occluders() {
-		map.dyn_occluders.resize(0);
+	void sync_map_occluders(MapInstance@ mi) {
+		if (@mi == null) return;
+		mi.map.dyn_occluders.resize(0);
 		for (uint i = 0; i < structures.length(); i++) {
 			WorldStructure@ st = structures[i];
-			if (st.map_name != map.name) continue;
+			if (!struct_on_map(st, mi)) continue;
 			StructDef@ def = find_struct(st.type);
 			if (@def == null) continue;
 			DynOccluder occ;
@@ -326,9 +434,14 @@ class ServerCtx {
 			occ.height = def.height;
 			occ.blocks_move = def.blocks_move && !(def.is_door && st.is_open);
 			occ.occludes_sound = def.occludes_sound && !(def.is_door && st.is_open);
+			occ.is_floor = (st.type == "wood_floor");
 			occ.material = "wood";
-			map.dyn_occluders.insert_last(occ);
+			mi.map.dyn_occluders.insert_last(occ);
 		}
+	}
+
+	void sync_all_map_occluders() {
+		for (uint i = 0; i < maps.length(); i++) sync_map_occluders(maps[i]);
 	}
 
 	void load_soft_data() {
@@ -359,11 +472,23 @@ class ServerCtx {
 	}
 
 	bool send_map_sync(PlayerSession@ ps) {
-		string ser = map.serialize();
+		MapInstance@ mi = player_map(ps);
+		if (@mi == null) return false;
+		ps.current_map = mi.slug;
+		string ser = mi.map.serialize();
 		string esc = wire_escape(ser);
 		uint chunks = (esc.length() + uint(MAP_CHUNK_BYTES) - 1) / uint(MAP_CHUNK_BYTES);
 		if (chunks == 0) chunks = 1;
-		send_control(ps, pkt_build("MAP_HDR", {wire_escape(map.name), "" + map.width, "" + map.height, "" + map.max_z, map.default_surface, "" + chunks}));
+		send_control(ps, pkt_build("MAP_HDR", {
+			wire_escape(mi.slug),
+			wire_escape(mi.map.name),
+			"" + mi.map.width,
+			"" + mi.map.height,
+			"" + mi.map.min_z,
+			"" + mi.map.max_z,
+			mi.map.default_surface,
+			"" + chunks
+		}));
 		for (uint i = 0; i < chunks; i++) {
 			uint start = i * uint(MAP_CHUNK_BYTES);
 			uint len = start + uint(MAP_CHUNK_BYTES) <= esc.length() ? uint(MAP_CHUNK_BYTES) : esc.length() - start;
@@ -375,7 +500,7 @@ class ServerCtx {
 			send_control(ps, pkt);
 		}
 		for (uint i = 0; i < structures.length(); i++) {
-			if (structures[i].map_name == map.name) {
+			if (struct_on_map(structures[i], mi)) {
 				send_control(ps, "MAP_OBJ|add|" + encode_obj(structures[i]));
 			}
 		}

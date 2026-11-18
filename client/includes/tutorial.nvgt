@@ -9,9 +9,10 @@ void run_interactive_tutorial(ClientProfile@ prof) {
 	g_audio.set_menu_music(false);
 	WorldMap tut_map;
 	string err;
-	string raw = "NAME=Tutorial Clearing\nWIDTH=30\nHEIGHT=30\nMAXZ=10\nSURFACE=grass\n"
-		+ "ZONE|Timber Path|8|4|16|12|dirt|ambience/forest_day.ogg|1\n"
-		+ "WALL|North Stone Wall|6|20|18|22|0|4|stone\n";
+	string raw = "M|Tutorial Clearing|30|30|-5|10|grass|ambience/forest_day.ogg|1\n"
+		+ "P|Clearing Ground|0|0|30|30|0|0|grass|floor|0|y|1\n"
+		+ "Z|Timber Path|8|4|16|12|-5|10|dirt|ambience/forest_day.ogg|1\n"
+		+ "W|North Stone Wall|6|20|18|22|0|4|stone|1\n";
 	tut_map.load_from_string(raw, err);
 
 	double px = 12.0, py = 6.0, pz = 0.0;
@@ -120,16 +121,16 @@ void run_interactive_tutorial(ClientProfile@ prof) {
 		} else if (stage == 2 && dist_fire <= 2.4) {
 			stage = 3;
 			g_audio.play_ui_cue("multi/level_up.ogg", 0.75f);
-			say("Nice! Step 4: Press V to send an acoustic sonar ping and detect nearby stone walls, or T to scan landmarks.", true);
-		} else if (stage == 3 && (prof.key_pressed_bind("sonar") || prof.key_pressed_bind("scanner"))) {
+			say("Nice! Step 4: Press V to send an acoustic sonar ping and detect nearby stone walls, or Equals to browse nearby tracker targets.", true);
+		} else if (stage == 3 && (prof.key_pressed_bind("sonar") || prof.key_pressed_bind("trk_next") || prof.key_pressed_bind("trk_prev"))) {
 			g_audio.play_world_sfx("self", "ui/sonar_ping.ogg", 12.0, 20.0, 0.0, 0.9f, false);
 			stage = 4;
 			add_buffer(BUF_CHAT, "Tutorial Guide says: Welcome to chat buffers!");
 			add_buffer(BUF_SYSTEM, "System tip: Use comma and period to switch buffer channels.");
 			say("Sonar detected the north stone wall! Final step: Press Comma or Period to browse your message buffers.", true);
 		} else if (stage == 4) {
-			if (prof.key_pressed_bind("buf_prev") || key_pressed(KEY_PAGEUP)) { buffer_left(); bufs_switched = true; }
-			if (prof.key_pressed_bind("buf_next") || key_pressed(KEY_PAGEDOWN)) { buffer_right(); bufs_switched = true; }
+			if (prof.key_pressed_bind("buf_prev")) { buffer_left(); bufs_switched = true; }
+			if (prof.key_pressed_bind("buf_next")) { buffer_right(); bufs_switched = true; }
 			if (bufs_switched) {
 				stage = 5;
 				prof.tutorial_done = true;

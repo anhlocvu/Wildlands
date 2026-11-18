@@ -46,6 +46,8 @@ class TestBot {
 	double x = 0.0, y = 0.0, z = 0.0;
 	int facing = 0;
 	int hp = 100, hunger = 100, thirst = 100, stamina = 100, warmth = 100;
+	bool fractured = false;
+	string cur_map = "wildlands_valley";
 	bool snap_ok = false;
 
 	WorldMap map;
@@ -158,8 +160,15 @@ class TestBot {
 			name = field(p, 1, "");
 			rank = safe_int(field(p, 2, "0"), 0, 10, 0);
 			token = field(p, 3, "-");
+		} else if (ch == CH_CONTROL && op == "MAP_TRANSFER") {
+			cur_map = wire_unescape(field(p, 1, "wildlands_valley"));
+			x = safe_double(field(p, 3, "50"), 0.0, 5000.0, x);
+			y = safe_double(field(p, 4, "50"), 0.0, 5000.0, y);
+			z = safe_double(field(p, 5, "0"), -100.0, 500.0, z);
+			map_ok = false;
+			snap_ents.resize(0);
 		} else if (ch == CH_CONTROL && op == "MAP_HDR") {
-			expected_chunks = uint(safe_int(field(p, 6, "1"), 1, 256, 1));
+			expected_chunks = uint(safe_int(field(p, 8, "1"), 1, 256, 1));
 			chunks.resize(expected_chunks);
 			for (uint i = 0; i < expected_chunks; i++) chunks[i] = "";
 			map_ok = false;
@@ -202,8 +211,9 @@ class TestBot {
 			thirst = safe_int(field(p, 8, "100"), 0, 100, 100);
 			stamina = safe_int(field(p, 9, "100"), 0, 100, 100);
 			warmth = safe_int(field(p, 10, "100"), 0, 100, 100);
+			fractured = field(p, 14, "0") == "1";
 			snap_ents.resize(0);
-			string raw_e = field(p, 14, "-");
+			string raw_e = field(p, 15, "-");
 			if (raw_e != "-" && raw_e.length() > 0) {
 				string[]@ rows = split_keep_empty(raw_e, ";");
 				for (uint i = 0; i < rows.length(); i++) {
@@ -458,10 +468,12 @@ void run_phase_1(const string&in host, uint16 port) {
 	}
 
 	// Verify Safe Zone blocks PvP, while outside Safe Zone Duel + Blocking + Respawn work!
+	dev.send_ctrl("STAFF|act|heal|TestDev");
 	dev.send_ctrl("DEV|tp|TestDev|50|46|0");
 	dev.send_ctrl("DEV|tp|Bob|50|47|0");
 	pump_pair(dev, bob, alice, 200);
-	dev.send_ctrl("ACT|equip|0");
+	int axe2 = dev.inv_slot_of("stone_axe");
+	dev.send_ctrl("ACT|equip|" + (axe2 >= 0 ? axe2 : 0));
 	dev.send_input(0, 0);
 	dev.drain(80);
 	dev.send_ctrl("ACT|attack");
@@ -490,10 +502,11 @@ void run_phase_1(const string&in host, uint16 port) {
 
 	// Finish duel without block -> Bob respawns back at safe spawn with 100 HP!
 	bob.send_input(0, 180);
-	for (int s = 0; s < 12 && !has_msg_containing(bob, "Respawned"); s++) {
+	pump_pair(dev, bob, null, 80);
+	for (int s = 0; s < 14 && !has_msg_containing(bob, "Respawned"); s++) {
 		pump_pair(dev, bob, null, 700);
 		dev.send_ctrl("ACT|attack");
-		pump_pair(dev, bob, null, 150);
+		pump_pair(dev, bob, null, 200);
 	}
 	assert_true(has_msg_containing(bob, "Respawned") && bob.hp == 100, "Defeated player respawned safely at 100 HP");
 
@@ -574,6 +587,101 @@ void run_phase_1(const string&in host, uint16 port) {
 	dev.send_ctrl("BUILDMAP|emitter|CheckBeacon|builder/beacon_ping.ogg|18|0.7");
 	assert_true(alice.wait_for_op(CH_CONTROL, "MAP_HDR|", 2500) != "", "Live Map Builder edit reloaded map across clients");
 
+	// 5B. v2 Verticality (Stairs with Builder-Selected Surface, Air Fall Trauma & Splint Cure),
+	// Multi-Map Portal Transfer, STW F8 Hub (create_map, 6-axis add_box, Line Manager, undo, validate, save),
+	// and Staff Panel (ST_OVERVIEW, /report, reports_list, report_resolve, /sc, lifecycle refusal & cancel)
+	println("[Phase 1] Verifying v2 verticality, stair surface footsteps, air fall fracture/splint, multi-map portals, Builder F8 & Staff...");
+	dev.send_ctrl("STAFF|act|clear_inv|Bob");
+	dev.send_ctrl("STAFF|act|give_item|Bob|splint|1");
+	dev.send_ctrl("STAFF|act|heal|Bob");
+	dev.send_ctrl("DEV|tp|Bob|37|58|0");
+	pump_pair(dev, bob, null, 250);
+	bob.log.resize(0);
+	for (int cs = 0; cs < 3; cs++) {
+		bob.send_ctrl("ACT|climb|up");
+		bob.drain(230);
+	}
+	assert_true(bob.z >= 1.5, "Bob climbed High Lookout Stairs via PageUp (z=" + fmt2(bob.z) + ")");
+	assert_true(has_msg_containing(bob, "steps/wood_"), "Stair climb played builder-selected wood surface footstep");
+
+	// Step off High Lookout Deck (z=12) at West edge (x=32) into open Air and cure fracture with Splint
+	dev.send_ctrl("DEV|tp|Bob|32.3|58|12");
+	pump_pair(dev, bob, null, 250);
+	bob.log.resize(0);
+	timer fall_t;
+	while (fall_t.elapsed < 1600) {
+		bob.send_input(IN_FWD, 270);
+		bob.drain(40);
+		if (bob.z <= 0.25 && fall_t.elapsed > 400) break;
+	}
+	bob.send_input(0, 270);
+	bob.drain(250);
+	assert_true(bob.z <= 0.3 && bob.hp < 100 && bob.fractured, "Air fall from z=12 damaged & fractured Bob (hp=" + bob.hp + ", z=" + fmt2(bob.z) + ")");
+	assert_true(has_msg_containing(bob, "combat/bone_break.ogg"), "Severe air fall played bone_break sound");
+	bob.send_ctrl("ACT|equip|0");
+	bob.drain(80);
+	bob.send_ctrl("ACT|use_belt");
+	bob.drain(200);
+	assert_true(!bob.fractured, "Wooden Splint cured Bob's bone fracture");
+	dev.send_ctrl("STAFF|act|heal|Bob");
+	pump_pair(dev, bob, null, 150);
+
+	// Multi-map portal travel to skywatch_citadel & back
+	dev.send_ctrl("STAFF|tp_loc|wildlands_valley|61.5|61.5|0");
+	dev.drain(200);
+	dev.log.resize(0);
+	dev.send_ctrl("ACT|interact");
+	assert_true(dev.wait_for_op(CH_CONTROL, "MAP_TRANSFER|skywatch_citadel|", 2500) != "", "Portal transferred Dev to skywatch_citadel");
+	assert_true(dev.wait_for_op(CH_CONTROL, "MAP_HDR|skywatch_citadel|", 2500) != "", "Received skywatch_citadel MAP_HDR");
+	dev.drain(300);
+	assert_true(dev.cur_map == "skywatch_citadel" && dev.map_ok, "Dev loaded skywatch_citadel live");
+	dev.send_ctrl("STAFF|tp_loc|wildlands_valley|80|80|0");
+	assert_true(dev.wait_for_op(CH_CONTROL, "MAP_TRANSFER|wildlands_valley|", 2500) != "", "Teleported Dev back to wildlands_valley");
+	dev.drain(250);
+
+	// STW Builder F8 create_map, 6-axis add_box, Line Manager, undo, validate, save
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|create_map|e2e_arena|E2E Arena|80|80|-10|20|carpet|ambience/indoor_room.ogg|1|40|40|0");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Builder created e2e_arena map");
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|add_box|stairs|Carpet Steps|20|24|20|24|0|8|carpet|0|y|1");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Added 6-axis carpet stairs box");
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|lm_list|STAIRS");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_LM_HDR|e2e_arena|", 2500) != "", "Line Manager header received");
+	dev.drain(150);
+	assert_true(has_msg_containing(dev, "Carpet Steps"), "Line Manager listed Carpet Steps");
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|undo");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Builder undo succeeded");
+	dev.send_ctrl("BUILDMAP|validate");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Builder validate succeeded");
+	dev.send_ctrl("BUILDMAP|save");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Builder save succeeded");
+	dev.send_ctrl("BUILDMAP|select_map|wildlands_valley|0");
+	dev.drain(150);
+
+	// Staff overview, /report, reports_list, report_resolve, non-dev lifecycle refusal & cancel
+	dev.log.resize(0);
+	dev.send_ctrl("STAFF|overview");
+	assert_true(dev.wait_for_op(CH_CONTROL, "ST_OVERVIEW|", 2500) != "", "Staff overview packet received");
+	bob.send_ctrl("REPORT|Alice|" + wire_escape("Needs unstuck help"));
+	dev.drain(150);
+	dev.log.resize(0);
+	dev.send_ctrl("STAFF|reports_list");
+	string rep_pkt = dev.wait_for_op(CH_CONTROL, "ST_REPORTS|", 2500);
+	assert_true(rep_pkt != "", "Staff received reports list");
+	assert_true(rep_pkt.find("Needs unstuck help") >= 0, "Submitted report appears in ST_REPORTS");
+	dev.send_ctrl("STAFF|report_resolve|1");
+	alice.log.resize(0);
+	dev.send_ctrl("STAFF|lifecycle|shutdown|15|TestCountdown");
+	pump_pair(alice, dev, null, 250);
+	assert_true(has_msg_containing(alice, "shutting down in 15"), "Lifecycle shutdown broadcast reached players");
+	alice.log.resize(0);
+	dev.send_ctrl("STAFF|lifecycle|cancel");
+	pump_pair(alice, dev, null, 250);
+	assert_true(has_msg_containing(alice, "cancelled"), "Lifecycle shutdown cancelled cleanly");
+
 	// 6. Scoped Chat (Local Earshot Isolation, Team, Emote, PM+/r), Social Profile/Leaderboard, Friends & Unblock, Ranked Mod
 	dev.send_ctrl("DEV|tp|Alice|80|80|0");
 	dev.send_ctrl("DEV|tp|TestDev|81|80|0");
@@ -616,6 +724,17 @@ void run_phase_1(const string&in host, uint16 port) {
 	dev.send_ctrl("DEV|grant_rank|Alice|2");
 	dev.send_ctrl("DEV|grant_rank|Bob|2");
 	pump_pair(alice, dev, bob, 200);
+
+	alice.log.resize(0);
+	alice.send_ctrl("STAFF|lifecycle|shutdown|5|hack");
+	alice.drain(150);
+	assert_true(has_msg_containing(alice, "Developer allowlist required"), "Non-allowlisted Mod refused lifecycle shutdown");
+
+	alice.log.resize(0);
+	dev.log.resize(0);
+	alice.send_chat("CHAT|staff|-|Mod status ready");
+	pump_pair(alice, dev, null, 250);
+	assert_true(has_msg_containing(dev, "CHAT_MSG|staff|Alice|"), "Staff chat /sc delivered to Dev");
 
 	alice.log.resize(0);
 	alice.send_ctrl("MOD|kick|Bob|sideways");
@@ -707,11 +826,26 @@ void run_phase_2(const string&in host, uint16 port) {
 	alice.send_ctrl("PING|98765");
 	assert_true(alice.wait_for_op(CH_CONTROL, "PONG|98765", 2500) != "", "PING/PONG echoed timestamp");
 
+	// Verify Staff Account Directory distinguishes Online (Alice) vs Offline Last Seen (Bob),
+	// then test LOGOUT token revocation and clean Developer Lifecycle Shutdown!
+	dev.log.resize(0);
+	dev.send_ctrl("STAFF|accounts|all");
+	string acc_pkt = dev.wait_for_op(CH_CONTROL, "ST_ACC_CHK|", 2500);
+	assert_true(acc_pkt != "", "Staff accounts directory loaded");
+	assert_true(acc_pkt.find("Alice,2,1,") >= 0 && acc_pkt.find("Bob,2,0,") >= 0, "ST_ACC_CHK reports Alice online=1 and Bob online=0");
+	dev.log.resize(0);
+	dev.send_ctrl("STAFF|acc_detail|Bob");
+	string bob_det = dev.wait_for_op(CH_CONTROL, "ST_DETAIL|", 2500);
+	assert_true(bob_det.find("Offline") >= 0 && bob_det.find("last seen") >= 0, "Offline Bob detail shows Last seen");
+	dev.log.resize(0);
+	dev.send_ctrl("STAFF|acc_detail|Alice");
+	string alice_det = dev.wait_for_op(CH_CONTROL, "ST_DETAIL|", 2500);
+	assert_true(alice_det.find("Status: Online") >= 0, "Online Alice detail shows Online status");
+
 	// LOGOUT revokes token
 	alice.send_ctrl("LOGOUT");
 	alice.drain(200);
 	alice.close();
-	dev.close();
 
 	TestBot@ revoked = TestBot("Revoked");
 	assert_true(revoked.connect_and_hello(host, port), "Revoked WELCOME");
@@ -719,7 +853,14 @@ void run_phase_2(const string&in host, uint16 port) {
 	assert_true(revoked.wait_for_op(CH_CONTROL, "AUTH_ERR|", 2500) != "", "LOGOUT invalidated Phase 1 token");
 	revoked.close();
 
-	println("PASS: Phase 2 persistence, ban/unban, WHO numeric rank & token revocation checks succeeded!");
+	// Developer triggers real 1-second graceful shutdown so harness verifies exit code 0!
+	dev.log.resize(0);
+	dev.send_ctrl("STAFF|lifecycle|shutdown|1|E2E_Complete");
+	dev.drain(350);
+	assert_true(has_msg_containing(dev, "shutting down"), "Dev scheduled 1s graceful shutdown");
+	dev.close();
+
+	println("PASS: Phase 2 persistence, ban/unban, Staff online/last-seen, token revocation & graceful shutdown queued!");
 }
 
 void main() {

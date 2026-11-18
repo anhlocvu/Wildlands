@@ -23,7 +23,7 @@ void chat_dispatch_line(NetClient@ nc, const string&in raw) {
 	string body = (sp < 0 ? "" : rest.substr(uint(sp) + 1)).trim_whitespace();
 
 	if (cmd == "help" || cmd == "?") {
-		say("Chat commands: message for global, slash pm name message, slash r message to reply, slash local message, slash team message, slash emote action, slash who, slash ping.", true);
+		say("Chat commands: message for global, slash pm name message, slash r message to reply, slash local message, slash team message, slash emote action, slash report message, slash sc staff message, slash who, slash ping.", true);
 		return;
 	}
 	if (cmd == "who") { nc.request_who(true); return; }
@@ -88,6 +88,37 @@ void chat_dispatch_line(NetClient@ nc, const string&in raw) {
 	if (cmd == "emote" || cmd == "me") {
 		if (body.length() == 0) return;
 		nc.send_chat_pkt(pkt_4("CHAT", "emote", "-", wire_escape(body)));
+		g_audio.play_ui_cue("ui/chat_send.ogg", 0.75f);
+		return;
+	}
+
+	if (cmd == "sc" || cmd == "staff") {
+		if (body.length() == 0) {
+			g_audio.play_ui_cue("error.ogg", 0.8f);
+			say("Usage: slash sc message.", true);
+			return;
+		}
+		nc.send_chat_pkt(pkt_4("CHAT", "staff", "-", wire_escape(body)));
+		g_audio.play_ui_cue("ui/staff_alert.ogg", 0.75f);
+		return;
+	}
+
+	if (cmd == "report") {
+		if (body.length() == 0) {
+			g_audio.play_ui_cue("error.ogg", 0.8f);
+			say("Usage: slash report description of issue.", true);
+			return;
+		}
+		string r_tgt = "";
+		string r_msg = body;
+		if (body.starts_with("@")) {
+			int sp2 = body.find(" ");
+			if (sp2 > 1) {
+				r_tgt = sanitize_name(body.substr(1, uint(sp2 - 1)));
+				r_msg = body.substr(uint(sp2) + 1).trim_whitespace();
+			}
+		}
+		nc.send_control(pkt_3("REPORT", r_tgt, wire_escape(r_msg)));
 		g_audio.play_ui_cue("ui/chat_send.ogg", 0.75f);
 		return;
 	}

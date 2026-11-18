@@ -1,4 +1,5 @@
-// Server chat routing, rate limits, mute/block checks, WHO, PING, friends, duels, profiles, leaderboard.
+// Server chat routing, staff chat (/sc), player reports (/report), rate limits,
+// mute/block checks, map-scoped local chat, WHO, PING, friends, duels, profiles, leaderboard.
 
 #include "wildlife.nvgt"
 
@@ -35,6 +36,20 @@ void chat_handle_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 n
 	ps.last_chat_ms = now_ms;
 	string sender_low = ps.name.lower();
 
+	if (scope == "staff") {
+		if (ps.rank < RANK_BUILDER) {
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Staff chat is restricted to Builder rank and above.");
+			return;
+		}
+		for (uint i = 0; i < ctx.sessions.length(); i++) {
+			PlayerSession@ other = ctx.sessions[i];
+			if (!other.authed || other.peer_id == 0 || other.rank < RANK_BUILDER) continue;
+			chat_send_msg(ctx, other, "staff", ps.name, ps.rank, text);
+		}
+		ctx.logger.log("STAFF_CHAT", ps.name + ": " + text);
+		return;
+	}
+
 	if (scope == "pm") {
 		if (target == "r" && ps.last_pm_sender.length() > 0) target = ps.last_pm_sender;
 		PlayerSession@ dest = ctx.find_session_by_name(target);
@@ -56,7 +71,7 @@ void chat_handle_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 n
 	if (scope == "local" || scope == "emote") {
 		for (uint i = 0; i < ctx.sessions.length(); i++) {
 			PlayerSession@ other = ctx.sessions[i];
-			if (!other.authed || other.peer_id == 0) continue;
+			if (!other.authed || other.peer_id == 0 || other.current_map != ps.current_map) continue;
 			if (@other != @ps && player_is_blocking(other, sender_low)) continue;
 			if (get_3d_distance(ps.x, ps.y, ps.z, other.x, other.y, other.z) <= EARSHOT_RADIUS) {
 				chat_send_msg(ctx, other, scope, ps.name, ps.rank, text);
@@ -66,20 +81,21 @@ void chat_handle_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 n
 	}
 
 	if (scope == "team") {
-		string my_zone = ctx.map.zone_name_at(ps.x, ps.y);
+		MapInstance@ mi = ctx.player_map(ps);
+		string my_zone = @mi != null ? mi.map.zone_name_at(ps.x, ps.y, ps.z) : "Wilderness";
 		for (uint i = 0; i < ctx.sessions.length(); i++) {
 			PlayerSession@ other = ctx.sessions[i];
 			if (!other.authed || other.peer_id == 0) continue;
 			if (@other != @ps && player_is_blocking(other, sender_low)) continue;
 			bool is_friend = @ps.account != null && ps.account.has_friend(other.name.lower());
-			if (@other == @ps || is_friend || ctx.map.zone_name_at(other.x, other.y) == my_zone) {
+			bool same_zone = (other.current_map == ps.current_map) && (@mi != null && mi.map.zone_name_at(other.x, other.y, other.z) == my_zone);
+			if (@other == @ps || is_friend || same_zone) {
 				chat_send_msg(ctx, other, "team", ps.name, ps.rank, text);
 			}
 		}
 		return;
 	}
 
-	// Default: Global
 	for (uint i = 0; i < ctx.sessions.length(); i++) {
 		PlayerSession@ other = ctx.sessions[i];
 		if (!other.authed || other.peer_id == 0) continue;
@@ -87,6 +103,32 @@ void chat_handle_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 n
 		chat_send_msg(ctx, other, "global", ps.name, ps.rank, text);
 	}
 	ctx.logger.log("CHAT", ps.name + ": " + text);
+}
+
+void social_handle_report(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, int64 now_sec) {
+	if (@ps == null || !ps.authed) return;
+	string target = sanitize_name(field(p, 1, ""));
+	string msg = strip_control_chars(wire_unescape(field(p, 2, "")), 200);
+	if (msg.length() < 3) {
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Please describe the issue in your report.");
+		return;
+	}
+	StaffReport r;
+	r.id = ctx.report_store.next_id++;
+	r.reporter = ps.name;
+	r.target = target;
+	r.map_slug = ps.current_map;
+	r.x = ps.x; r.y = ps.y; r.z = ps.z;
+	r.created_epoch = now_sec;
+	r.resolved = false;
+	r.message = msg;
+	ctx.report_store.reports.insert_last(r);
+	string serr;
+	ctx.report_store.save(serr);
+
+	ctx.logger.log("REPORT", "#" + r.id + " by " + ps.name + (target.length() > 0 ? " about " + target : "") + ": " + msg);
+	ctx.send_speech(ps, MBUF_SYSTEM, true, "Submitted report #" + r.id + ". Staff have been notified.");
+	ctx.broadcast_staff_speech("New report #" + r.id + " by " + ps.name + (target.length() > 0 ? " on " + target : "") + ": " + msg, true);
 }
 
 void social_send_who(ServerCtx@ ctx, PlayerSession@ ps) {
@@ -97,7 +139,8 @@ void social_send_who(ServerCtx@ ctx, PlayerSession@ ps) {
 		if (!other.authed || other.peer_id == 0) continue;
 		online++;
 		if (entries.length() > 0) entries += ";";
-		string zname = ctx.map.zone_name_at(other.x, other.y);
+		MapInstance@ omi = ctx.player_map(other);
+		string zname = (@omi != null ? omi.map.name + " - " + omi.map.zone_name_at(other.x, other.y, other.z) : "Wilderness");
 		string ftag = (@ps.account != null && ps.account.has_friend(other.name.lower())) ? "1" : "0";
 		entries += wire_escape(other.name) + ":" + wire_escape(zname) + ":" + other.rank + ":" + ftag;
 	}
@@ -187,6 +230,10 @@ void social_handle_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64
 		return;
 	}
 	if (op == "duel_ask") {
+		if (dest.current_map != ps.current_map) {
+			ctx.send_speech(ps, MBUF_SOCIAL, true, dest.name + " is on a different map.");
+			return;
+		}
 		if (player_is_blocking(dest, ps.name.lower())) {
 			ctx.send_speech(ps, MBUF_SOCIAL, true, dest.name + " is not accepting challenges from you.");
 			return;
@@ -202,12 +249,16 @@ void social_handle_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64
 			ctx.send_speech(ps, MBUF_SOCIAL, true, "No pending duel challenge from " + target_raw + ".");
 			return;
 		}
+		if (dest.current_map != ps.current_map) {
+			ctx.send_speech(ps, MBUF_SOCIAL, true, dest.name + " is no longer on this map.");
+			return;
+		}
 		ps.duel_invite_from = "";
 		ps.duel_opponent = dest.name;
 		ps.duel_until_ms = now_ms + 120000;
 		dest.duel_opponent = ps.name;
 		dest.duel_until_ms = now_ms + 120000;
-		ctx.broadcast_sfx_3d("threat", "combat/duel_start.ogg", ps.x, ps.y, ps.z, 0.9, 25.0);
+		ctx.broadcast_sfx_3d(ps.current_map, "threat", "combat/duel_start.ogg", ps.x, ps.y, ps.z, 0.9, 25.0);
 		ctx.send_speech(ps, MBUF_GAME, true, "Duel begun against " + dest.name + " for 2 minutes!");
 		ctx.send_speech(dest, MBUF_GAME, true, ps.name + " accepted your duel! Fight!");
 	}

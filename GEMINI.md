@@ -50,3 +50,39 @@ luôn luôn tuân thủ quy trình specify trong mọi trường hợp phát tri
 - `net_integration_check.nvgt` (Pha 1 & Pha 2 toàn bộ cơ chế gameplay qua server chạy thật ở cổng 7199): PASS toàn bộ
 - `client/client.exe --smoke-test` (chạy thật E2E kết nối `server.exe` ở cổng 7199 + chế độ cửa sổ & audio engine): PASS toàn bộ
 - `client_ui_e2e_check.nvgt` (trên server chế độ production ở cổng 7198, không `--test-mode`, test giữ kết nối 18 giây lúc gõ form, ví token, chat rate-limit, radar/buffers): PASS toàn bộ.
+
+
+---
+
+## Nhật ký kỹ thuật — Wildlands Online v2 (`002-staff-multimap-builder-tracking-verticality`, 2026-11-18)
+
+### 1. Hệ thống Theo dõi STW 6 danh mục (`client/includes/tracker.nvgt`, `radar_hud.nvgt`, `profile.nvgt`)
+- Loại bỏ hoàn toàn cơ chế quét `T` cũ (`collect_radar_targets` / `announce_radar_step`) và phím bind `"scanner"`.
+- Xây dựng `StwTracker` với 6 danh mục: `All`, `Objects`, `Items`, `Animals`, `Structures`, `Players`.
+- Danh sách duyệt chỉ hiển thị mục tiêu trong phạm vi **`<= 30` bước** (`TRACKER_MAX_DIST = 30.0`); khóa theo dõi giữ bán kính tối đa tới `EARSHOT_RADIUS = 35.0` trước khi báo mất dấu (`ui/track_lost.ogg`).
+- Phím điều khiển mặc định (có thể map lại trong Settings): `Ctrl+=` / `Ctrl+-` chuyển danh mục, `=` / `-` duyệt mục kế tiếp/trước đó, `Backspace` bắt đầu theo dõi kèm radar 3D qua `sound_pool` (nhịp lặp 360ms/640ms/1050ms theo khoảng cách, không dùng pitch cho độ cao/khoảng cách), `Shift+Backspace` dừng theo dõi, `O` đọc hướng tương đối + số bước + chênh lệch độ cao.
+
+### 2. Vật lý 3D Thực, Leo Cầu thang theo Âm bề mặt & Định luật Không khí / Vực thẳm
+- Tách phím `PageUp` / `PageDown` khỏi hệ thống Buffer (Buffer chỉ còn dùng `,` / `.`), gán sang leo lên / xuống cầu thang (`IN_CLIMB_UP = 1 << 7`, `IN_CLIMB_DOWN = 1 << 8`, và `ACT|climb|up|down`).
+- **Âm thanh cầu thang**: Khi leo hoặc xuống `MapPlatform` loại `"stairs"`, phát âm thanh bước chân đúng theo bề mặt mà builder đã chọn (`steps/<stair.surface>_1..3.ogg`: `grass`, `dirt`, `stone`, `wood`, `sand`, `water`, `carpet`) chứ không dùng âm thanh cầu thang riêng lẻ.
+- **Định luật Không khí (`find_support_at`)**: Ngoài vùng có sàn/dốc/cầu thang đỡ (`Z` hỗ trợ `[MAP_MIN_Z=-50 .. MAP_MAX_Z=100]`) là Không khí rỗng. Trọng lực (`FALL_GRAVITY = 22.0`) kéo rơi kèm âm gió rơi (`steps/fall_air.ogg`); rơi `> 3.5` ô gây sát thương theo độ cao; rơi `>= 8.0` ô phát `combat/bone_break.ogg` và gây gãy xương 90 giây (chậm bước, cấm chạy nhanh — chữa bằng `bandage` hoặc `splint` Wooden Splint chế tạo từ 2 gỗ + 1 thảo mộc); rơi xuống nước sâu (`deep`) giảm 70% sát thương & chặn gãy xương kèm `steps/water_splash_big.ogg`; rơi xuống dưới `min_z - 6` chết vực và hồi sinh tại spawn; đứng dưới mái (`is_roof = 1`) tự làm dịu tiếng mưa.
+
+### 3. Hệ thống Đa bản đồ & STW Map Builder `F8` (`common/map.nvgt`, `builder_srv.nvgt`, `builder_ui.nvgt`)
+- Máy chủ (`PROTO_VERSION = 2`) quét và chạy đồng thời tất cả `server/maps/*.map` (`wildlands_valley.map` và `skywatch_citadel.map`) với snapshot, local chat, node tài nguyên, AI và âm thanh tách riêng theo `MapInstance`, liên thông qua **Cổng dịch chuyển (`D`)**.
+- Menu Builder **`F8`** (`run_map_builder_hub`):
+  - **Create New Map**: Form đa trường tạo map mới (`slug`, tên hiển thị, chiều rộng/dài, `min_z..max_z`, bề mặt mặc định, nhạc nền, điểm spawn, tùy chọn tạo sàn nền).
+  - **Switch / Edit Header / Delete Map**: Chuyển map chỉnh sửa hoặc dịch chuyển tới spawn, sửa header `M`, xóa map có sao lưu `.deleted.bak`.
+  - **6-Axis Box Coordinate Forms**: Nhập trực tiếp `Minimum X, Maximum X, Minimum Y, Maximum Y, Minimum Z, Maximum Z` cho `floor/roof`, `stairs`, `ramp`, `wall`, `zone`, `water`, `hazard`, `portal`, `resource`, `emitter` (có nút nghe thử âm), `spawn`.
+  - **Line Manager**: Lọc theo loại (`ALL`, `M`, `FLOOR`, `STAIRS`, `P`, `W`, `Z`, `L`, `H`, `D`, `R`, `A`, `S`), sửa bằng form 6 trục hoặc sửa dòng thô, chèn mới, nhân bản, đổi thứ tự lên/xuống, dịch chuyển tới tâm phần tử, xóa, kèm **Undo** 25 bước/map, **Validate**, **Save** (`.bak`) và **Hot-Reload**.
+
+### 4. Staff Panel Phân danh mục `F9` & Vòng đời Server (`accounts.nvgt`, `admin_dev.nvgt`, `staff_ui.nvgt`)
+- Nâng cấp `ACCOUNTS_V2` (`current_map`, `created_at_epoch`, `last_seen_epoch`, `last_ip`) tương thích ngược `ACCOUNTS_V1`, kèm kho lưu báo cáo `reports.dat` + `.bak`.
+- **`F9` Staff Panel** không cần gõ lệnh thô:
+  - **Account Directory**: Sắp xếp Online trước, hiển thị **`Online (<Map>, <Zone>)`** cho người đang chơi và **`Last seen: <relative> (<YYYY-MM-DD HH:MM UTC+07:00>)`** cho tài khoản offline; menu hành động trực tiếp từng mục tiêu (`tp_to`, `bring`, `move_map`, `heal`, `give_item`, `clear_inv`, `rescue`, `kick`, `mute`, `ban`, `unban`, `set_rank`, `clear_token`).
+  - **Developer Lifecycle** (`RANK_DEV` + `devs.txt`): Đếm ngược **Shutdown** / **Restart** (`--bind-delay-ms` đóng ENet rồi khởi chạy lại bằng `run()`), hủy đếm ngược, khóa **Maintenance Mode**, bật/tắt **Guest**, sửa nóng `motd.txt` & `changelog.txt`.
+  - **World / Spawner / Telemetry / Logs / Reports**: Điều khiển thời tiết/ngày đêm/thả quái & bot, xem log từ bộ đệm vòng nhớ, đọc & xử lý `/report` và chat nội bộ `/sc`.
+
+### 5. Âm thanh, Tài liệu & Kết quả Kiểm thử Xác thực (`tools/run_checks.ps1`)
+- Bổ sung 22 file `.ogg` CC0 thật qua `tools/asset_pipeline.py` (tổng **116** file hợp lệ, tất cả đều có header `OggS`).
+- Bổ sung [BUILDER_GUIDE.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/BUILDER_GUIDE.md) và [STAFF_GUIDE.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/STAFF_GUIDE.md) (đọc được trực tiếp trong Pause Menu), cùng cập nhật `CONTROLS.md`, `PROTOCOL.md`, `ARCHITECTURE.md`, `PLAN.md`.
+- Biên dịch sạch `server/server.exe` và `client/client.exe` bằng `nvgt -c` và xác nhận **`=== ALL CHECKS PASSED ===`** qua `tools/run_checks.ps1` (exit code 0 across offline unit tests, build, Phase 1/2 E2E integration gồm leo cầu thang âm gỗ, rơi từ Z=12 gãy xương chữa bằng Wooden Splint, cổng đa bản đồ sang `skywatch_citadel`, Builder `F8` + Line Manager, Staff `Online`/`Last seen` + `/report` + `/sc` + graceful shutdown, `client.exe --smoke-test`, và `client_ui_e2e_check.nvgt` với STW Tracker `<= 30`).

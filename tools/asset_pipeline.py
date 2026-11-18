@@ -76,6 +76,13 @@ ASSETS = [
     ("ui/msg_social.ogg", ("url", KENNEY_IF_BASE + "confirmation_003.wav"), 2, -15, True, 0, "Kenney Interface Sounds (CC0)"),
     ("ui/notify_friend.ogg", ("url", KENNEY_IF_BASE + "bong_001.wav"), 2, -15, True, 0, "Kenney Interface Sounds (CC0)"),
     ("ui/sonar_ping.ogg", ("url", KENNEY_IF_BASE + "glass_001.wav"), 1, -15, True, 0, "Kenney Interface Sounds (CC0)"),
+    ("ui/track_start.ogg", ("url", KENNEY_IF_BASE + "select_002.wav"), 2, -16, True, 0, "Kenney Interface Sounds (CC0)"),
+    ("ui/track_stop.ogg", ("url", KENNEY_IF_BASE + "close_002.wav"), 2, -16, True, 0, "Kenney Interface Sounds (CC0)"),
+    ("ui/track_ping.ogg", ("url", KENNEY_IF_BASE + "glass_005.wav"), 1, -15, True, 0, "Kenney Interface Sounds (CC0)"),
+    ("ui/track_lost.ogg", ("url", KENNEY_IF_BASE + "drop_004.wav"), 2, -15, True, 0, "Kenney Interface Sounds (CC0)"),
+    ("ui/track_arrived.ogg", ("url", KENNEY_IF_BASE + "confirmation_004.wav"), 2, -15, True, 0, "Kenney Interface Sounds (CC0)"),
+    ("ui/cat_switch.ogg", ("url", KENNEY_IF_BASE + "switch_002.wav"), 2, -16, True, 0, "Kenney Interface Sounds (CC0)"),
+    ("ui/staff_alert.ogg", ("zip", "100_cc0_sfx/key_open_01.ogg"), 2, -15, True, 0, "100 CC0 SFX by rubberduck (CC0)"),
 
     # Footsteps & Movement (mono for pure 3D spatialization, zero leading silence)
     ("steps/grass_1.ogg", ("url", KENNEY_IMP_BASE + "footstep_grass_000.ogg"), 1, -16, True, 0, "Kenney Impact Sounds (CC0)"),
@@ -96,9 +103,14 @@ ASSETS = [
     ("steps/water_1.ogg", ("zip", "water_sfx/splash_01.ogg"), 1, -16, True, 0, "40 CC0 Water Splash SFX by rubberduck (CC0)"),
     ("steps/water_2.ogg", ("zip", "water_sfx/splash_02.ogg"), 1, -16, True, 0, "40 CC0 Water Splash SFX by rubberduck (CC0)"),
     ("steps/water_3.ogg", ("zip", "water_sfx/splash_03.ogg"), 1, -16, True, 0, "40 CC0 Water Splash SFX by rubberduck (CC0)"),
+    ("steps/carpet_1.ogg", ("url", KENNEY_IMP_BASE + "footstep_carpet_000.ogg"), 1, -16, True, 0, "Kenney Impact Sounds (CC0)"),
+    ("steps/carpet_2.ogg", ("url", KENNEY_IMP_BASE + "footstep_carpet_001.ogg"), 1, -16, True, 0, "Kenney Impact Sounds (CC0)"),
+    ("steps/carpet_3.ogg", ("url", KENNEY_IMP_BASE + "footstep_carpet_002.ogg"), 1, -16, True, 0, "Kenney Impact Sounds (CC0)"),
     ("steps/jump.ogg", ("zip", "rpg_sound_pack/RPG Sound Pack/inventory/cloth.wav"), 1, -16, True, 0, "RPG Sound Pack by artisticdude (CC0)"),
     ("steps/land_soft.ogg", ("url", KENNEY_IMP_BASE + "impact_soft_medium_000.ogg"), 1, -15, True, 0, "Kenney Impact Sounds (CC0)"),
     ("steps/land_hard.ogg", ("url", KENNEY_IMP_BASE + "impact_soft_heavy_001.ogg"), 1, -14, True, 0, "Kenney Impact Sounds (CC0)"),
+    ("steps/fall_air.ogg", ("zip", "swishes/swishes/swish-13.wav"), 1, -15, True, 0, "Swishes Sound Pack by artisticdude (CC0)"),
+    ("steps/water_splash_big.ogg", ("zip", "water_sfx/splash_15.ogg"), 1, -14, True, 0, "40 CC0 Water Splash SFX by rubberduck (CC0)"),
     ("steps/wall_bump_wood.ogg", ("url", KENNEY_IMP_BASE + "impact_wood_heavy_000.ogg"), 1, -15, True, 0, "Kenney Impact Sounds (CC0)"),
     ("steps/wall_bump_stone.ogg", ("url", KENNEY_IMP_BASE + "impact_punch_heavy_002.ogg"), 1, -15, True, 0, "Kenney Impact Sounds (CC0)"),
 
@@ -127,6 +139,12 @@ ASSETS = [
     ("builder/chest_open.ogg", ("zip", "100_cc0_sfx/wooded_box_open.ogg"), 1, -15, True, 0, "100 CC0 SFX by rubberduck (CC0)"),
     ("builder/chest_close.ogg", ("zip", "100_cc0_sfx/wooden_01.ogg"), 1, -15, True, 0, "100 CC0 SFX by rubberduck (CC0)"),
     ("builder/beacon_ping.ogg", ("zip", "100_cc0_sfx/bell_02.ogg"), 1, -16, True, 0, "100 CC0 SFX by rubberduck (CC0)"),
+    ("builder/line_add.ogg", ("url", KENNEY_IF_BASE + "maximize_002.wav"), 2, -16, True, 0, "Kenney Interface Sounds (CC0)"),
+    ("builder/line_edit.ogg", ("zip", "rpg_sound_pack/RPG Sound Pack/interface/interface1.wav"), 2, -16, True, 0, "RPG Sound Pack by artisticdude (CC0)"),
+    ("builder/line_delete.ogg", ("url", KENNEY_IF_BASE + "minimize_002.wav"), 2, -16, True, 0, "Kenney Interface Sounds (CC0)"),
+    ("builder/map_create.ogg", ("url", KENNEY_RPG_BASE + "book_open.ogg"), 2, -15, True, 0, "Kenney RPG Audio (CC0)"),
+    ("world/portal_travel.ogg", ("zip", "rpg_sound_pack/RPG Sound Pack/battle/spell.wav"), 1, -15, True, 0, "RPG Sound Pack by artisticdude (CC0)"),
+    ("world/hazard_hit.ogg", ("zip", "100_cc0_sfx/hit_04.ogg"), 1, -14, True, 0, "100 CC0 SFX by rubberduck (CC0)"),
 
     # Combat (mono 3D)
     ("combat/swing_melee.ogg", ("zip", "swishes/swishes/swish-3.wav"), 1, -14, True, 0, "Swishes Sound Pack by artisticdude (CC0)"),
@@ -137,6 +155,7 @@ ASSETS = [
     ("combat/bow_release.ogg", ("url", "https://opengameart.org/sites/default/files/shoot.ogg"), 1, -14, True, 0, "Bow Arrow Shot OGA (CC-BY-SA)"),
     ("combat/arrow_fly.ogg", ("zip", "swishes/swishes/swish-11.wav"), 1, -15, True, 0, "Swishes Sound Pack by artisticdude (CC0)"),
     ("combat/hurt.ogg", ("zip", "creature_sfx/hurt_01.ogg"), 1, -14, True, 0, "80 CC0 Creature SFX by rubberduck (CC0)"),
+    ("combat/bone_break.ogg", ("url", KENNEY_IMP_BASE + "impact_wood_heavy_003.ogg"), 1, -14, True, 0, "Kenney Impact Sounds (CC0)"),
     ("combat/death.ogg", ("zip", "creature_sfx/hurt_05.ogg"), 1, -14, True, 0, "80 CC0 Creature SFX by rubberduck (CC0)"),
     ("combat/respawn.ogg", ("zip", "rpg_sound_pack/RPG Sound Pack/battle/magic1.wav"), 1, -15, True, 0, "RPG Sound Pack (CC0)"),
     ("combat/duel_start.ogg", ("zip", "100_cc0_sfx/gong_01.ogg"), 1, -14, True, 0, "100 CC0 SFX by rubberduck (CC0)"),
@@ -157,6 +176,8 @@ ASSETS = [
     ("ambience/rain_loop.ogg", ("zip", "water_sfx/loop_rain.ogg"), 2, -20, False, 12, "40 CC0 Water Splash SFX by rubberduck (CC0)"),
     ("ambience/settlement_hearth.ogg", ("wiki", "campfire_sound_ambience.ogg"), 1, -19, False, 15, "Wikimedia Commons Campfire Ambience (CC BY 3.0)"),
     ("ambience/wind_gust.ogg", ("wiki", "gentle_breeze.ogg"), 2, -20, False, 15, "Wikimedia Commons Gentle Breeze (Public Domain)"),
+    ("ambience/cave_loop.ogg", ("zip", "water_sfx/loop_water_02.ogg"), 1, -20, False, 12, "40 CC0 Water Splash SFX by rubberduck (CC0)"),
+    ("ambience/indoor_room.ogg", ("zip", "water_sfx/loop_water_01.ogg"), 2, -22, False, 12, "40 CC0 Water Splash SFX by rubberduck (CC0)"),
 
     # Multiplayer Notifications (stereo UI/world cues)
     ("multi/player_join.ogg", ("zip", "100_cc0_sfx/bell_03.ogg"), 2, -16, True, 0, "100 CC0 SFX by rubberduck (CC0)"),
@@ -165,6 +186,7 @@ ASSETS = [
     ("multi/disconnect.ogg", ("url", KENNEY_IF_BASE + "error_002.wav"), 2, -15, True, 0, "Kenney Interface Sounds (CC0)"),
     ("multi/level_up.ogg", ("zip", "100_cc0_sfx/gong_02.ogg"), 2, -15, True, 0, "100 CC0 SFX by rubberduck (CC0)"),
     ("multi/countdown_tick.ogg", ("url", KENNEY_IF_BASE + "tick_002.wav"), 2, -16, True, 0, "Kenney Interface Sounds (CC0)"),
+    ("multi/server_shutdown.ogg", ("url", KENNEY_IF_BASE + "error_007.wav"), 2, -15, True, 0, "Kenney Interface Sounds (CC0)"),
 
     # Music (calm acoustic theme, gently mastered)
     ("music/menu_theme.ogg", ("wiki", "just_as_soon.mp3"), 2, -21, False, 45, "Just As Soon by Kevin MacLeod / Incompetech (CC BY 3.0)"),

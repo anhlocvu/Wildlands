@@ -77,3 +77,53 @@ string unescape_or_empty(const string&in s) {
 	if (s == "-") return "";
 	return wire_unescape(s);
 }
+
+string pad2(int64 v) {
+	return v < 10 ? "0" + v : "" + v;
+}
+
+// Convert POSIX epoch seconds (with optional tz_offset_sec) into YYYY-MM-DD HH:MM using Howard Hinnant's civil-from-days algorithm.
+string format_epoch_datetime(int64 epoch_sec, int tz_offset_sec = 0) {
+	if (epoch_sec <= 0) return "never";
+	int64 local_s = epoch_sec + int64(tz_offset_sec);
+	int64 z = local_s / 86400;
+	int64 rem = local_s % 86400;
+	if (rem < 0) {
+		rem += 86400;
+		z -= 1;
+	}
+	int64 hour = rem / 3600;
+	int64 minute = (rem % 3600) / 60;
+
+	z += 719468;
+	int64 era = (z >= 0 ? z : z - 146096) / 146097;
+	int64 doe = z - era * 146097;
+	int64 yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+	int64 y = yoe + era * 400;
+	int64 doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+	int64 mp = (5 * doy + 2) / 153;
+	int64 d = doy - (153 * mp + 2) / 5 + 1;
+	int64 m = mp + (mp < 10 ? 3 : -9);
+	if (m <= 2) y += 1;
+
+	return y + "-" + pad2(m) + "-" + pad2(d) + " " + pad2(hour) + ":" + pad2(minute);
+}
+
+string format_last_seen_en(int64 last_seen_epoch, int64 now_sec, int tz_offset_sec = 0) {
+	if (last_seen_epoch <= 0) return "never logged in";
+	int64 diff = now_sec - last_seen_epoch;
+	if (diff < 0) diff = 0;
+	string rel;
+	if (diff < 60) rel = "just now";
+	else if (diff < 3600) {
+		int64 m = diff / 60;
+		rel = m + (m == 1 ? " minute ago" : " minutes ago");
+	} else if (diff < 86400) {
+		int64 h = diff / 3600;
+		rel = h + (h == 1 ? " hour ago" : " hours ago");
+	} else {
+		int64 days = diff / 86400;
+		rel = days + (days == 1 ? " day ago" : " days ago");
+	}
+	return rel + " (" + format_epoch_datetime(last_seen_epoch, tz_offset_sec) + ")";
+}

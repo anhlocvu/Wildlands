@@ -1,6 +1,135 @@
-// Server Developer Panel (target-based idempotent world actions) & Ranked Moderation.
+// Server Categorized Staff Panel (Account Directory w/ Online & Last Seen, Target Pickers,
+// Safe Shutdown/Restart Lifecycle, World & Multi-Map Controls, Logs, Reports) & Ranked Moderation.
 
 #include "builder_srv.nvgt"
+
+void admin_save_all_state(ServerCtx@ ctx) {
+	string serr;
+	for (uint i = 0; i < ctx.sessions.length(); i++) {
+		PlayerSession@ sp = ctx.sessions[i];
+		if (sp.authed && @sp.account != null) {
+			sp.account.current_map = sp.current_map;
+			sp.account.last_x = sp.x;
+			sp.account.last_y = sp.y;
+			sp.account.last_z = sp.z;
+			sp.account.last_seen_epoch = int64(TIME_STAMP);
+			ctx.accounts.dirty = true;
+		}
+	}
+	ctx.accounts.save(serr);
+	world_save_objects(ctx, serr);
+	ctx.report_store.save(serr);
+}
+
+void admin_send_overview(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
+	int online = 0;
+	for (uint i = 0; i < ctx.sessions.length(); i++) {
+		if (ctx.sessions[i].authed && ctx.sessions[i].peer_id != 0) online++;
+	}
+	int mobs_cnt = 0;
+	string maps_csv = "";
+	for (uint i = 0; i < ctx.maps.length(); i++) {
+		MapInstance@ mi = ctx.maps[i];
+		mobs_cnt += int(mi.mobs.length());
+		if (maps_csv.length() > 0) maps_csv += ";";
+		maps_csv += wire_escape(mi.slug) + "~" + wire_escape(mi.map.name) + "~" + ctx.count_players_on_map(mi.slug);
+	}
+	if (maps_csv.length() == 0) maps_csv = "-";
+	uint64 uptime_sec = now_ms > ctx.started_ms ? (now_ms - ctx.started_ms) / 1000 : 0;
+	int shut_rem = 0;
+	if (ctx.shutdown_pending || ctx.restart_pending) {
+		shut_rem = ctx.shutdown_at_ms > now_ms ? int((ctx.shutdown_at_ms - now_ms + 999) / 1000) : 1;
+	}
+	ctx.send_control(ps, pkt_build("ST_OVERVIEW", {
+		"" + uptime_sec,
+		"" + ctx.worst_tick_ms_report,
+		"" + online,
+		"" + ctx.accounts.accounts.length(),
+		"" + ctx.maps.length(),
+		"" + ctx.structures.length(),
+		"" + mobs_cnt,
+		"" + ctx.report_store.open_count(),
+		ctx.maintenance_mode ? "1" : "0",
+		ctx.allow_guests ? "1" : "0",
+		"" + shut_rem,
+		maps_csv
+	}));
+}
+
+void admin_send_accounts(ServerCtx@ ctx, PlayerSession@ ps, const string&in filter, int64 now_sec) {
+	string flt = filter.trim_whitespace().lower();
+	AccountRecord@[] picked;
+	bool[] is_on_arr;
+
+	// Online first, then offline sorted by most recent last_seen_epoch
+	for (int pass = 0; pass < 2; pass++) {
+		AccountRecord@[] bucket;
+		for (uint i = 0; i < ctx.accounts.accounts.length(); i++) {
+			AccountRecord@ a = ctx.accounts.accounts[i];
+			PlayerSession@ live = ctx.find_session_by_name(a.name);
+			bool is_on = (@live != null && live.authed && live.peer_id != 0);
+			if ((pass == 0) != is_on) continue;
+			if (flt == "online" && !is_on) continue;
+			int eff_r = ctx.accounts.effective_rank(a);
+			if (flt == "staff" && eff_r < RANK_BUILDER) continue;
+			bool punished = (a.banned_until < 0 || a.banned_until > now_sec || a.muted_until > now_sec);
+			if (flt == "punished" && !punished) continue;
+			bucket.insert_last(a);
+		}
+		if (pass == 1) {
+			for (uint i = 0; i < bucket.length(); i++) {
+				for (uint j = i + 1; j < bucket.length(); j++) {
+					if (bucket[j].last_seen_epoch > bucket[i].last_seen_epoch) {
+						AccountRecord@ tmp = @bucket[i];
+						@bucket[i] = @bucket[j];
+						@bucket[j] = @tmp;
+					}
+				}
+			}
+		}
+		for (uint i = 0; i < bucket.length(); i++) {
+			picked.insert_last(bucket[i]);
+			is_on_arr.insert_last(pass == 0);
+		}
+	}
+
+	string[] chunks;
+	string cur = "";
+	for (uint i = 0; i < picked.length(); i++) {
+		AccountRecord@ a = picked[i];
+		bool on = is_on_arr[i];
+		int r = ctx.accounts.effective_rank(a);
+		string map_n = a.current_map;
+		string zone_n = "-";
+		if (on) {
+			PlayerSession@ live = ctx.find_session_by_name(a.name);
+			MapInstance@ mi = ctx.player_map(live);
+			if (@mi != null) {
+				map_n = mi.map.name;
+				zone_n = mi.map.zone_name_at(live.x, live.y, live.z);
+			}
+		}
+		int64 ban_rem = a.banned_until < 0 ? -1 : (a.banned_until > now_sec ? (a.banned_until - now_sec) : 0);
+		int64 mute_rem = a.muted_until > now_sec ? (a.muted_until - now_sec) : 0;
+		string ip_str = ps.rank >= RANK_ADMIN && a.last_ip.length() > 0 ? a.last_ip : "-";
+		string row = wire_escape(a.name) + "," + r + "," + (on ? "1" : "0") + ","
+			+ wire_escape(map_n) + "," + wire_escape(zone_n) + ","
+			+ a.last_seen_epoch + "," + ban_rem + "," + mute_rem + ","
+			+ a.playtime_sec + "," + wire_escape(ip_str);
+		if (cur.length() > 0 && cur.length() + row.length() + 1 > 1020) {
+			chunks.insert_last(cur);
+			cur = "";
+		}
+		if (cur.length() > 0) cur += ";";
+		cur += row;
+	}
+	if (cur.length() > 0 || chunks.length() == 0) chunks.insert_last(cur);
+
+	ctx.send_control(ps, pkt_build("ST_ACC_HDR", {"" + picked.length(), "" + chunks.length()}));
+	for (uint i = 0; i < chunks.length(); i++) {
+		ctx.send_control(ps, pkt_build("ST_ACC_CHK", {"" + i, chunks[i].length() > 0 ? chunks[i] : "-"}));
+	}
+}
 
 void admin_handle_dev(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
 	if (@ps == null || !ps.authed) return;
@@ -35,16 +164,21 @@ void admin_handle_dev(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
 		if (msg.length() > 0) ctx.broadcast_speech(MBUF_SYSTEM, true, "Server Announcement: " + msg);
 	} else if (cmd == "reload_all") {
 		ctx.load_soft_data();
-		string err;
-		WorldMap fresh;
-		if (fresh.load_from_file(ctx.active_map_path, err)) {
-			ctx.map = fresh;
-			builder_reload_all_clients(ctx);
+		ctx.accounts.load_devs();
+		for (uint i = 0; i < ctx.maps.length(); i++) {
+			MapInstance@ mi = ctx.maps[i];
+			string err;
+			WorldMap fresh;
+			if (fresh.load_from_file(mi.file_path, err)) {
+				fresh.slug = mi.slug;
+				mi.map = fresh;
+				builder_reload_map_clients(ctx, mi);
+			}
 		}
 		for (uint i = 0; i < ctx.sessions.length(); i++) {
 			if (ctx.sessions[i].authed && ctx.sessions[i].peer_id != 0) ctx.send_news(ctx.sessions[i]);
 		}
-		ctx.send_speech(ps, MBUF_SYSTEM, true, "Reloaded MOTD, changelog, devs, and map.");
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Reloaded MOTD, changelog, devs, and all maps.");
 	} else if (cmd == "spawn_item") {
 		PlayerSession@ dest = @ps;
 		string iid = arg1;
@@ -63,30 +197,41 @@ void admin_handle_dev(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
 		ctx.send_speech(ps, MBUF_SYSTEM, true, "Granted " + q + " " + d.name + " to " + dest.name + ".");
 	} else if (cmd == "tp") {
 		PlayerSession@ dest = @ps;
-		double tx = safe_double(arg1, 1.0, double(ctx.map.width - 1), ps.x);
-		double ty = safe_double(arg2, 1.0, double(ctx.map.height - 1), ps.y);
-		if (p.length() >= 5) {
+		MapInstance@ mi = ctx.player_map(dest);
+		double tx = safe_double(arg1, 1.0, double(mi.map.width - 1), ps.x);
+		double ty = safe_double(arg2, 1.0, double(mi.map.height - 1), ps.y);
+		bool has_z = false;
+		double tz = dest.z;
+		if (p.length() >= 5 && @ctx.find_session_by_name(arg1) != null) {
 			@dest = ctx.find_session_by_name(arg1);
-			if (@dest == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Player " + arg1 + " is not online."); return; }
-			tx = safe_double(arg2, 1.0, double(ctx.map.width - 1), dest.x);
-			ty = safe_double(field(p, 4, "1"), 1.0, double(ctx.map.height - 1), dest.y);
-		}
-		dest.x = tx; dest.y = ty; dest.z = ctx.map.ground_z_at(tx, ty, dest.z);
-		ctx.send_speech(ps, MBUF_SYSTEM, true, "Teleported " + dest.name + " to " + int(tx) + ", " + int(ty) + ".");
-	} else if (cmd == "save_now") {
-		string serr;
-		for (uint i = 0; i < ctx.sessions.length(); i++) {
-			PlayerSession@ sp = ctx.sessions[i];
-			if (sp.authed && @sp.account != null) {
-				sp.account.last_x = sp.x; sp.account.last_y = sp.y; sp.account.last_z = sp.z;
-				ctx.accounts.dirty = true;
+			@mi = ctx.player_map(dest);
+			tx = safe_double(arg2, 1.0, double(mi.map.width - 1), dest.x);
+			ty = safe_double(field(p, 4, "1"), 1.0, double(mi.map.height - 1), dest.y);
+			if (p.length() >= 6) {
+				tz = safe_double(field(p, 5, "0"), double(mi.map.min_z), double(mi.map.max_z), 0.0);
+				has_z = true;
 			}
+		} else if (p.length() >= 5) {
+			tz = safe_double(field(p, 4, "0"), double(mi.map.min_z), double(mi.map.max_z), 0.0);
+			has_z = true;
 		}
-		ctx.accounts.save(serr);
-		world_save_objects(ctx, serr);
-		ctx.send_speech(ps, MBUF_SYSTEM, false, "Saved accounts and world objects.");
+		dest.x = tx;
+		dest.y = ty;
+		if (has_z) {
+			dest.z = tz;
+		} else {
+			double sz; string ss; bool dw, ur;
+			if (mi.map.find_support_at(tx, ty, dest.z + 2.0, sz, ss, dw, ur)) dest.z = sz;
+		}
+		dest.vx = 0.0; dest.vy = 0.0; dest.vz = 0.0;
+		dest.on_ground = true;
+		dest.fall_start_z = dest.z;
+		dest.fall_air_sfx_sent = false;
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Teleported " + dest.name + " to " + int(tx) + ", " + int(ty) + ", Z " + int(dest.z) + ".");
+	} else if (cmd == "save_now") {
+		admin_save_all_state(ctx);
+		ctx.send_speech(ps, MBUF_SYSTEM, false, "Saved accounts, reports, and world objects.");
 	} else if (cmd == "grant_rank") {
-		// Grant up to RANK_ADMIN only; RANK_DEV can NEVER be granted over network.
 		AccountRecord@ target = ctx.accounts.find(arg1);
 		int nr = safe_int(arg2, RANK_PLAYER, RANK_ADMIN, RANK_PLAYER);
 		if (@target == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Account not found."); return; }
@@ -130,6 +275,15 @@ void admin_handle_mod(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, int64 now_
 		ctx.send_speech(ps, MBUF_SYSTEM, true, "Unbanned " + target_acc.name + ".");
 		return;
 	}
+	if (cmd == "unmute") {
+		if (@target_acc == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Account not found."); return; }
+		target_acc.muted_until = 0;
+		ctx.accounts.dirty = true;
+		ctx.logger.log("MOD", ps.name + " unmuted " + target_acc.name);
+		if (@target_live != null) ctx.send_speech(target_live, MBUF_SYSTEM, true, "You were unmuted by " + ps.name + ".");
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Unmuted " + target_acc.name + ".");
+		return;
+	}
 
 	if (!can_moderate(ps.rank, target_rank)) {
 		ctx.logger.log("REFUSED", ps.name + " (" + rank_label(ps.rank) + ") tried MOD " + cmd + " on " + target_name + " (" + rank_label(target_rank) + ")");
@@ -158,29 +312,388 @@ void admin_handle_mod(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, int64 now_
 	}
 
 	if (cmd == "mute") {
-		int mins = duration_min > 0 ? duration_min : 10;
-		target_acc.muted_until = now_sec + int64(mins) * 60;
+		target_acc.muted_until = now_sec + int64(duration_min) * 60;
 		ctx.accounts.dirty = true;
-		ctx.logger.log("MOD", ps.name + " muted " + target_acc.name + " for " + mins + "m: " + reason);
-		if (@target_live != null) ctx.send_speech(target_live, MBUF_SYSTEM, true, "You were muted for " + mins + " minutes. Reason: " + reason);
-		ctx.send_speech(ps, MBUF_SYSTEM, true, "Muted " + target_acc.name + " for " + mins + " minutes.");
-		return;
-	}
-
-	if (cmd == "ban") {
+		ctx.logger.log("MOD", ps.name + " muted " + target_acc.name + " for " + duration_min + "m: " + reason);
+		if (@target_live != null) {
+			ctx.send_speech(target_live, MBUF_SYSTEM, true, "You were muted by " + ps.name + " for " + duration_min + " minutes. Reason: " + reason);
+		}
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Muted " + target_acc.name + " for " + duration_min + " minutes.");
+	} else if (cmd == "ban") {
+		if (ps.rank < RANK_ADMIN) {
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Admin rank or higher is required to ban accounts.");
+			return;
+		}
 		target_acc.banned_until = duration_min == 0 ? -1 : (now_sec + int64(duration_min) * 60);
 		target_acc.ban_reason = reason;
 		target_acc.token_hash = "";
 		ctx.accounts.dirty = true;
-		ctx.logger.log("MOD", ps.name + " banned " + target_acc.name + " (" + duration_min + "m): " + reason);
+		string dur_str = duration_min == 0 ? "permanently" : ("for " + duration_min + " minutes");
+		ctx.logger.log("MOD", ps.name + " banned " + target_acc.name + " " + dur_str + ": " + reason);
 		if (@target_live != null && target_live.peer_id != 0) {
-			string bmsg = ctx.accounts.ban_message_if_active(target_acc, now_sec);
-			ctx.send_control(target_live, pkt_3("REFUSE", "banned", wire_escape(bmsg)));
+			ctx.send_control(target_live, pkt_3("REFUSE", "banned", wire_escape("You are banned " + dur_str + ". Reason: " + reason)));
 			ctx.net.flush();
 			ctx.net.disconnect_peer_softly(target_live.peer_id);
 			target_live.peer_id = 0;
 			target_live.authed = false;
 		}
-		ctx.broadcast_speech(MBUF_SYSTEM, false, target_acc.name + " was banned.");
+		ctx.broadcast_speech(MBUF_SYSTEM, false, target_acc.name + " was banned " + dur_str + ".");
+	}
+}
+
+void admin_handle_staff(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 now_ms, int64 now_sec) {
+	if (@ps == null || !ps.authed) return;
+	if (ps.rank < RANK_MOD) {
+		ctx.logger.log("REFUSED", "STAFF denied for " + ps.name + " (rank " + ps.rank + ")");
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Staff permissions required.");
+		return;
+	}
+	string cmd = field(p, 1, "");
+
+	if (cmd == "overview") { admin_send_overview(ctx, ps, now_ms); return; }
+	if (cmd == "accounts") { admin_send_accounts(ctx, ps, field(p, 2, "all"), now_sec); return; }
+
+	if (cmd == "acc_detail") {
+		string tname = sanitize_name(field(p, 2, ""));
+		AccountRecord@ acc = ctx.accounts.find(tname);
+		if (@acc == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Account not found."); return; }
+		PlayerSession@ live = ctx.find_session_by_name(acc.name);
+		bool is_on = (@live != null && live.authed && live.peer_id != 0);
+		int er = ctx.accounts.effective_rank(acc);
+		string status = is_on ? "Online" : ("Offline, last seen " + format_last_seen_en(acc.last_seen_epoch, now_sec, TIMEZONE_OFFSET));
+		string pos_str = is_on
+			? ("Map " + live.current_map + " at X " + int(live.x) + ", Y " + int(live.y) + ", Z " + int(live.z))
+			: ("Saved map " + acc.current_map + " at X " + int(acc.last_x) + ", Y " + int(acc.last_y) + ", Z " + int(acc.last_z));
+		string ban_s = acc.banned_until < 0 ? ("Permanent ban: " + acc.ban_reason) : (acc.banned_until > now_sec ? ("Banned " + ((acc.banned_until - now_sec + 59) / 60) + "m left") : "Not banned");
+		string mute_s = acc.muted_until > now_sec ? ("Muted " + ((acc.muted_until - now_sec + 59) / 60) + "m left") : "Not muted";
+		string ip_s = (ps.rank >= RANK_ADMIN && acc.last_ip.length() > 0) ? (". Last IP: " + acc.last_ip) : "";
+		string txt = acc.name + " (ID " + acc.id + "), " + rank_label(er) + ". Status: " + status + ". "
+			+ pos_str + ". Playtime " + (acc.playtime_sec / 60) + " minutes. Hunts " + acc.kills_pve
+			+ ", Duels " + acc.kills_pvp + ", Deaths " + acc.deaths + ", Builds " + acc.built_count
+			+ ". " + ban_s + ", " + mute_s + ip_s + ".";
+		ctx.send_control(ps, pkt_2("ST_DETAIL", wire_escape(txt)));
+		return;
+	}
+
+	if (cmd == "act") {
+		string op = field(p, 2, "");
+		string tname = sanitize_name(field(p, 3, ""));
+		string a1 = field(p, 4, "");
+		string a2 = field(p, 5, "");
+		string a3 = field(p, 6, "");
+		AccountRecord@ tacc = ctx.accounts.find(tname);
+		PlayerSession@ tlive = ctx.find_session_by_name(tname);
+		int trank = @tacc != null ? ctx.accounts.effective_rank(tacc) : (@tlive != null ? tlive.rank : RANK_PLAYER);
+
+		if (op == "kick" || op == "mute" || op == "unmute" || op == "ban" || op == "unban") {
+			string[] mp = {"MOD", op, tname, a1, a2};
+			admin_handle_mod(ctx, ps, mp, now_sec);
+			return;
+		}
+
+		if (op == "tp_to") {
+			if (@tlive == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, tname + " is not online."); return; }
+			MapInstance@ dmi = ctx.player_map(tlive);
+			world_transfer_player_map(ctx, ps, dmi, tlive.x, tlive.y, tlive.z, tlive.facing);
+			ctx.logger.log("STAFF", ps.name + " teleported to " + tlive.name);
+			return;
+		}
+		if (op == "bring") {
+			if (@tlive == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, tname + " is not online."); return; }
+			if (ps.rank < RANK_ADMIN && !can_moderate(ps.rank, trank)) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Rank insufficient."); return; }
+			MapInstance@ smi = ctx.player_map(ps);
+			world_transfer_player_map(ctx, tlive, smi, ps.x, ps.y, ps.z, ps.facing);
+			ctx.send_speech(tlive, MBUF_SYSTEM, true, "You were summoned by " + ps.name + ".");
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Summoned " + tlive.name + ".");
+			ctx.logger.log("STAFF", ps.name + " brought " + tlive.name);
+			return;
+		}
+		if (op == "move_map") {
+			if (ps.rank < RANK_ADMIN) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Admin rank required."); return; }
+			if (@tlive == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, tname + " is not online."); return; }
+			MapInstance@ dest = ctx.find_map(a1);
+			if (@dest == null || dest.map.spawns.length() == 0) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Target map not found."); return; }
+			MapSpawn@ sp = dest.map.spawns[0];
+			world_transfer_player_map(ctx, tlive, dest, sp.x, sp.y, sp.z, sp.facing);
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Moved " + tlive.name + " to " + dest.map.name + ".");
+			ctx.logger.log("STAFF", ps.name + " moved " + tlive.name + " to map " + dest.slug);
+			return;
+		}
+		if (op == "heal") {
+			if (ps.rank < RANK_ADMIN) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Admin rank required."); return; }
+			if (@tlive == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, tname + " is not online."); return; }
+			tlive.hp = 100; tlive.hunger = 100; tlive.thirst = 100; tlive.stamina = 100; tlive.warmth = 100; tlive.fracture_until_ms = 0;
+			ctx.send_speech(tlive, MBUF_GAME, true, "Staff " + ps.name + " restored all your vitals.");
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Restored vitals for " + tlive.name + ".");
+			ctx.logger.log("STAFF", ps.name + " healed " + tlive.name);
+			return;
+		}
+		if (op == "give_item") {
+			if (ps.rank < RANK_ADMIN) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Admin rank required."); return; }
+			if (@tlive == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, tname + " is not online."); return; }
+			ItemDef@ idf = find_item(a1);
+			int q = safe_int(a2, 1, 99, 1);
+			if (@idf == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Unknown item."); return; }
+			tlive.add_item(idf.id, q);
+			ctx.send_inv(tlive);
+			ctx.send_speech(tlive, MBUF_GAME, false, "Staff " + ps.name + " granted you " + q + " " + idf.name + ".");
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Granted " + q + " " + idf.name + " to " + tlive.name + ".");
+			ctx.logger.log("STAFF", ps.name + " gave " + q + "x " + idf.id + " to " + tlive.name);
+			return;
+		}
+		if (op == "clear_inv") {
+			if (ps.rank < RANK_ADMIN || (@tlive != null && tlive.name.lower() != ps.name.lower() && !can_moderate(ps.rank, trank))) {
+				ctx.send_speech(ps, MBUF_SYSTEM, true, "Permission denied."); return;
+			}
+			if (@tlive == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, tname + " is not online."); return; }
+			tlive.inv.resize(0);
+			ctx.send_inv(tlive);
+			ctx.send_speech(tlive, MBUF_SYSTEM, true, "Your inventory was cleared by staff.");
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Cleared inventory of " + tlive.name + ".");
+			ctx.logger.log("STAFF", ps.name + " cleared inventory of " + tlive.name);
+			return;
+		}
+		if (op == "rescue") {
+			MapInstance@ defm = ctx.default_map();
+			if (@defm == null || defm.map.spawns.length() == 0) return;
+			MapSpawn@ sp = defm.map.spawns[0];
+			if (@tlive != null) {
+				world_transfer_player_map(ctx, tlive, defm, sp.x, sp.y, sp.z, sp.facing);
+				ctx.send_speech(tlive, MBUF_SYSTEM, true, "Staff rescued you to safe spawn.");
+			} else if (@tacc != null) {
+				tacc.current_map = defm.slug; tacc.last_x = sp.x; tacc.last_y = sp.y; tacc.last_z = sp.z;
+				ctx.accounts.dirty = true;
+			} else {
+				ctx.send_speech(ps, MBUF_SYSTEM, true, "Account not found.");
+				return;
+			}
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Reset " + tname + " to safe spawn.");
+			ctx.logger.log("STAFF", ps.name + " rescued " + tname);
+			return;
+		}
+		if (op == "clear_token") {
+			if (ps.rank < RANK_ADMIN || !can_moderate(ps.rank, trank)) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Permission denied."); return; }
+			if (@tacc == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Account not found."); return; }
+			tacc.token_hash = "";
+			ctx.accounts.dirty = true;
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Invalidated saved session token for " + tacc.name + ".");
+			ctx.logger.log("STAFF", ps.name + " cleared token for " + tacc.name);
+			return;
+		}
+		if (op == "set_rank") {
+			if (ps.rank < RANK_ADMIN || !can_moderate(ps.rank, trank)) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Permission denied."); return; }
+			if (@tacc == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Account not found."); return; }
+			if (ctx.accounts.is_dev_allowlisted(tacc.name)) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Cannot change allowlisted developer rank."); return; }
+			int max_grant = ps.rank == RANK_DEV ? RANK_ADMIN : (ps.rank - 1);
+			int nr = safe_int(a1, RANK_PLAYER, max_grant, RANK_PLAYER);
+			tacc.rank = nr;
+			ctx.accounts.dirty = true;
+			if (@tlive != null) {
+				tlive.rank = nr;
+				ctx.send_control(tlive, pkt_4("AUTH_OK", tlive.name, "" + tlive.rank, "-"));
+				ctx.send_speech(tlive, MBUF_SYSTEM, true, "Your rank was updated to " + rank_label(nr) + ".");
+			}
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Set " + tacc.name + " rank to " + rank_label(nr) + ".");
+			ctx.logger.log("STAFF", ps.name + " set rank of " + tacc.name + " to " + nr);
+			return;
+		}
+	}
+
+	if (cmd == "world") {
+		if (ps.rank < RANK_ADMIN) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Admin or Developer rank required."); return; }
+		string op = field(p, 2, "");
+		string a1 = field(p, 3, "");
+		if (op == "clear_drops") {
+			uint cleared = 0;
+			for (uint i = 0; i < ctx.maps.length(); i++) {
+				cleared += ctx.maps[i].drops.length();
+				ctx.maps[i].drops.resize(0);
+			}
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Cleared " + cleared + " dropped items across all maps.");
+			ctx.logger.log("STAFF", ps.name + " cleared " + cleared + " drops");
+			return;
+		}
+		if (ps.rank < RANK_DEV && (op == "bots" || op == "wildlife" || op == "reload")) {
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Developer rank required for this operation.");
+			return;
+		}
+		if (op == "weather") { ctx.is_raining = (a1 == "rain"); ctx.broadcast_speech(MBUF_GAME, false, ctx.is_raining ? "Staff summoned rain." : "Staff cleared the weather."); return; }
+		if (op == "time") { ctx.is_night = (a1 == "night"); ctx.cycle_sec = ctx.is_night ? 800 : 300; ctx.broadcast_speech(MBUF_GAME, false, ctx.is_night ? "Staff set time to night." : "Staff set time to day."); return; }
+		if (op == "bots") { int c = safe_int(a1, 0, 20, 0); wildlife_set_target_count(ctx, c, true); ctx.broadcast_speech(MBUF_SYSTEM, false, "Set practice bots to " + c + "."); return; }
+		if (op == "wildlife") { int c = safe_int(a1, 0, 40, 12); wildlife_set_target_count(ctx, c, false); ctx.broadcast_speech(MBUF_SYSTEM, false, "Set wildlife count to " + c + "."); return; }
+		if (op == "announce") {
+			string msg = strip_control_chars(wire_unescape(a1), 200);
+			if (msg.length() > 0) ctx.broadcast_speech(MBUF_SYSTEM, true, "Server Announcement: " + msg);
+			ctx.logger.log("STAFF", ps.name + " announced: " + msg);
+			return;
+		}
+		if (op == "save_now") {
+			admin_save_all_state(ctx);
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Saved all accounts, objects, and reports.");
+			ctx.logger.log("STAFF", ps.name + " forced Save All");
+			return;
+		}
+		if (op == "reload") {
+			string[] dp = {"DEV", "reload_all"};
+			admin_handle_dev(ctx, ps, dp);
+			return;
+		}
+	}
+
+	if (cmd == "spawn_mob") {
+		if (ps.rank < RANK_ADMIN) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Admin rank required."); return; }
+		string kind = field(p, 2, "wolf");
+		string mslug = field(p, 3, ps.current_map);
+		MapInstance@ mi = ctx.find_map(mslug);
+		if (@mi == null) @mi = ctx.player_map(ps);
+		double sx = safe_double(field(p, 4, "" + ps.x), 2.0, double(mi.map.width - 2), ps.x);
+		double sy = safe_double(field(p, 5, "" + ps.y), 2.0, double(mi.map.height - 2), ps.y);
+		double sz = safe_double(field(p, 6, "" + ps.z), double(mi.map.min_z), double(mi.map.max_z), ps.z);
+		spawn_mob(ctx, mi, kind, sx, sy, sz, kind == "bot_survivor");
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Spawned " + kind + " on " + mi.map.name + ".");
+		ctx.logger.log("STAFF", ps.name + " spawned " + kind + " on " + mi.slug);
+		return;
+	}
+
+	if (cmd == "tp_loc") {
+		string mslug = field(p, 2, ps.current_map);
+		MapInstance@ dest = ctx.find_map(mslug);
+		if (@dest == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Map not found."); return; }
+		double tx = safe_double(field(p, 3, "50"), 1.0, double(dest.map.width - 1), 50.0);
+		double ty = safe_double(field(p, 4, "50"), 1.0, double(dest.map.height - 1), 50.0);
+		double tz = safe_double(field(p, 5, "0"), double(dest.map.min_z), double(dest.map.max_z), 0.0);
+		world_transfer_player_map(ctx, ps, dest, tx, ty, tz, ps.facing);
+		return;
+	}
+
+	if (cmd == "lifecycle") {
+		if (ps.rank != RANK_DEV || !ctx.accounts.is_dev_allowlisted(ps.name)) {
+			ctx.logger.log("REFUSED", "Lifecycle command denied for " + ps.name);
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Developer allowlist required for server lifecycle operations.");
+			return;
+		}
+		string op = field(p, 2, "");
+		int sec = safe_int(field(p, 3, "10"), 0, 300, 10);
+		string txt = strip_control_chars(wire_unescape(field(p, 4, "")), 160);
+
+		if (op == "shutdown" || op == "restart") {
+			ctx.shutdown_pending = (op == "shutdown");
+			ctx.restart_pending = (op == "restart");
+			ctx.shutdown_at_ms = now_ms + uint64(sec) * 1000;
+			ctx.next_shutdown_announce_ms = now_ms;
+			ctx.shutdown_reason = txt.length() > 0 ? txt : ("Initiated by " + ps.name);
+			string action_w = ctx.restart_pending ? "restarting" : "shutting down";
+			ctx.logger.log("LIFECYCLE", ps.name + " scheduled " + op + " in " + sec + "s: " + ctx.shutdown_reason);
+			for (uint i = 0; i < ctx.sessions.length(); i++) {
+				if (ctx.sessions[i].authed && ctx.sessions[i].peer_id != 0) {
+					ctx.send_sfx_to(ctx.sessions[i], "self", "multi/server_shutdown.ogg", ctx.sessions[i].x, ctx.sessions[i].y, ctx.sessions[i].z, 0.9);
+				}
+			}
+			ctx.broadcast_speech(MBUF_SYSTEM, true, "Server is " + action_w + " in " + sec + " seconds. " + ctx.shutdown_reason);
+			return;
+		}
+		if (op == "cancel") {
+			ctx.shutdown_pending = false;
+			ctx.restart_pending = false;
+			ctx.broadcast_speech(MBUF_SYSTEM, true, "Scheduled shutdown or restart was cancelled by " + ps.name + ".");
+			ctx.logger.log("LIFECYCLE", ps.name + " cancelled pending shutdown/restart");
+			return;
+		}
+		if (op == "maintenance") {
+			ctx.maintenance_mode = (field(p, 3, "0") == "1");
+			ctx.broadcast_speech(MBUF_SYSTEM, true, ctx.maintenance_mode ? "Maintenance mode enabled. Non-staff logins paused." : "Maintenance mode disabled. Public logins open.");
+			ctx.logger.log("LIFECYCLE", ps.name + " set maintenance_mode=" + (ctx.maintenance_mode ? "1" : "0"));
+			return;
+		}
+		if (op == "guests") {
+			ctx.allow_guests = (field(p, 3, "0") == "1");
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Guest login is now " + (ctx.allow_guests ? "enabled" : "disabled") + ".");
+			ctx.logger.log("LIFECYCLE", ps.name + " set allow_guests=" + (ctx.allow_guests ? "1" : "0"));
+			return;
+		}
+		if (op == "motd") {
+			if (txt.length() > 0) {
+				ctx.motd = txt;
+				file_put_contents(ctx.data_dir + "/motd.txt", txt + "\n", false);
+				for (uint i = 0; i < ctx.sessions.length(); i++) {
+					if (ctx.sessions[i].authed && ctx.sessions[i].peer_id != 0) ctx.send_news(ctx.sessions[i]);
+				}
+				ctx.send_speech(ps, MBUF_SYSTEM, true, "Updated and saved Server MOTD.");
+				ctx.logger.log("STAFF", ps.name + " updated MOTD");
+			}
+			return;
+		}
+		if (op == "changelog_add") {
+			if (txt.length() > 0) {
+				ctx.changelog.insert_at(0, txt);
+				string buf = "";
+				for (uint i = 0; i < ctx.changelog.length(); i++) buf += ctx.changelog[i] + "\n";
+				file_put_contents(ctx.data_dir + "/changelog.txt", buf, false);
+				for (uint i = 0; i < ctx.sessions.length(); i++) {
+					if (ctx.sessions[i].authed && ctx.sessions[i].peer_id != 0) ctx.send_news(ctx.sessions[i]);
+				}
+				ctx.send_speech(ps, MBUF_SYSTEM, true, "Added changelog entry.");
+				ctx.logger.log("STAFF", ps.name + " added changelog line");
+			}
+			return;
+		}
+	}
+
+	if (cmd == "logs") {
+		int lim = safe_int(field(p, 2, "25"), 5, 50, 25);
+		uint n = ctx.logger.recent_lines.length();
+		uint start = int(n) > lim ? n - uint(lim) : 0;
+		string[] chunks;
+		string cur = "";
+		for (uint i = start; i < n; i++) {
+			string line = wire_escape(ctx.logger.recent_lines[i]);
+			if (cur.length() > 0 && cur.length() + line.length() + 1 > 1020) {
+				chunks.insert_last(cur); cur = "";
+			}
+			if (cur.length() > 0) cur += "\n";
+			cur += line;
+		}
+		if (cur.length() > 0 || chunks.length() == 0) chunks.insert_last(cur);
+		for (uint i = 0; i < chunks.length(); i++) {
+			ctx.send_control(ps, pkt_build("ST_LOGS", {"" + i, "" + chunks.length(), chunks[i].length() > 0 ? chunks[i] : "-"}));
+		}
+		return;
+	}
+
+	if (cmd == "reports_list") {
+		string[] chunks;
+		string cur = "";
+		for (int i = int(ctx.report_store.reports.length()) - 1; i >= 0; i--) {
+			StaffReport@ r = ctx.report_store.reports[uint(i)];
+			string row = r.id + "~" + wire_escape(r.reporter) + "~" + wire_escape(r.target.length() > 0 ? r.target : "-")
+				+ "~" + wire_escape(r.map_slug) + "~" + fmt2(r.x) + "~" + fmt2(r.y) + "~" + fmt2(r.z)
+				+ "~" + r.created_epoch + "~" + (r.resolved ? "1" : "0") + "~" + wire_escape(r.resolved_by) + "~" + wire_escape(r.message);
+			if (cur.length() > 0 && cur.length() + row.length() + 1 > 1020) {
+				chunks.insert_last(cur); cur = "";
+			}
+			if (cur.length() > 0) cur += "\n";
+			cur += row;
+		}
+		if (cur.length() > 0 || chunks.length() == 0) chunks.insert_last(cur);
+		for (uint i = 0; i < chunks.length(); i++) {
+			ctx.send_control(ps, pkt_build("ST_REPORTS", {"" + i, "" + chunks.length(), chunks[i].length() > 0 ? wire_escape(chunks[i]) : "-"}));
+		}
+		return;
+	}
+
+	if (cmd == "report_resolve") {
+		uint64 rid = uint64(parse_int(field(p, 2, "0")));
+		for (uint i = 0; i < ctx.report_store.reports.length(); i++) {
+			if (ctx.report_store.reports[i].id == rid) {
+				ctx.report_store.reports[i].resolved = true;
+				ctx.report_store.reports[i].resolved_by = ps.name;
+				string serr;
+				ctx.report_store.save(serr);
+				ctx.send_speech(ps, MBUF_SYSTEM, true, "Resolved report #" + rid + ".");
+				ctx.logger.log("STAFF", ps.name + " resolved report #" + rid);
+				return;
+			}
+		}
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Report not found.");
 	}
 }

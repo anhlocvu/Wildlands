@@ -22,6 +22,13 @@ All audio assets are real recordings from verified open-license sources, byte-ve
 | `ui/msg_social.ogg` | Kenney Interface Sounds (CC0) |
 | `ui/notify_friend.ogg` | Kenney Interface Sounds (CC0) |
 | `ui/sonar_ping.ogg` | Kenney Interface Sounds (CC0) |
+| `ui/track_start.ogg` | Kenney Interface Sounds (CC0) |
+| `ui/track_stop.ogg` | Kenney Interface Sounds (CC0) |
+| `ui/track_ping.ogg` | Kenney Interface Sounds (CC0) |
+| `ui/track_lost.ogg` | Kenney Interface Sounds (CC0) |
+| `ui/track_arrived.ogg` | Kenney Interface Sounds (CC0) |
+| `ui/cat_switch.ogg` | Kenney Interface Sounds (CC0) |
+| `ui/staff_alert.ogg` | 100 CC0 SFX by rubberduck (CC0) |
 | `steps/grass_1.ogg` | Kenney Impact Sounds (CC0) |
 | `steps/grass_2.ogg` | Kenney Impact Sounds (CC0) |
 | `steps/grass_3.ogg` | Kenney Impact Sounds (CC0) |
@@ -40,9 +47,14 @@ All audio assets are real recordings from verified open-license sources, byte-ve
 | `steps/water_1.ogg` | 40 CC0 Water Splash SFX by rubberduck (CC0) |
 | `steps/water_2.ogg` | 40 CC0 Water Splash SFX by rubberduck (CC0) |
 | `steps/water_3.ogg` | 40 CC0 Water Splash SFX by rubberduck (CC0) |
+| `steps/carpet_1.ogg` | Kenney Impact Sounds (CC0) |
+| `steps/carpet_2.ogg` | Kenney Impact Sounds (CC0) |
+| `steps/carpet_3.ogg` | Kenney Impact Sounds (CC0) |
 | `steps/jump.ogg` | RPG Sound Pack by artisticdude (CC0) |
 | `steps/land_soft.ogg` | Kenney Impact Sounds (CC0) |
 | `steps/land_hard.ogg` | Kenney Impact Sounds (CC0) |
+| `steps/fall_air.ogg` | Swishes Sound Pack by artisticdude (CC0) |
+| `steps/water_splash_big.ogg` | 40 CC0 Water Splash SFX by rubberduck (CC0) |
 | `steps/wall_bump_wood.ogg` | Kenney Impact Sounds (CC0) |
 | `steps/wall_bump_stone.ogg` | Kenney Impact Sounds (CC0) |
 | `survival/chop_wood.ogg` | Kenney RPG Audio (CC0) |
@@ -67,6 +79,12 @@ All audio assets are real recordings from verified open-license sources, byte-ve
 | `builder/chest_open.ogg` | 100 CC0 SFX by rubberduck (CC0) |
 | `builder/chest_close.ogg` | 100 CC0 SFX by rubberduck (CC0) |
 | `builder/beacon_ping.ogg` | 100 CC0 SFX by rubberduck (CC0) |
+| `builder/line_add.ogg` | Kenney Interface Sounds (CC0) |
+| `builder/line_edit.ogg` | RPG Sound Pack by artisticdude (CC0) |
+| `builder/line_delete.ogg` | Kenney Interface Sounds (CC0) |
+| `builder/map_create.ogg` | Kenney RPG Audio (CC0) |
+| `world/portal_travel.ogg` | RPG Sound Pack by artisticdude (CC0) |
+| `world/hazard_hit.ogg` | 100 CC0 SFX by rubberduck (CC0) |
 | `combat/swing_melee.ogg` | Swishes Sound Pack by artisticdude (CC0) |
 | `combat/hit_flesh.ogg` | 100 CC0 SFX by rubberduck (CC0) |
 | `combat/hit_block.ogg` | Kenney Impact Sounds (CC0) |
@@ -75,6 +93,7 @@ All audio assets are real recordings from verified open-license sources, byte-ve
 | `combat/bow_release.ogg` | Bow Arrow Shot OGA (CC-BY-SA) |
 | `combat/arrow_fly.ogg` | Swishes Sound Pack by artisticdude (CC0) |
 | `combat/hurt.ogg` | 80 CC0 Creature SFX by rubberduck (CC0) |
+| `combat/bone_break.ogg` | Kenney Impact Sounds (CC0) |
 | `combat/death.ogg` | 80 CC0 Creature SFX by rubberduck (CC0) |
 | `combat/respawn.ogg` | RPG Sound Pack (CC0) |
 | `combat/duel_start.ogg` | 100 CC0 SFX by rubberduck (CC0) |
@@ -91,10 +110,13 @@ All audio assets are real recordings from verified open-license sources, byte-ve
 | `ambience/rain_loop.ogg` | 40 CC0 Water Splash SFX by rubberduck (CC0) |
 | `ambience/settlement_hearth.ogg` | Wikimedia Commons Campfire Ambience (CC BY 3.0) |
 | `ambience/wind_gust.ogg` | Wikimedia Commons Gentle Breeze (Public Domain) |
+| `ambience/cave_loop.ogg` | 40 CC0 Water Splash SFX by rubberduck (CC0) |
+| `ambience/indoor_room.ogg` | 40 CC0 Water Splash SFX by rubberduck (CC0) |
 | `multi/player_join.ogg` | 100 CC0 SFX by rubberduck (CC0) |
 | `multi/player_leave.ogg` | Kenney Interface Sounds (CC0) |
 | `multi/connect_ok.ogg` | Kenney Interface Sounds (CC0) |
 | `multi/disconnect.ogg` | Kenney Interface Sounds (CC0) |
 | `multi/level_up.ogg` | 100 CC0 SFX by rubberduck (CC0) |
 | `multi/countdown_tick.ogg` | Kenney Interface Sounds (CC0) |
+| `multi/server_shutdown.ogg` | Kenney Interface Sounds (CC0) |
 | `music/menu_theme.ogg` | Just As Soon by Kevin MacLeod / Incompetech (CC BY 3.0) |

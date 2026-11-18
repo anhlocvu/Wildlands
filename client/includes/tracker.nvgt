@@ -1,0 +1,319 @@
+// Client STW-Style 6-Category Tracker (All, Objects, Items, Animals, Structures, Players).
+// Strict <= 30-tile scan list, live 3D radar beacon via sound_pool (zero pitch-elevation hacks),
+// Ctrl+=/Ctrl+- category cycle, =/- item cycle, Backspace track, Shift+Backspace stop, O readout.
+
+#include "net_client.nvgt"
+
+const int TRK_CAT_ALL = 0;
+const int TRK_CAT_OBJECTS = 1;
+const int TRK_CAT_ITEMS = 2;
+const int TRK_CAT_ANIMALS = 3;
+const int TRK_CAT_STRUCTURES = 4;
+const int TRK_CAT_PLAYERS = 5;
+const int TRK_CAT_COUNT = 6;
+
+string tracker_cat_name(int cat) {
+	switch (cat) {
+		case TRK_CAT_ALL: return "All";
+		case TRK_CAT_OBJECTS: return "Objects";
+		case TRK_CAT_ITEMS: return "Items";
+		case TRK_CAT_ANIMALS: return "Animals";
+		case TRK_CAT_STRUCTURES: return "Structures";
+		case TRK_CAT_PLAYERS: return "Players";
+	}
+	return "All";
+}
+
+class TrackerTarget {
+	string stable_id;
+	int category = TRK_CAT_OBJECTS;
+	string label;
+	double x = 0.0, y = 0.0, z = 0.0;
+	double dist = 0.0;
+}
+
+class StwTracker {
+	int cur_category = TRK_CAT_ALL;
+	string focused_id = "";
+	string active_id = "";
+	string active_label = "";
+	string active_map_slug = "";
+	bool arrived_announced = false;
+	timer ping_timer;
+	uint64 ping_interval_ms = 900;
+
+	void reset() {
+		focused_id = "";
+		active_id = "";
+		active_label = "";
+		active_map_slug = "";
+		arrived_announced = false;
+	}
+
+	TrackerTarget@[] collect(NetClient@ nc, int cat, double max_range = TRACKER_MAX_DIST) {
+		TrackerTarget@[] out_list;
+		if (@nc == null || !nc.snap_received) return out_list;
+
+		// 1. Live entities from earshot snapshot (Players, Animals, Items)
+		for (uint i = 0; i < nc.ents.length(); i++) {
+			ClientEnt@ e = nc.ents[i];
+			int e_cat = TRK_CAT_ANIMALS;
+			string lbl = e.name;
+			if (e.kind == "player") {
+				e_cat = TRK_CAT_PLAYERS;
+				lbl = e.name;
+			} else if (e.kind == "drop") {
+				e_cat = TRK_CAT_ITEMS;
+				lbl = e.name + " x" + e.state;
+			}
+			if (cat != TRK_CAT_ALL && cat != e_cat) continue;
+			double d = get_3d_distance(nc.my_x, nc.my_y, nc.my_z, e.cur_x, e.cur_y, e.cur_z);
+			if (d > max_range) continue;
+			TrackerTarget rt;
+			rt.stable_id = "ent:" + e.id_str;
+			rt.category = e_cat;
+			rt.label = lbl;
+			rt.x = e.cur_x; rt.y = e.cur_y; rt.z = e.cur_z;
+			rt.dist = d;
+			out_list.insert_last(rt);
+		}
+
+		// 2. Built player structures (Structures)
+		if (cat == TRK_CAT_ALL || cat == TRK_CAT_STRUCTURES) {
+			for (uint i = 0; i < nc.objs.length(); i++) {
+				ClientObj@ o = nc.objs[i];
+				double d = get_3d_distance(nc.my_x, nc.my_y, nc.my_z, o.x, o.y, o.z);
+				if (d > max_range) continue;
+				StructDef@ def = find_struct(o.type);
+				TrackerTarget rt;
+				rt.stable_id = "obj:" + o.id;
+				rt.category = TRK_CAT_STRUCTURES;
+				rt.label = (@def != null ? def.name : o.type);
+				if (@def != null && def.is_door) rt.label += (o.is_open ? " open" : " closed");
+				if (o.locked) rt.label += " locked";
+				rt.x = o.x; rt.y = o.y; rt.z = o.z;
+				rt.dist = d;
+				out_list.insert_last(rt);
+			}
+		}
+
+		// 3. Static world Objects (Resources, Stairs, Portals, Water, Emitters)
+		if (nc.map_loaded && (cat == TRK_CAT_ALL || cat == TRK_CAT_OBJECTS)) {
+			for (uint i = 0; i < nc.map.resources.length(); i++) {
+				MapResourceSpawn@ mr = nc.map.resources[i];
+				double d = get_3d_distance(nc.my_x, nc.my_y, nc.my_z, mr.x, mr.y, mr.z);
+				if (d > max_range) continue;
+				TrackerTarget rt;
+				rt.stable_id = "res:" + i;
+				rt.category = TRK_CAT_OBJECTS;
+				rt.label = mr.type.replace("_", " ", true);
+				rt.x = mr.x; rt.y = mr.y; rt.z = mr.z;
+				rt.dist = d;
+				out_list.insert_last(rt);
+			}
+			for (uint i = 0; i < nc.map.platforms.length(); i++) {
+				MapPlatform@ pl = nc.map.platforms[i];
+				if (pl.kind != "stairs") continue;
+				double cx = clampd(nc.my_x, pl.min_x, pl.max_x);
+				double cy = clampd(nc.my_y, pl.min_y, pl.max_y);
+				double cz = clampd(nc.my_z, pl.min_z, pl.max_z);
+				double d = get_3d_distance(nc.my_x, nc.my_y, nc.my_z, cx, cy, cz);
+				if (d > max_range) continue;
+				TrackerTarget rt;
+				rt.stable_id = "str:" + i;
+				rt.category = TRK_CAT_OBJECTS;
+				rt.label = pl.label + " stairs";
+				rt.x = 0.5 * (pl.min_x + pl.max_x);
+				rt.y = 0.5 * (pl.min_y + pl.max_y);
+				rt.z = cz;
+				rt.dist = get_3d_distance(nc.my_x, nc.my_y, nc.my_z, rt.x, rt.y, rt.z);
+				if (rt.dist > max_range) { rt.x = cx; rt.y = cy; rt.dist = d; }
+				out_list.insert_last(rt);
+			}
+			for (uint i = 0; i < nc.map.portals.length(); i++) {
+				MapPortal@ prt = nc.map.portals[i];
+				double px = 0.5 * (prt.min_x + prt.max_x);
+				double py = 0.5 * (prt.min_y + prt.max_y);
+				double pz = 0.5 * (prt.min_z + prt.max_z);
+				double d = get_3d_distance(nc.my_x, nc.my_y, nc.my_z, px, py, pz);
+				if (d > max_range) continue;
+				TrackerTarget rt;
+				rt.stable_id = "prt:" + i;
+				rt.category = TRK_CAT_OBJECTS;
+				rt.label = prt.label + " portal";
+				rt.x = px; rt.y = py; rt.z = pz;
+				rt.dist = d;
+				out_list.insert_last(rt);
+			}
+			for (uint i = 0; i < nc.map.waters.length(); i++) {
+				MapWater@ lw = nc.map.waters[i];
+				double cx = clampd(nc.my_x, lw.min_x, lw.max_x);
+				double cy = clampd(nc.my_y, lw.min_y, lw.max_y);
+				double cz = lw.max_z;
+				double d = get_3d_distance(nc.my_x, nc.my_y, nc.my_z, cx, cy, cz);
+				if (d > max_range) continue;
+				TrackerTarget rt;
+				rt.stable_id = "wat:" + i;
+				rt.category = TRK_CAT_OBJECTS;
+				rt.label = lw.label + " water";
+				rt.x = cx; rt.y = cy; rt.z = cz;
+				rt.dist = d;
+				out_list.insert_last(rt);
+			}
+			for (uint i = 0; i < nc.map.emitters.length(); i++) {
+				MapEmitter@ em = nc.map.emitters[i];
+				double d = get_3d_distance(nc.my_x, nc.my_y, nc.my_z, em.x, em.y, em.z);
+				if (d > max_range) continue;
+				TrackerTarget rt;
+				rt.stable_id = "emt:" + i;
+				rt.category = TRK_CAT_OBJECTS;
+				rt.label = em.label;
+				rt.x = em.x; rt.y = em.y; rt.z = em.z;
+				rt.dist = d;
+				out_list.insert_last(rt);
+			}
+		}
+
+		// Insertion sort closest first
+		for (uint i = 1; i < out_list.length(); i++) {
+			TrackerTarget@ key = out_list[i];
+			int j = int(i) - 1;
+			while (j >= 0 && out_list[uint(j)].dist > key.dist) {
+				@out_list[uint(j) + 1] = @out_list[uint(j)];
+				j--;
+			}
+			@out_list[uint(j) + 1] = @key;
+		}
+		return out_list;
+	}
+
+	TrackerTarget@ find_by_id(NetClient@ nc, const string&in id, double max_range) {
+		if (id.length() == 0) return null;
+		TrackerTarget@[] all = collect(nc, TRK_CAT_ALL, max_range);
+		for (uint i = 0; i < all.length(); i++) {
+			if (all[i].stable_id == id) return all[i];
+		}
+		return null;
+	}
+
+	void switch_category(NetClient@ nc, int dir) {
+		cur_category = (cur_category + dir) % TRK_CAT_COUNT;
+		if (cur_category < 0) cur_category += TRK_CAT_COUNT;
+		focused_id = "";
+		g_audio.play_ui_cue("ui/cat_switch.ogg", 0.7f);
+		TrackerTarget@[] list = collect(nc, cur_category, TRACKER_MAX_DIST);
+		string cname = tracker_cat_name(cur_category);
+		if (list.length() == 0) {
+			say(cname + ", none nearby.", true);
+		} else {
+			focused_id = list[0].stable_id;
+			say(cname + ", " + list.length() + ".", true);
+		}
+	}
+
+	void step_item(NetClient@ nc, int dir) {
+		TrackerTarget@[] list = collect(nc, cur_category, TRACKER_MAX_DIST);
+		if (list.length() == 0) {
+			g_audio.play_ui_cue("error.ogg", 0.65f);
+			say("No " + tracker_cat_name(cur_category) + " within " + int(TRACKER_MAX_DIST) + " steps.", true);
+			return;
+		}
+		int idx = -1;
+		if (focused_id.length() > 0) {
+			for (uint i = 0; i < list.length(); i++) {
+				if (list[i].stable_id == focused_id) { idx = int(i); break; }
+			}
+		}
+		if (idx < 0) idx = dir >= 0 ? 0 : int(list.length()) - 1;
+		else {
+			idx += dir;
+			if (idx < 0) idx = int(list.length()) - 1;
+			if (idx >= int(list.length())) idx = 0;
+		}
+		TrackerTarget@ rt = list[uint(idx)];
+		focused_id = rt.stable_id;
+		g_audio.play_world_sfx("self", "ui/track_ping.ogg", rt.x, rt.y, rt.z, 0.75f, false);
+		string desc = describe_target(rt.label, double(nc.my_facing), nc.my_x, nc.my_y, nc.my_z, rt.x, rt.y, rt.z);
+		say(desc + " " + (idx + 1) + " of " + list.length() + ".", true);
+	}
+
+	void start_tracking(NetClient@ nc) {
+		TrackerTarget@ rt = null;
+		if (focused_id.length() > 0) @rt = find_by_id(nc, focused_id, TRACKER_MAX_DIST);
+		if (@rt == null) {
+			TrackerTarget@[] list = collect(nc, cur_category, TRACKER_MAX_DIST);
+			if (list.length() > 0) @rt = list[0];
+		}
+		if (@rt == null) {
+			g_audio.play_ui_cue("error.ogg", 0.65f);
+			say("Nothing selected or nearby to track.", true);
+			return;
+		}
+		focused_id = rt.stable_id;
+		active_id = rt.stable_id;
+		active_label = rt.label;
+		active_map_slug = nc.current_map_slug;
+		arrived_announced = false;
+		ping_interval_ms = 0;
+		ping_timer.restart();
+		g_audio.play_ui_cue("ui/track_start.ogg", 0.8f);
+		say("Started tracking " + active_label + ".", true);
+	}
+
+	void stop_tracking() {
+		if (active_id.length() == 0) {
+			say("Not tracking anything.", true);
+			return;
+		}
+		string old_lbl = active_label;
+		active_id = "";
+		active_label = "";
+		active_map_slug = "";
+		arrived_announced = false;
+		g_audio.play_ui_cue("ui/track_stop.ogg", 0.8f);
+		say("Stopped tracking " + old_lbl + ".", true);
+	}
+
+	void read_tracked(NetClient@ nc) {
+		TrackerTarget@ rt = null;
+		if (active_id.length() > 0) @rt = find_by_id(nc, active_id, EARSHOT_RADIUS);
+		else if (focused_id.length() > 0) @rt = find_by_id(nc, focused_id, TRACKER_MAX_DIST);
+		if (@rt == null) {
+			g_audio.play_ui_cue("error.ogg", 0.6f);
+			say("No target selected. Use Equals and Minus to browse targets.", true);
+			return;
+		}
+		say(describe_target(rt.label, double(nc.my_facing), nc.my_x, nc.my_y, nc.my_z, rt.x, rt.y, rt.z), true);
+	}
+
+	void tick(NetClient@ nc) {
+		if (active_id.length() == 0 || !nc.snap_received) return;
+		if (active_map_slug != nc.current_map_slug) {
+			active_id = "";
+			return;
+		}
+		TrackerTarget@ rt = find_by_id(nc, active_id, EARSHOT_RADIUS);
+		if (@rt == null) {
+			string lost_lbl = active_label;
+			active_id = "";
+			active_label = "";
+			g_audio.play_ui_cue("ui/track_lost.ogg", 0.8f);
+			say("Lost track of " + lost_lbl + ".", true);
+			return;
+		}
+		active_label = rt.label;
+		if (rt.dist <= 1.6 && !arrived_announced) {
+			arrived_announced = true;
+			g_audio.play_ui_cue("ui/track_arrived.ogg", 0.75f);
+		} else if (rt.dist > 3.0) {
+			arrived_announced = false;
+		}
+		if (ping_timer.elapsed >= ping_interval_ms) {
+			ping_timer.restart();
+			g_audio.play_world_sfx("self", "ui/track_ping.ogg", rt.x, rt.y, rt.z, 0.8f, true);
+			ping_interval_ms = rt.dist <= 4.0 ? 360 : (rt.dist <= 12.0 ? 640 : 1050);
+		}
+	}
+}
+
+StwTracker g_tracker;

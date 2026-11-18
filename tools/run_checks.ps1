@@ -43,9 +43,11 @@ function Cleanup-Harness {
 }
 
 function Start-TestServer {
-    param([int]$Port = $TestPort, [string]$DataDir = $TmpData, [switch]$ProdMode)
+    param([int]$Port = $TestPort, [string]$DataDir = $TmpData, [string]$MapsDir = "", [switch]$ProdMode)
     $srvExe = Join-Path $Root "server\server.exe"
-    $args = @("--headless", "--port", "$Port", "--data-dir", $DataDir, "--map", "maps/wildlands_valley.map", "--bots", "1", "--wildlife", "8")
+    $useMaps = if ($MapsDir.Length -gt 0) { $MapsDir } else { Join-Path $Root "server\maps" }
+    $primaryMap = Join-Path $useMaps "wildlands_valley.map"
+    $args = @("--headless", "--port", "$Port", "--data-dir", $DataDir, "--maps-dir", $useMaps, "--map", $primaryMap, "--bots", "1", "--wildlife", "8")
     if (-not $ProdMode) { $args = @("--test-mode") + $args }
     $script:ServerProc = Start-Process -FilePath $srvExe -ArgumentList $args -WorkingDirectory $Root -PassThru -WindowStyle Hidden
     $deadline = (Get-Date).AddSeconds(3)
@@ -79,23 +81,34 @@ try {
     & $Nvgt -c client/client.nvgt
     if ($LASTEXITCODE -ne 0) { throw "Client compile failed" }
 
-    Write-Host "`n=== 3. E2E Network Integration (Phase 1: Handshake, Auth, World, Chat, Build, Mod) ==="
+    Write-Host "`n=== 3. E2E Network Integration (Phase 1: Handshake, Auth, World, Verticality, Multi-Map, Builder F8, Staff F9) ==="
     if (Test-Path $TmpData) { Remove-Item -Path $TmpData -Recurse -Force }
     New-Item -ItemType Directory -Path $TmpData -Force | Out-Null
+    $TmpMaps = Join-Path $TmpData "maps"
+    New-Item -ItemType Directory -Path $TmpMaps -Force | Out-Null
+    Copy-Item "server\maps\*.map" $TmpMaps -Force
     Copy-Item "server\data\motd.txt" (Join-Path $TmpData "motd.txt") -Force
     Copy-Item "server\data\changelog.txt" (Join-Path $TmpData "changelog.txt") -Force
     Set-Content -Path (Join-Path $TmpData "devs.txt") -Value "TestDev`n"
 
-    Start-TestServer
+    Start-TestServer -MapsDir $TmpMaps
     & $Nvgt "tools\net_integration_check.nvgt" -- --phase 1 --port $TestPort
     if ($LASTEXITCODE -ne 0) { throw "Integration Phase 1 failed (exit $LASTEXITCODE)" }
     Stop-TestServer
 
-    Write-Host "`n=== 4. E2E Persistence Across Server Restart & Real Client.exe Smoke Tests ==="
-    Start-TestServer
+    Write-Host "`n=== 4. E2E Persistence Across Restart, Graceful Shutdown & Real Client.exe Smoke Tests ==="
+    Start-TestServer -MapsDir $TmpMaps
     & $Nvgt "tools\net_integration_check.nvgt" -- --phase 2 --port $TestPort
     if ($LASTEXITCODE -ne 0) { throw "Integration Phase 2 failed (exit $LASTEXITCODE)" }
+    if (-not $script:ServerProc.WaitForExit(3500)) {
+        throw "Server did not exit cleanly after STAFF|lifecycle|shutdown"
+    }
+    if ($script:ServerProc.ExitCode -ne 0) {
+        throw "Server lifecycle shutdown returned non-zero exit code $($script:ServerProc.ExitCode)"
+    }
+    $script:ServerProc = $null
 
+    Start-TestServer -MapsDir $TmpMaps
     $TmpCliSmoke = Join-Path $Root "tools\_tmp_cli_smoke"
     $cliExe = Join-Path $Root "client\client.exe"
     Write-Host "Running live compiled client.exe E2E smoke test..."

@@ -45,24 +45,29 @@ void main() {
 			all_valid = false;
 		}
 	}
-	check("manifest entries count >= 90", count >= 90, "count=" + count);
+	check("manifest entries count >= 110", count >= 110, "count=" + count);
 	check("all manifest files valid OggS", all_valid);
 
-	string map_path = "server/maps/wildlands_valley.map";
-	if (!file_exists(map_path)) map_path = "../server/maps/wildlands_valley.map";
-	WorldMap m;
-	string err;
-	if (m.load_from_file(map_path, err)) {
-		string[]@ refs = m.collect_sound_refs();
-		bool map_refs_ok = true;
-		for (uint i = 0; i < refs.length(); i++) {
-			if (!seen.exists(refs[i])) {
-				println("  FAIL  map references sound missing from manifest: " + refs[i]);
-				fails++;
-				map_refs_ok = false;
+	string[] map_files = {"wildlands_valley.map", "skywatch_citadel.map"};
+	for (uint mi = 0; mi < map_files.length(); mi++) {
+		string map_path = "server/maps/" + map_files[mi];
+		if (!file_exists(map_path)) map_path = "../server/maps/" + map_files[mi];
+		WorldMap m;
+		string err;
+		bool loaded = m.load_from_file(map_path, err);
+		check("map loads: " + map_files[mi], loaded, err);
+		if (loaded) {
+			string[]@ refs = m.collect_sound_refs();
+			bool map_refs_ok = true;
+			for (uint i = 0; i < refs.length(); i++) {
+				if (!seen.exists(refs[i])) {
+					println("  FAIL  " + map_files[mi] + " references missing sound: " + refs[i]);
+					fails++;
+					map_refs_ok = false;
+				}
 			}
+			check("all sound refs in manifest: " + map_files[mi], map_refs_ok);
 		}
-		check("all map sound refs in manifest", map_refs_ok);
 	}
 
 	init_catalog();

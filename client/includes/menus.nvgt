@@ -1,7 +1,7 @@
 // Accessible in-game and main-menu screens: Inventory, Crafting, Social, Settings (7-layer mixer),
 // News & Changelog, Learn Game Sounds, Rank Moderation, Dev Console, and Pause Menu.
 
-#include "builder_ui.nvgt"
+#include "staff_ui.nvgt"
 #include "tutorial.nvgt"
 #include "radar_hud.nvgt"
 
@@ -155,8 +155,9 @@ void run_social_menu(NetClient@ nc, ClientProfile@ prof) {
 		if (@prof != null && prof.blocked_players.length() > 0) {
 			m.add_item("Unblock Saved Blocked Player (" + prof.blocked_players.length() + ")", "__unblock_list");
 		}
-		if (nc.my_rank >= RANK_MOD) m.add_item("Moderation Panel (" + rank_label(nc.my_rank) + ")", "__mod");
-		if (nc.my_rank >= RANK_DEV) m.add_item("Developer Console", "__dev");
+		if (nc.my_rank >= RANK_MOD) m.add_item("Staff Panel (F9)", "__staff");
+		if (nc.my_rank >= RANK_MOD) m.add_item("Quick Moderation Commands", "__mod");
+		if (nc.my_rank >= RANK_DEV) m.add_item("Quick Developer Console", "__dev");
 		m.add_item("Back", "__back");
 
 		while (m.monitor()) {
@@ -166,6 +167,7 @@ void run_social_menu(NetClient@ nc, ClientProfile@ prof) {
 		}
 		string sel = m.selected_item_id;
 		if (sel.length() == 0 || sel == "__back") return;
+		if (sel == "__staff") { run_staff_panel(nc); continue; }
 		if (sel == "__leaderboard") { nc.send_control("SOCIAL|leaderboard"); continue; }
 		if (sel == "__my_profile") { nc.send_control("SOCIAL|profile|" + nc.my_name); continue; }
 		if (sel == "__mod") { run_mod_menu(nc); continue; }
@@ -537,12 +539,12 @@ string run_pause_menu(NetClient@ nc, ClientProfile@ prof) {
 	m.add_item("Inventory (I)", "inv");
 	m.add_item("Crafting (C)", "craft");
 	m.add_item("Survival Building (B)", "build");
-	if (nc.my_rank >= RANK_BUILDER) m.add_item("Audio Map Builder (F8)", "mapbuild");
+	if (nc.my_rank >= RANK_BUILDER) m.add_item("Audio Map Builder Hub (F8)", "mapbuild");
 	m.add_item("Social and Online Players (F2)", "social");
-	if (nc.my_rank >= RANK_MOD) m.add_item("Moderation Panel", "mod");
-	if (nc.my_rank >= RANK_DEV) m.add_item("Developer Console", "dev");
+	if (nc.my_rank >= RANK_MOD) m.add_item("Staff Panel (F9)", "staff");
 	m.add_item("Settings and 7-Layer Mixer", "settings");
 	m.add_item("Interactive Audio Tutorial", "tutorial");
+	m.add_item("Guides (Builder and Staff Reference)", "guides");
 	m.add_item("News and Changelog", "news");
 	m.add_item("Learn Game Sounds", "sounds");
 	m.add_item("Sign Out and Forget Saved Login", "signout");
@@ -558,12 +560,24 @@ string run_pause_menu(NetClient@ nc, ClientProfile@ prof) {
 	if (sel == "inv") { run_inventory_menu(nc); return "resume"; }
 	if (sel == "craft") { run_crafting_menu(nc); return "resume"; }
 	if (sel == "build") { run_survival_build_menu(nc); return "resume"; }
-	if (sel == "mapbuild") { nc.send_control("BUILDMAP|toggle"); return "resume"; }
+	if (sel == "mapbuild") { run_map_builder_hub(nc); return "resume"; }
 	if (sel == "social") { run_social_menu(nc, prof); return "resume"; }
-	if (sel == "mod") { run_mod_menu(nc); return "resume"; }
-	if (sel == "dev") { run_dev_menu(nc); return "resume"; }
+	if (sel == "staff") { run_staff_panel(nc); return "resume"; }
 	if (sel == "settings") { run_settings_menu(prof, nc); return "resume"; }
 	if (sel == "tutorial") { run_interactive_tutorial(prof); g_audio.set_map(nc.map); return "resume"; }
+	if (sel == "guides") {
+		menu gm;
+		init_std_menu(gm, "Documentation Guides. Choose a guide.");
+		gm.add_item("Player Controls Reference", "CONTROLS.md");
+		gm.add_item("Audio Map Builder Guide (F8)", "BUILDER_GUIDE.md");
+		gm.add_item("Staff Operations Guide (F9)", "STAFF_GUIDE.md");
+		gm.add_item("Back", "__back");
+		while (gm.monitor()) { wait(5); pump_menu_net(nc); }
+		if (gm.selected_item_id.length() > 0 && gm.selected_item_id != "__back") {
+			run_doc_reader(nc, gm.selected_item_id, gm.selected_item_id, "See docs/" + gm.selected_item_id + " in the game folder.");
+		}
+		return "resume";
+	}
 	if (sel == "news") { run_news_menu(nc); return "resume"; }
 	if (sel == "sounds") { run_learn_sounds_menu(nc); return "resume"; }
 	if (sel == "signout") {
