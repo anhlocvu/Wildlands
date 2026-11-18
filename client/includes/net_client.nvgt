@@ -1,0 +1,784 @@
+// Client ENet networking, handshake/auth state, chunked map assembly, 2-snapshot interpolation, and server event handlers.
+
+#include "ui_forms.nvgt"
+#include "../../common/items.nvgt"
+
+const int CONN_IDLE = 0;
+const int CONN_CONNECTING = 1;
+const int CONN_WAIT_WELCOME = 2;
+const int CONN_WAIT_AUTH = 3;
+const int CONN_READY = 4;
+const int CONN_DISCONNECTED = 5;
+
+class ClientEnt {
+	string id_str;
+	string kind;
+	string name;
+	double prev_x = 0.0, prev_y = 0.0, prev_z = 0.0;
+	double cur_x = 0.0, cur_y = 0.0, cur_z = 0.0;
+	double target_x = 0.0, target_y = 0.0, target_z = 0.0;
+	int facing = 0;
+	uint state = 0;
+	uint64 last_seen_snap = 0;
+}
+
+class ClientObj {
+	uint64 id = 0;
+	string type;
+	double x = 0.0, y = 0.0, z = 0.0;
+	int facing = 0;
+	int hp = 100, max_hp = 100;
+	bool locked = false;
+	bool is_open = false;
+	string owner;
+	int loop_slot = -1;
+	uint64 next_beacon_ms = 0;
+}
+
+class WhoEntry {
+	string name;
+	string zone;
+	int rank = RANK_PLAYER;
+	bool is_friend = false;
+}
+
+class NetClient {
+	network@ net = null;
+	uint64 peer_id = 0;
+	string host = "";
+	uint16 port = DEFAULT_PORT;
+	int state = CONN_IDLE;
+
+	bool headless_client = false;
+	bool test_mode = false;
+	string disconnect_reason = "";
+	string last_auth_err = "";
+
+	// Handshake & Account state
+	string server_name = "";
+	string motd = "";
+	string[] changelog;
+	bool guests_allowed = false;
+	string my_name = "";
+	int my_rank = RANK_PLAYER;
+	bool is_guest = false;
+	bool pending_remember_wallet = true;
+
+	// World map assembly
+	WorldMap map;
+	bool map_loaded = false;
+	string expected_map_name = "";
+	uint expected_map_chunks = 0;
+	string[] map_chunks;
+
+	// Local player telemetry
+	double my_x = 60.0, my_y = 60.0, my_z = 0.0;
+	int my_facing = 0;
+	double smooth_facing = 0.0;
+	int my_hp = 100, my_hunger = 100, my_thirst = 100, my_stamina = 100, my_warmth = 100;
+	bool is_night = false;
+	bool is_raining = false;
+	string cur_zone = "";
+	bool snap_received = false;
+	uint64 last_snap_tick = 0;
+	timer snap_interp_timer;
+
+	// Inventory, Chest, Who, Ping
+	ItemStack@[] inv;
+	int belt_slot = 0;
+	uint64 chest_obj_id = 0;
+	ItemStack@[] chest_items;
+	bool chest_open_pending = false;
+	bool chest_in_menu = false;
+	uint chest_seq = 0;
+
+	WhoEntry@[] who_list;
+	bool who_announce_pending = false;
+
+	uint64 ping_sent_ms = 0;
+	int ping_rtt_ms = -1;
+	bool ping_announce_pending = false;
+
+	string last_pm_sender = "";
+
+	// Builder cursor sync
+	bool map_builder_active = false;
+	int b_cx = 0, b_cy = 0, b_cz = 0;
+	string b_surf = "grass";
+	string b_zone = "";
+	string b_wall = "-";
+	bool b_mark_set = false;
+	int b_mark_x = 0, b_mark_y = 0;
+
+	// Nearby remote entities & structures
+	ClientEnt@[] ents;
+	ClientObj@[] objs;
+
+	ClientProfile@ profile = null;
+	timer beacon_timer;
+	timer vital_cue_timer;
+	timer news_announce_pending_timer;
+	bool motd_announced = false;
+
+	void reset_session_state() {
+		map_loaded = false;
+		expected_map_chunks = 0;
+		map_chunks.resize(0);
+		snap_received = false;
+		last_snap_tick = 0;
+		inv.resize(0);
+		belt_slot = 0;
+		chest_obj_id = 0;
+		chest_items.resize(0);
+		chest_open_pending = false;
+		who_list.resize(0);
+		who_announce_pending = false;
+		ping_rtt_ms = -1;
+		ping_announce_pending = false;
+		last_pm_sender = "";
+		map_builder_active = false;
+		b_mark_set = false;
+		ents.resize(0);
+		clear_objs();
+		my_name = "";
+		my_rank = RANK_PLAYER;
+		is_guest = false;
+		last_auth_err = "";
+		disconnect_reason = "";
+		motd = "";
+		changelog.resize(0);
+		motd_announced = false;
+		g_audio.stop_world_audio();
+	}
+
+	void clear_objs() {
+		for (uint i = 0; i < objs.length(); i++) {
+			if (objs[i].loop_slot >= 0) g_audio.pool.destroy_sound(objs[i].loop_slot);
+		}
+		objs.resize(0);
+	}
+
+	bool start_connect(const string&in target_host, uint16 target_port, ClientProfile@ prof, uint timeout_ms = 5000) {
+		disconnect_clean();
+		reset_session_state();
+		@profile = @prof;
+		host = target_host.trim_whitespace();
+		port = target_port;
+
+		@net = network();
+		net.receive_timeout_event = true;
+		if (!net.setup_client(MAX_CHANNELS, 2)) {
+			disconnect_reason = "Failed to initialize network client.";
+			state = CONN_DISCONNECTED;
+			return false;
+		}
+		peer_id = net.connect(host, port);
+		if (peer_id == 0) {
+			disconnect_reason = "Could not connect to " + host + " port " + port + ".";
+			state = CONN_DISCONNECTED;
+			return false;
+		}
+		state = CONN_CONNECTING;
+
+		timer wt;
+		while (wt.elapsed < timeout_ms && state != CONN_WAIT_AUTH && state != CONN_DISCONNECTED) {
+			wait(5);
+			pump();
+			g_audio.tick_menu_audio();
+		}
+		if (state == CONN_CONNECTING || state == CONN_WAIT_WELCOME) {
+			disconnect_reason = "Connection to " + host + " timed out after " + (timeout_ms / 1000) + " seconds.";
+			disconnect_clean();
+			return false;
+		}
+		return state == CONN_WAIT_AUTH || state == CONN_READY;
+	}
+
+	void disconnect_clean() {
+		if (@net != null) {
+			if (peer_id != 0) {
+				net.disconnect_peer_softly(peer_id);
+				net.flush();
+			}
+			net.destroy(true);
+			@net = null;
+		}
+		peer_id = 0;
+		g_audio.stop_world_audio();
+		state = CONN_IDLE;
+	}
+
+	void send_control(const string&in msg) {
+		if (@net != null && peer_id != 0) {
+			net.send(peer_id, msg, CH_CONTROL, true);
+			net.flush();
+		}
+	}
+
+	void send_chat_pkt(const string&in msg) {
+		if (@net != null && peer_id != 0) {
+			net.send(peer_id, msg, CH_CHAT, true);
+			net.flush();
+		}
+	}
+
+	void send_input(uint mask, int facing) {
+		if (@net != null && peer_id != 0 && state == CONN_READY) {
+			net.send(peer_id, "INPUT|" + mask + "|" + wrap_deg(facing), CH_INPUT, false);
+		}
+	}
+
+	bool ensure_auth_connection(uint timeout_ms = 5000) {
+		pump();
+		if (state == CONN_WAIT_AUTH && @net != null && peer_id != 0) return true;
+		if (host.length() == 0 || @profile == null) return false;
+		say("Reconnecting to " + host + "...", false);
+		return start_connect(host, port, profile, timeout_ms);
+	}
+
+	bool auth_with_token(const string&in user, const string&in tok, uint timeout_ms = 6000) {
+		if (!ensure_auth_connection()) return false;
+		last_auth_err = "";
+		pending_remember_wallet = true;
+		send_control(pkt_3("TOKEN", user, tok));
+		return wait_auth_result(timeout_ms);
+	}
+
+	bool auth_with_login(const string&in user, const string&in pw, bool remember, uint timeout_ms = 6000) {
+		if (!ensure_auth_connection()) return false;
+		last_auth_err = "";
+		pending_remember_wallet = remember;
+		send_control(pkt_3("LOGIN", user, wire_escape(pw)));
+		return wait_auth_result(timeout_ms);
+	}
+
+	bool auth_with_register(const string&in user, const string&in pw, bool remember, uint timeout_ms = 6000) {
+		if (!ensure_auth_connection()) return false;
+		last_auth_err = "";
+		pending_remember_wallet = remember;
+		send_control(pkt_3("REG", user, wire_escape(pw)));
+		return wait_auth_result(timeout_ms);
+	}
+
+	bool auth_as_guest(uint timeout_ms = 6000) {
+		if (!ensure_auth_connection()) return false;
+		last_auth_err = "";
+		pending_remember_wallet = false;
+		send_control("GUEST");
+		return wait_auth_result(timeout_ms);
+	}
+
+	bool wait_auth_result(uint timeout_ms) {
+		timer wt;
+		while (wt.elapsed < timeout_ms && state == CONN_WAIT_AUTH && last_auth_err.length() == 0) {
+			wait(5);
+			pump();
+			g_audio.tick_menu_audio();
+		}
+		if (state == CONN_READY) return true;
+		if (last_auth_err.length() == 0 && state == CONN_WAIT_AUTH) {
+			last_auth_err = "Authentication timed out.";
+		}
+		return false;
+	}
+
+	void request_ping(bool speak_result = true) {
+		ping_sent_ms = clock.elapsed;
+		ping_announce_pending = speak_result;
+		send_control(pkt_2("PING", "" + ping_sent_ms));
+	}
+
+	void request_who(bool speak_result = true) {
+		who_announce_pending = speak_result;
+		send_control("WHO");
+	}
+
+	void sync_client_occluders() {
+		map.dyn_occluders.resize(0);
+		for (uint i = 0; i < objs.length(); i++) {
+			ClientObj@ o = objs[i];
+			StructDef@ def = find_struct(o.type);
+			if (@def == null) continue;
+			DynOccluder occ;
+			occ.id = o.id;
+			occ.x = o.x; occ.y = o.y; occ.z = o.z;
+			occ.half_w = def.half_w;
+			occ.height = def.height;
+			occ.blocks_move = def.blocks_move && !(def.is_door && o.is_open);
+			occ.occludes_sound = def.occludes_sound && !(def.is_door && o.is_open);
+			occ.material = "wood";
+			map.dyn_occluders.insert_last(occ);
+		}
+	}
+
+	void attach_obj_sound(ClientObj@ o) {
+		if (o.type == "campfire") {
+			if (o.loop_slot >= 0) g_audio.pool.destroy_sound(o.loop_slot);
+			o.loop_slot = g_audio.play_world_sfx("ambience", "survival/campfire_loop.ogg", o.x, o.y, o.z, 0.70f, true, true, true);
+		} else if (o.type != "campfire" && o.loop_slot >= 0) {
+			g_audio.pool.destroy_sound(o.loop_slot);
+			o.loop_slot = -1;
+		}
+	}
+
+	ClientEnt@ find_or_create_ent(const string&in id_str) {
+		for (uint i = 0; i < ents.length(); i++) {
+			if (ents[i].id_str == id_str) return ents[i];
+		}
+		ClientEnt e;
+		e.id_str = id_str;
+		ents.insert_last(e);
+		return e;
+	}
+
+	void pump() {
+		if (@net == null) return;
+		while (true) {
+			const network_event@ ev = net.request(0);
+			if (@ev == null || ev.type == event_none) break;
+
+			if (ev.type == event_connect) {
+				if (state == CONN_CONNECTING) {
+					state = CONN_WAIT_WELCOME;
+					send_control(pkt_3("HELLO", "" + PROTO_VERSION, GAME_VERSION));
+				}
+			} else if (ev.type == event_disconnect || ev.type == event_disconnect_timeout) {
+				if (disconnect_reason.length() == 0) {
+					disconnect_reason = ev.type == event_disconnect_timeout
+						? "Lost connection to server, timed out."
+						: "Disconnected from server.";
+				}
+				state = CONN_DISCONNECTED;
+				g_audio.stop_world_audio();
+				g_audio.play_ui_cue("multi/disconnect.ogg", 0.9f);
+				add_buffer(BUF_SYSTEM, disconnect_reason);
+				say(disconnect_reason, true);
+				peer_id = 0;
+				break;
+			} else if (ev.type == event_receive) {
+				handle_packet(ev.channel, ev.message);
+			}
+		}
+
+		if (state == CONN_READY) {
+			tick_interp();
+			tick_periodic_cues();
+		}
+	}
+
+	void handle_packet(uint ch, const string&in raw) {
+		string[]@ p = pkt_parse(raw);
+		string op = pkt_op(p);
+
+		if (ch == CH_SPEECH && op == "SPEAK") {
+			uint buf_ch = uint(safe_int(field(p, 1, "" + MBUF_GAME), 0, int(BUF_COUNT - 1), int(MBUF_GAME)));
+			bool intr = field(p, 2, "0") == "1";
+			string txt = wire_unescape(field(p, 3, ""));
+			if (txt.length() > 0) {
+				if (txt == "Entered Audio Map Builder mode.") map_builder_active = true;
+				else if (txt == "Exited Map Builder mode.") map_builder_active = false;
+				add_buffer(buf_ch, txt);
+				if (!buffer_is_muted(buf_ch)) say(txt, intr);
+			}
+			return;
+		}
+
+		if (ch == CH_AUDIO && op == "SFX") {
+			string layer = field(p, 1, "world");
+			string rel = field(p, 2, "");
+			double sx = safe_double(field(p, 3, "0"), -5000.0, 5000.0, my_x);
+			double sy = safe_double(field(p, 4, "0"), -5000.0, 5000.0, my_y);
+			double sz = safe_double(field(p, 5, "0"), -500.0, 500.0, my_z);
+			float vol = float(safe_double(field(p, 6, "1.0"), 0.0, 1.5, 1.0));
+			bool occ = field(p, 7, "1") == "1";
+			if (rel.length() > 0) g_audio.play_world_sfx(layer, rel, sx, sy, sz, clampf(vol, 0.0f, 1.0f), occ);
+			return;
+		}
+
+		if (ch == CH_CHAT && op == "CHAT_MSG") {
+			string scope = field(p, 1, "global");
+			string sender = sanitize_name(wire_unescape(field(p, 2, "")));
+			string rtag = field(p, 3, "-");
+			string text = wire_unescape(field(p, 4, ""));
+			if (rtag == "-") rtag = "";
+			else rtag += " ";
+
+			if (scope != "pm_out" && @profile != null && profile.is_blocked(sender)) return;
+
+			string formatted;
+			uint buf_ch = BUF_CHAT;
+			string cue = "ui/msg_chat.ogg";
+			if (scope == "pm_in") {
+				buf_ch = BUF_PM;
+				cue = "ui/msg_pm.ogg";
+				last_pm_sender = sender;
+				formatted = "PM from " + rtag + sender + ": " + text;
+			} else if (scope == "pm_out") {
+				buf_ch = BUF_PM;
+				cue = "ui/msg_pm.ogg";
+				formatted = "PM to " + sender + ": " + text;
+			} else if (scope == "local") {
+				formatted = rtag + sender + " nearby says: " + text;
+			} else if (scope == "emote") {
+				formatted = sender + " " + text;
+			} else if (scope == "team") {
+				formatted = "Team, " + rtag + sender + ": " + text;
+			} else {
+				formatted = rtag + sender + " says: " + text;
+			}
+
+			add_buffer(buf_ch, formatted);
+			if (!buffer_is_muted(buf_ch)) {
+				g_audio.play_ui_cue(cue, 0.75f);
+				say(formatted, false);
+			}
+			return;
+		}
+
+		if (ch == CH_SNAPSHOT && op == "SNAP") {
+			handle_snapshot(p);
+			return;
+		}
+
+		if (ch == CH_CONTROL) {
+			handle_control(op, p);
+		}
+	}
+
+	void handle_control(const string&in op, string[]@ p) {
+		if (op == "WELCOME") {
+			server_name = wire_unescape(field(p, 2, GAME_NAME));
+			motd = wire_unescape(field(p, 3, ""));
+			guests_allowed = field(p, 4, "0") == "1";
+			state = CONN_WAIT_AUTH;
+			return;
+		}
+		if (op == "REFUSE") {
+			string code = field(p, 1, "refused");
+			string reason = wire_unescape(field(p, 2, "Connection refused by server."));
+			disconnect_reason = reason;
+			last_auth_err = reason;
+			state = CONN_DISCONNECTED;
+			g_audio.stop_world_audio();
+			g_audio.play_ui_cue("error.ogg", 0.9f);
+			add_buffer(BUF_SYSTEM, reason);
+			say(reason, true);
+			return;
+		}
+		if (op == "AUTH_OK") {
+			my_name = sanitize_name(field(p, 1, "Adventurer"));
+			my_rank = safe_int(field(p, 2, "0"), RANK_PLAYER, RANK_DEV, RANK_PLAYER);
+			string tok = field(p, 3, "-");
+			is_guest = my_name.starts_with("Guest");
+			state = CONN_READY;
+			if (!is_guest && tok != "-" && tok.length() >= 16 && pending_remember_wallet && @profile != null) {
+				profile.upsert_wallet_slot(host, port, my_name, tok, my_rank);
+			}
+			g_audio.play_ui_cue("multi/connect_ok.ogg", 0.9f);
+			string hello_line = "Signed in as " + my_name + (my_rank > RANK_PLAYER ? ", " + rank_label(my_rank) : "") + " on " + server_name + ".";
+			add_buffer(BUF_SYSTEM, hello_line);
+			say(hello_line, true);
+			return;
+		}
+		if (op == "AUTH_ERR") {
+			last_auth_err = wire_unescape(field(p, 1, "Authentication failed."));
+			g_audio.play_ui_cue("error.ogg", 0.9f);
+			if (@profile != null) {
+				// Clear invalid stale wallet token cleanly if one existed
+				WalletSlot@ ws = profile.find_wallet_slot(host, port);
+				if (@ws != null && last_auth_err.find("Session expired") >= 0) {
+					profile.remove_wallet_slot(host, port);
+				}
+			}
+			say(last_auth_err, true);
+			return;
+		}
+		if (op == "MOTD") {
+			motd = wire_unescape(field(p, 1, ""));
+			if (motd.length() > 0 && !motd_announced) {
+				motd_announced = true;
+				add_buffer(BUF_SYSTEM, "Server MOTD: " + motd);
+			}
+			return;
+		}
+		if (op == "CHANGELOG") {
+			int idx = safe_int(field(p, 1, "0"), 0, 50, 0);
+			string ln = wire_unescape(field(p, 2, ""));
+			if (idx == 0) changelog.resize(0);
+			if (ln.length() > 0) changelog.insert_last(ln);
+			return;
+		}
+		if (op == "MAP_HDR") {
+			expected_map_name = wire_unescape(field(p, 1, "world"));
+			expected_map_chunks = uint(safe_int(field(p, 6, "1"), 1, 256, 1));
+			map_chunks.resize(expected_map_chunks);
+			for (uint i = 0; i < expected_map_chunks; i++) map_chunks[i] = "";
+			map_loaded = false;
+			clear_objs();
+			return;
+		}
+		if (op == "MAP_CHK") {
+			uint idx = uint(safe_int(field(p, 1, "0"), 0, 255, 0));
+			if (idx < map_chunks.length()) {
+				map_chunks[idx] = field(p, 2, "");
+				bool complete = true;
+				for (uint i = 0; i < map_chunks.length(); i++) {
+					if (map_chunks[i].length() == 0) { complete = false; break; }
+				}
+				if (complete) {
+					string joined = "";
+					for (uint i = 0; i < map_chunks.length(); i++) joined += map_chunks[i];
+					string raw_map = wire_unescape(joined);
+					string merr;
+					if (map.load_from_string(raw_map, merr)) {
+						map_loaded = true;
+						sync_client_occluders();
+						g_audio.set_map(map);
+					} else {
+						add_buffer(BUF_SYSTEM, "Map load error: " + merr);
+					}
+				}
+			}
+			return;
+		}
+		if (op == "MAP_OBJ") {
+			string sop = field(p, 1, "");
+			uint64 oid = uint64(parse_int(field(p, 2, "0")));
+			if (oid == 0) return;
+			if (sop == "del") {
+				for (uint i = 0; i < objs.length(); i++) {
+					if (objs[i].id == oid) {
+						if (objs[i].loop_slot >= 0) g_audio.pool.destroy_sound(objs[i].loop_slot);
+						objs.remove_at(i);
+						break;
+					}
+				}
+				sync_client_occluders();
+				return;
+			}
+			ClientObj@ o = null;
+			for (uint i = 0; i < objs.length(); i++) {
+				if (objs[i].id == oid) { @o = objs[i]; break; }
+			}
+			if (@o == null) {
+				@o = ClientObj();
+				o.id = oid;
+				objs.insert_last(o);
+			}
+			o.type = field(p, 3, "wall");
+			o.x = safe_double(field(p, 4, "0"), 0.0, 5000.0, 0.0);
+			o.y = safe_double(field(p, 5, "0"), 0.0, 5000.0, 0.0);
+			o.z = safe_double(field(p, 6, "0"), -100.0, 500.0, 0.0);
+			o.facing = wrap_deg(safe_int(field(p, 7, "0"), 0, 359, 0));
+			o.hp = safe_int(field(p, 8, "100"), 0, 10000, 100);
+			o.max_hp = safe_int(field(p, 9, "100"), 1, 10000, 100);
+			o.locked = field(p, 10, "0") == "1";
+			o.is_open = field(p, 11, "0") == "1";
+			o.owner = wire_unescape(field(p, 12, ""));
+			if (o.loop_slot < 0) attach_obj_sound(o);
+			sync_client_occluders();
+			return;
+		}
+		if (op == "INV") {
+			belt_slot = safe_int(field(p, 1, "0"), 0, BELT_SLOTS - 1, 0);
+			inv.resize(0);
+			string raw_inv = field(p, 2, "-");
+			if (raw_inv != "-" && raw_inv.length() > 0) {
+				string[]@ items = split_keep_empty(raw_inv, ";");
+				for (uint i = 0; i < items.length(); i++) {
+					string[]@ kv = split_keep_empty(items[i], ":");
+					string iid = field(kv, 0, "");
+					int qty = safe_int(field(kv, 1, "0"), 0, 9999, 0);
+					if (iid.length() > 0 && qty > 0) inv.insert_last(ItemStack(iid, qty));
+				}
+			}
+			return;
+		}
+		if (op == "CHEST_DATA") {
+			chest_obj_id = uint64(parse_int(field(p, 1, "0")));
+			chest_items.resize(0);
+			string raw_c = field(p, 2, "-");
+			if (raw_c != "-" && raw_c.length() > 0) {
+				string[]@ items = split_keep_empty(raw_c, ";");
+				for (uint i = 0; i < items.length(); i++) {
+					string[]@ kv = split_keep_empty(items[i], ":");
+					string iid = field(kv, 0, "");
+					int qty = safe_int(field(kv, 1, "0"), 0, 9999, 0);
+					if (iid.length() > 0 && qty > 0) chest_items.insert_last(ItemStack(iid, qty));
+				}
+			}
+			chest_seq++;
+			if (!chest_in_menu) chest_open_pending = true;
+			return;
+		}
+		if (op == "WHO_RES") {
+			int cnt = safe_int(field(p, 1, "0"), 0, 256, 0);
+			string raw_w = field(p, 2, "-");
+			who_list.resize(0);
+			if (raw_w != "-" && raw_w.length() > 0) {
+				string[]@ rows = split_keep_empty(raw_w, ";");
+				for (uint i = 0; i < rows.length(); i++) {
+					string[]@ cols = split_keep_empty(rows[i], ":");
+					WhoEntry we;
+					we.name = sanitize_name(wire_unescape(field(cols, 0, "")));
+					we.zone = wire_unescape(field(cols, 1, "Wilderness"));
+					string rcol = field(cols, 2, "0");
+					if (rcol == "Developer") we.rank = RANK_DEV;
+					else if (rcol == "Admin") we.rank = RANK_ADMIN;
+					else if (rcol == "Moderator") we.rank = RANK_MOD;
+					else if (rcol == "Builder") we.rank = RANK_BUILDER;
+					else we.rank = safe_int(rcol, RANK_PLAYER, RANK_DEV, RANK_PLAYER);
+					we.is_friend = field(cols, 3, "0") == "1";
+					if (we.name.length() > 0) who_list.insert_last(we);
+				}
+			}
+			if (who_announce_pending) {
+				who_announce_pending = false;
+				if (cnt <= 0 || who_list.length() == 0) {
+					say("Only you are online right now.", true);
+				} else {
+					string s = cnt + (cnt == 1 ? " player online: " : " players online: ");
+					for (uint i = 0; i < who_list.length(); i++) {
+						if (i > 0) s += ", ";
+						WhoEntry@ we = who_list[i];
+						string r = rank_tag(we.rank);
+						s += (r.length() > 0 ? r + " " : "") + we.name + (we.is_friend ? " (friend)" : "") + " in " + we.zone;
+					}
+					say(s + ".", true);
+				}
+			}
+			return;
+		}
+		if (op == "PONG") {
+			uint64 sent = uint64(parse_int(field(p, 1, "0")));
+			int rtt = int(clock.elapsed >= sent ? clock.elapsed - sent : 0);
+			ping_rtt_ms = rtt;
+			if (ping_announce_pending) {
+				ping_announce_pending = false;
+				string q = rtt < 50 ? "excellent" : (rtt < 120 ? "good" : (rtt < 220 ? "fair" : "poor"));
+				say("Ping " + rtt + " milliseconds, " + q + ".", true);
+			}
+			return;
+		}
+		if (op == "BUILDER_POS") {
+			b_cx = safe_int(field(p, 1, "0"), 0, 5000, b_cx);
+			b_cy = safe_int(field(p, 2, "0"), 0, 5000, b_cy);
+			b_cz = safe_int(field(p, 3, "0"), 0, 50, b_cz);
+			b_surf = field(p, 4, "grass");
+			b_zone = wire_unescape(field(p, 5, "Wilderness"));
+			b_wall = field(p, 6, "-");
+			g_audio.play_local_footstep(b_surf);
+			string desc = "Cursor " + b_cx + ", " + b_cy + ", height " + b_cz + ", " + b_zone + ", " + b_surf;
+			if (b_wall != "-") desc += ", " + b_wall + " wall";
+			say(desc + ".", true);
+			return;
+		}
+	}
+
+	void handle_snapshot(string[]@ p) {
+		uint64 tick = uint64(parse_int(field(p, 1, "0")));
+		if (tick < last_snap_tick) return;
+		last_snap_tick = tick;
+
+		my_x = safe_double(field(p, 2, "60"), 0.0, 5000.0, my_x);
+		my_y = safe_double(field(p, 3, "60"), 0.0, 5000.0, my_y);
+		my_z = safe_double(field(p, 4, "0"), -100.0, 500.0, my_z);
+		int srv_facing = wrap_deg(safe_int(field(p, 5, "0"), 0, 359, my_facing));
+		if (!snap_received) {
+			my_facing = srv_facing;
+			smooth_facing = double(srv_facing);
+			snap_received = true;
+		}
+		my_hp = safe_int(field(p, 6, "100"), 0, 100, my_hp);
+		my_hunger = safe_int(field(p, 7, "100"), 0, 100, my_hunger);
+		my_thirst = safe_int(field(p, 8, "100"), 0, 100, my_thirst);
+		my_stamina = safe_int(field(p, 9, "100"), 0, 100, my_stamina);
+		my_warmth = safe_int(field(p, 10, "100"), 0, 100, my_warmth);
+		is_night = field(p, 11, "0") == "1";
+		is_raining = field(p, 12, "0") == "1";
+		cur_zone = wire_unescape(field(p, 13, "Wilderness"));
+
+		string raw_ents = field(p, 14, "-");
+		if (raw_ents != "-" && raw_ents.length() > 0) {
+			string[]@ rows = split_keep_empty(raw_ents, ";");
+			for (uint i = 0; i < rows.length(); i++) {
+				string[]@ c = split_keep_empty(rows[i], ",");
+				string id_str = field(c, 0, "");
+				if (id_str.length() == 0) continue;
+				ClientEnt@ e = find_or_create_ent(id_str);
+				bool is_new = (e.last_seen_snap == 0);
+				e.kind = field(c, 1, "unknown");
+				e.name = wire_unescape(field(c, 2, e.kind));
+				double tx = safe_double(field(c, 3, "0"), 0.0, 5000.0, e.cur_x);
+				double ty = safe_double(field(c, 4, "0"), 0.0, 5000.0, e.cur_y);
+				double tz = safe_double(field(c, 5, "0"), -100.0, 500.0, e.cur_z);
+				e.facing = wrap_deg(safe_int(field(c, 6, "0"), 0, 359, 0));
+				e.state = uint(safe_int(field(c, 7, "0"), 0, 9999, 0));
+				if (is_new) {
+					e.prev_x = tx; e.prev_y = ty; e.prev_z = tz;
+					e.cur_x = tx; e.cur_y = ty; e.cur_z = tz;
+					e.target_x = tx; e.target_y = ty; e.target_z = tz;
+				} else {
+					e.prev_x = e.cur_x; e.prev_y = e.cur_y; e.prev_z = e.cur_z;
+					e.target_x = tx; e.target_y = ty; e.target_z = tz;
+				}
+				e.last_seen_snap = tick;
+			}
+		}
+
+		// Remove stale out-of-earshot entities
+		for (int i = int(ents.length()) - 1; i >= 0; i--) {
+			if (ents[uint(i)].last_seen_snap != tick) ents.remove_at(uint(i));
+		}
+		snap_interp_timer.restart();
+	}
+
+	void tick_interp() {
+		double t = double(snap_interp_timer.elapsed) / 66.0;
+		if (t > 1.0) t = 1.0;
+		for (uint i = 0; i < ents.length(); i++) {
+			ClientEnt@ e = ents[i];
+			e.cur_x = e.prev_x + (e.target_x - e.prev_x) * t;
+			e.cur_y = e.prev_y + (e.target_y - e.prev_y) * t;
+			e.cur_z = e.prev_z + (e.target_z - e.prev_z) * t;
+		}
+		string amb = "ambience/forest_day.ogg";
+		if (map_loaded) {
+			MapZone@ z = map.zone_at(my_x, my_y);
+			if (@z != null && z.ambience_loop.length() > 0) amb = z.ambience_loop;
+			else if (map.ambience_default.length() > 0) amb = map.ambience_default;
+		}
+		g_audio.update_world(my_x, my_y, my_z, my_facing, is_night, is_raining, amb);
+	}
+
+	void tick_periodic_cues() {
+		if (!snap_received || g_audio_silent) return;
+		if (vital_cue_timer.elapsed >= 4500) {
+			vital_cue_timer.restart();
+			if (my_hp <= 25 && my_hp > 0) {
+				g_audio.play_ui_cue("survival/heartbeat.ogg", 0.7f);
+			} else if (my_warmth <= 20) {
+				g_audio.play_ui_cue("survival/shiver.ogg", 0.6f);
+			}
+		}
+		if (beacon_timer.elapsed >= 5000) {
+			beacon_timer.restart();
+			for (uint i = 0; i < objs.length(); i++) {
+				if (objs[i].type == "beacon") {
+					double d = get_3d_distance(my_x, my_y, my_z, objs[i].x, objs[i].y, objs[i].z);
+					if (d <= EARSHOT_RADIUS) {
+						g_audio.play_world_sfx("world", "builder/beacon_ping.ogg", objs[i].x, objs[i].y, objs[i].z, 0.75f, true);
+					}
+				}
+			}
+		}
+	}
+
+	int count_inv(const string&in item_id) const {
+		int total = 0;
+		for (uint i = 0; i < inv.length(); i++) {
+			if (inv[i].id == item_id) total += inv[i].qty;
+		}
+		return total;
+	}
+}

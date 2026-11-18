@@ -1,0 +1,575 @@
+// Accessible in-game and main-menu screens: Inventory, Crafting, Social, Settings (7-layer mixer),
+// News & Changelog, Learn Game Sounds, Rank Moderation, Dev Console, and Pause Menu.
+
+#include "builder_ui.nvgt"
+#include "tutorial.nvgt"
+#include "radar_hud.nvgt"
+
+void pump_menu_net(NetClient@ nc) {
+	if (@nc != null && nc.state != CONN_IDLE) nc.pump();
+	g_audio.tick_menu_audio();
+}
+
+void run_inventory_menu(NetClient@ nc) {
+	while (nc.state == CONN_READY) {
+		menu m;
+		init_std_menu(m, "Inventory, " + nc.inv.length() + " items, belt slot " + (nc.belt_slot + 1) + ". Select to use or equip.");
+		if (nc.inv.length() == 0) {
+			m.add_item("Your pack is empty.", "__empty");
+		} else {
+			for (uint i = 0; i < nc.inv.length(); i++) {
+				ItemStack@ st = nc.inv[i];
+				ItemDef@ d = find_item(st.id);
+				string tag = (int(i) == nc.belt_slot) ? " (Active Belt " + (i + 1) + ")" : (i < BELT_SLOTS ? " (Belt " + (i + 1) + ")" : "");
+				m.add_item((@d != null ? d.name : st.id) + " x" + st.qty + tag, "" + i);
+			}
+		}
+		m.add_item("Back", "__back");
+
+		while (m.monitor()) {
+			wait(5);
+			pump_menu_net(nc);
+			if (nc.state != CONN_READY) return;
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__back" || sel == "__empty") return;
+		int idx = safe_int(sel, 0, int(nc.inv.length()) - 1, -1);
+		if (idx < 0) return;
+
+		ItemStack@ chosen = nc.inv[uint(idx)];
+		ItemDef@ idf = find_item(chosen.id);
+		if (@idf != null && (idf.category == "food" || idf.category == "drink" || idf.category == "med")) {
+			if (idx < BELT_SLOTS) {
+				nc.send_control("ACT|equip|" + idx);
+				nc.send_control("ACT|use_belt");
+			} else {
+				say("Move consumables into slots 1 to 9 on your belt, or select Use Active Belt Item.", true);
+			}
+		} else if (@idf != null && idf.category == "kit") {
+			nc.send_control("ACT|build|" + (idf.build_type.length() > 0 ? idf.build_type : idf.id));
+			return;
+		} else if (idx < BELT_SLOTS) {
+			nc.send_control("ACT|equip|" + idx);
+		} else {
+			say((@idf != null ? idf.name : chosen.id) + " x" + chosen.qty + ", category " + (@idf != null ? idf.category : "item") + ".", true);
+		}
+		timer wt;
+		while (wt.elapsed < 220) { wait(5); pump_menu_net(nc); }
+	}
+}
+
+void run_crafting_menu(NetClient@ nc) {
+	while (nc.state == CONN_READY) {
+		menu m;
+		init_std_menu(m, "Crafting Menu. %0 recipes.");
+		for (uint i = 0; i < g_recipes.length(); i++) {
+			RecipeDef@ r = g_recipes[i];
+			ItemDef@ out_d = find_item(r.output_id);
+			string ing_text = "";
+			bool can = true;
+			for (uint k = 0; k < r.ing_ids.length(); k++) {
+				int have = nc.count_inv(r.ing_ids[k]);
+				int need = r.ing_qtys[k];
+				if (have < need) can = false;
+				ItemDef@ id_d = find_item(r.ing_ids[k]);
+				if (k > 0) ing_text += ", ";
+				ing_text += need + " " + (@id_d != null ? id_d.name : r.ing_ids[k]) + " (" + have + ")";
+			}
+			string req = r.requires_bench ? ", needs Craft Bench" : (r.requires_fire ? ", needs Campfire" : "");
+			string label = (can ? "[Ready] " : "[Need] ") + (@out_d != null ? out_d.name : r.output_id)
+				+ (r.output_qty > 1 ? " x" + r.output_qty : "") + ": " + ing_text + req;
+			m.add_item(label, r.id);
+		}
+		m.add_item("Back", "__back");
+
+		while (m.monitor()) {
+			wait(5);
+			pump_menu_net(nc);
+			if (nc.state != CONN_READY) return;
+		}
+		string rid = m.selected_item_id;
+		if (rid.length() == 0 || rid == "__back") return;
+		nc.send_control(pkt_3("ACT", "craft", rid));
+		timer wt;
+		while (wt.elapsed < 250) { wait(5); pump_menu_net(nc); }
+	}
+}
+
+void run_player_action_submenu(NetClient@ nc, ClientProfile@ prof, const string&in target) {
+	menu pm;
+	init_std_menu(pm, "Actions for " + target + ". %0 options.");
+	pm.add_item("Send Private Message", "pm");
+	pm.add_item("Inspect Player Profile", "profile");
+	pm.add_item("Add Friend", "friend_add");
+	pm.add_item("Remove Friend", "friend_rem");
+	bool blocked = @prof != null && prof.is_blocked(target);
+	pm.add_item(blocked ? "Unblock and Unmute Player" : "Block and Mute Player", blocked ? "unblock" : "block");
+	pm.add_item("Challenge to Duel", "duel_ask");
+	pm.add_item("Accept Duel from " + target, "duel_acc");
+	pm.add_item("Back", "__back");
+
+	while (pm.monitor()) {
+		wait(5);
+		pump_menu_net(nc);
+		if (nc.state != CONN_READY) return;
+	}
+	string act = pm.selected_item_id;
+	if (act.length() == 0 || act == "__back") return;
+	if (act == "pm") {
+		string msg;
+		if (show_text_prompt("Private Message to " + target, "Message text", "", msg, MAX_CHAT_LEN)) {
+			nc.send_chat_pkt(pkt_4("CHAT", "pm", target, wire_escape(msg)));
+		}
+		return;
+	}
+	if (act == "block") {
+		if (@prof != null) prof.add_block(target);
+		nc.send_control(pkt_3("SOCIAL", "block", target));
+		return;
+	}
+	if (act == "unblock") {
+		if (@prof != null) prof.remove_block(target);
+		nc.send_control(pkt_3("SOCIAL", "unblock", target));
+		return;
+	}
+	nc.send_control(pkt_3("SOCIAL", act, target));
+}
+
+void run_social_menu(NetClient@ nc, ClientProfile@ prof) {
+	while (nc.state == CONN_READY) {
+		nc.request_who(false);
+		timer wt;
+		while (wt.elapsed < 350) { wait(5); pump_menu_net(nc); }
+
+		menu m;
+		init_std_menu(m, "Social Menu. " + nc.who_list.length() + " players online. %0 items.");
+		for (uint i = 0; i < nc.who_list.length(); i++) {
+			WhoEntry@ we = nc.who_list[i];
+			string r = rank_tag(we.rank);
+			string lbl = (r.length() > 0 ? r + " " : "") + we.name + (we.is_friend ? " (Friend)" : "") + ", " + we.zone;
+			m.add_item(lbl, "who:" + we.name);
+		}
+		m.add_item("Leaderboard Top Players", "__leaderboard");
+		m.add_item("View My Profile Stats", "__my_profile");
+		m.add_item("Add or Interact with Player by Name", "__by_name");
+		if (@prof != null && prof.blocked_players.length() > 0) {
+			m.add_item("Unblock Saved Blocked Player (" + prof.blocked_players.length() + ")", "__unblock_list");
+		}
+		if (nc.my_rank >= RANK_MOD) m.add_item("Moderation Panel (" + rank_label(nc.my_rank) + ")", "__mod");
+		if (nc.my_rank >= RANK_DEV) m.add_item("Developer Console", "__dev");
+		m.add_item("Back", "__back");
+
+		while (m.monitor()) {
+			wait(5);
+			pump_menu_net(nc);
+			if (nc.state != CONN_READY) return;
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__back") return;
+		if (sel == "__leaderboard") { nc.send_control("SOCIAL|leaderboard"); continue; }
+		if (sel == "__my_profile") { nc.send_control("SOCIAL|profile|" + nc.my_name); continue; }
+		if (sel == "__mod") { run_mod_menu(nc); continue; }
+		if (sel == "__dev") { run_dev_menu(nc); continue; }
+		if (sel == "__by_name") {
+			string nm;
+			if (show_text_prompt("Player Lookup", "Enter player username", "", nm, MAX_NAME_LEN)) {
+				nm = sanitize_name(nm);
+				if (nm.length() > 0) run_player_action_submenu(nc, prof, nm);
+			}
+			continue;
+		}
+		if (sel == "__unblock_list" && @prof != null) {
+			menu bm;
+			init_std_menu(bm, "Blocked Players. Select to unblock.");
+			for (uint i = 0; i < prof.blocked_players.length(); i++) {
+				bm.add_item("Unblock " + prof.blocked_players[i], prof.blocked_players[i]);
+			}
+			bm.add_item("Back", "__back");
+			while (bm.monitor()) { wait(5); pump_menu_net(nc); }
+			if (bm.selected_item_id.length() > 0 && bm.selected_item_id != "__back") {
+				string target = bm.selected_item_id;
+				prof.remove_block(target);
+				nc.send_control(pkt_3("SOCIAL", "unblock", target));
+				say("Unblocked " + target + ".", true);
+			}
+			continue;
+		}
+		if (sel.starts_with("who:")) {
+			run_player_action_submenu(nc, prof, sel.substr(4));
+		}
+	}
+}
+
+void run_mod_menu(NetClient@ nc) {
+	if (nc.my_rank < RANK_MOD) {
+		say("Moderator privileges required.", true);
+		return;
+	}
+	while (nc.state == CONN_READY) {
+		menu m;
+		init_std_menu(m, "Moderation Panel, rank " + rank_label(nc.my_rank) + ". %0 commands.");
+		m.add_item("Kick Player", "kick");
+		m.add_item("Mute Player (10 Minutes)", "mute");
+		if (nc.my_rank >= RANK_ADMIN) {
+			m.add_item("Temp Ban Player (60 Minutes)", "ban60");
+			m.add_item("Permanent Ban Player", "banperm");
+			m.add_item("Unban Player", "unban");
+		}
+		m.add_item("Back", "__back");
+
+		while (m.monitor()) { wait(5); pump_menu_net(nc); if (nc.state != CONN_READY) return; }
+		string cmd = m.selected_item_id;
+		if (cmd.length() == 0 || cmd == "__back") return;
+
+		string target;
+		if (!show_text_prompt("Moderation Target", "Target username", "", target, MAX_NAME_LEN)) continue;
+		target = sanitize_name(target);
+		if (target.length() == 0) continue;
+
+		if (cmd == "unban") {
+			nc.send_control(pkt_3("MOD", "unban", target));
+			continue;
+		}
+		string reason;
+		if (!show_text_prompt("Moderation Reason", "Reason", "Rule violation", reason, 80)) continue;
+		if (cmd == "kick") nc.send_control(pkt_4("MOD", "kick", target, wire_escape(reason)));
+		else if (cmd == "mute") nc.send_control(pkt_build("MOD", {"mute", target, "10", wire_escape(reason)}));
+		else if (cmd == "ban60") nc.send_control(pkt_build("MOD", {"ban", target, "60", wire_escape(reason)}));
+		else if (cmd == "banperm") nc.send_control(pkt_build("MOD", {"ban", target, "0", wire_escape(reason)}));
+	}
+}
+
+void run_dev_menu(NetClient@ nc) {
+	if (nc.my_rank < RANK_DEV) {
+		say("Developer rank required.", true);
+		return;
+	}
+	while (nc.state == CONN_READY) {
+		menu m;
+		init_std_menu(m, "Developer Console. %0 commands.");
+		m.add_item("Spawn Item for Target Player", "spawn_item");
+		m.add_item("Teleport Player to Coordinates", "tp");
+		m.add_item("Grant Account Rank", "grant_rank");
+		m.add_item("Set Simulated Bot Count", "set_bots");
+		m.add_item("Set Wildlife Population", "set_wildlife");
+		m.add_item("Toggle Rain Weather", "weather");
+		m.add_item("Toggle Day or Night", "time");
+		m.add_item("Broadcast Server Announcement", "announce");
+		m.add_item("Reload Server MOTD, Changelog and Devs", "reload_all");
+		m.add_item("Back", "__back");
+
+		while (m.monitor()) { wait(5); pump_menu_net(nc); if (nc.state != CONN_READY) return; }
+		string cmd = m.selected_item_id;
+		if (cmd.length() == 0 || cmd == "__back") return;
+
+		if (cmd == "reload_all") { nc.send_control("DEV|reload_all"); continue; }
+		if (cmd == "weather") { nc.send_control(pkt_3("DEV", "weather", nc.is_raining ? "clear" : "rain")); continue; }
+		if (cmd == "time") { nc.send_control(pkt_3("DEV", "time", nc.is_night ? "day" : "night")); continue; }
+		if (cmd == "announce") {
+			string txt;
+			if (show_text_prompt("Server Announcement", "Message to broadcast", "", txt, 120)) {
+				nc.send_control(pkt_3("DEV", "announce", wire_escape(txt)));
+			}
+			continue;
+		}
+		if (cmd == "set_bots") {
+			string cnt;
+			if (show_text_prompt("Bot Count", "Number of test bots (0 to 16)", "2", cnt, 4)) {
+				nc.send_control(pkt_3("DEV", "set_bots", cnt));
+			}
+			continue;
+		}
+		if (cmd == "set_wildlife") {
+			string cnt;
+			if (show_text_prompt("Wildlife Count", "Number of wildlife mobs (0 to 30)", "12", cnt, 4)) {
+				nc.send_control(pkt_3("DEV", "set_wildlife", cnt));
+			}
+			continue;
+		}
+		if (cmd == "spawn_item") {
+			string tgt, iid, qty;
+			if (!show_text_prompt("Spawn Item Target", "Recipient username", nc.my_name, tgt, MAX_NAME_LEN)) continue;
+			if (!show_text_prompt("Spawn Item ID", "Item ID such as wood_door_kit, wood, iron_axe", "wood", iid, 32)) continue;
+			if (!show_text_prompt("Quantity", "Quantity (1 to 99)", "5", qty, 4)) continue;
+			nc.send_control(pkt_build("DEV", {"spawn_item", sanitize_name(tgt), iid.trim_whitespace(), qty.trim_whitespace()}));
+			continue;
+		}
+		if (cmd == "tp") {
+			string tgt, xs, ys;
+			if (!show_text_prompt("Teleport Target", "Username", nc.my_name, tgt, MAX_NAME_LEN)) continue;
+			if (!show_text_prompt("Target X", "X coordinate", "60", xs, 6)) continue;
+			if (!show_text_prompt("Target Y", "Y coordinate", "60", ys, 6)) continue;
+			nc.send_control(pkt_build("DEV", {"tp", sanitize_name(tgt), xs.trim_whitespace(), ys.trim_whitespace(), "0"}));
+			continue;
+		}
+		if (cmd == "grant_rank") {
+			string tgt, rk;
+			if (!show_text_prompt("Grant Rank Target", "Username", nc.my_name, tgt, MAX_NAME_LEN)) continue;
+			if (!show_text_prompt("Rank Level", "0=Player, 1=Builder, 2=Mod, 3=Admin, 4=Dev", "1", rk, 2)) continue;
+			nc.send_control(pkt_build("DEV", {"grant_rank", sanitize_name(tgt), rk.trim_whitespace()}));
+		}
+	}
+}
+
+void run_audio_mixer_form(ClientProfile@ prof, NetClient@ nc) {
+	string[] names = {
+		"Speech Volume",
+		"Self and UI Volume",
+		"Combat and Threats Volume",
+		"Other Players and Wildlife Volume",
+		"World and Builders Volume",
+		"Ambience Volume",
+		"Menu Music Volume"
+	};
+
+	audio_form f;
+	f.create_window("7-Layer Audio Mixer", false, true);
+	int[] sliders(LAYER_COUNT);
+	int[] last_vals(LAYER_COUNT);
+	for (int i = 0; i < LAYER_COUNT; i++) {
+		sliders[uint(i)] = f.create_slider(names[uint(i)], prof.layer_pct[uint(i)], 0, 100, "%", 5);
+		last_vals[uint(i)] = prof.layer_pct[uint(i)];
+	}
+	int f_hrtf = f.create_checkbox("Enable 3D Binaural HRTF Spatialization", prof.hrtf_enabled);
+	int f_duck = f.create_checkbox("Duck Ambient Audio During Speech", prof.speech_ducking);
+	int f_save = f.create_button("Save Audio Settings", true, false);
+	int f_close = f.create_button("Close", false, true);
+	f.focus(sliders[0]);
+
+	while (true) {
+		wait(5);
+		pump_menu_net(nc);
+		f.monitor();
+
+		for (int i = 0; i < LAYER_COUNT; i++) {
+			int cur = int(f.get_slider(sliders[uint(i)]) + 0.5);
+			if (cur != last_vals[uint(i)]) {
+				last_vals[uint(i)] = cur;
+				prof.layer_pct[uint(i)] = clampi(cur, 0, 100);
+				g_audio.preview_layer_sample(i, prof);
+			}
+		}
+		if (f.is_checked(f_hrtf) != prof.hrtf_enabled || f.is_checked(f_duck) != prof.speech_ducking) {
+			prof.hrtf_enabled = f.is_checked(f_hrtf);
+			prof.speech_ducking = f.is_checked(f_duck);
+			g_audio.apply_profile(prof);
+		}
+		if (f.is_pressed(f_save) || f.is_pressed(f_close)) {
+			prof.save_settings();
+			g_audio.play_ui_cue("menu_select.ogg", 0.8f);
+			say("Audio settings saved.", true);
+			return;
+		}
+	}
+}
+
+void run_settings_menu(ClientProfile@ prof, NetClient@ nc) {
+	if (@prof == null) return;
+	while (true) {
+		menu m;
+		init_std_menu(m, "Settings Menu. %0 items.");
+		m.add_item("Audio Volume Mixer and HRTF (7 Layers)", "mixer");
+		m.add_item("Speech Output: " + (prof.use_sr ? "Screen Reader" : "Built-in TTS") + " (Toggle)", "sr_toggle");
+		m.add_item("Configure Built-in TTS Voice and Rate", "tts_cfg");
+		m.add_item("Turn Snap Step: " + prof.turn_snap_deg + " Degrees (Toggle 45 or 90)", "snap_toggle");
+		m.add_item("Key Remapping", "keybinds");
+		m.add_item("Saved Server Credentials Wallet", "wallet");
+		m.add_item("Back", "__back");
+
+		while (m.monitor()) { wait(5); pump_menu_net(nc); }
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__back") return;
+
+		if (sel == "mixer") {
+			run_audio_mixer_form(prof, nc);
+		} else if (sel == "sr_toggle") {
+			prof.use_sr = !prof.use_sr;
+			prof.save_settings();
+			g_audio.apply_profile(prof);
+			say(prof.use_sr ? "Prefer screen reader when available." : "Using built-in text to speech.", true);
+		} else if (sel == "tts_cfg") {
+			tts_config(tts, true);
+			prof.use_sr = use_sr;
+			prof.tts_rate = int(tts.rate);
+			prof.tts_voice_name = tts.get_voice_name(tts.voice);
+			prof.save_settings();
+			g_audio.apply_profile(prof);
+		} else if (sel == "snap_toggle") {
+			prof.turn_snap_deg = (prof.turn_snap_deg == 45) ? 90 : 45;
+			prof.save_settings();
+			say("Turn snap set to " + prof.turn_snap_deg + " degrees.", true);
+		} else if (sel == "keybinds") {
+			show_keybinds_form(prof);
+		} else if (sel == "wallet") {
+			menu wm;
+			init_std_menu(wm, "Saved Server Login Tokens. Select a slot to clear it.");
+			int cnt = 0;
+			for (uint i = 0; i < prof.wallet.length(); i++) {
+				WalletSlot@ ws = prof.wallet[i];
+				if (!ws.is_empty()) {
+					wm.add_item(ws.username + " on " + ws.host + " port " + ws.port, "slot:" + i);
+					cnt++;
+				}
+			}
+			if (cnt == 0) wm.add_item("No saved logins.", "__none");
+			else wm.add_item("Clear All Saved Server Logins", "__clear_all");
+			wm.add_item("Back", "__back");
+			while (wm.monitor()) { wait(5); pump_menu_net(nc); }
+			string ws_sel = wm.selected_item_id;
+			if (ws_sel == "__clear_all") {
+				prof.clear_all_wallet();
+				say("All saved credentials cleared.", true);
+			} else if (ws_sel.starts_with("slot:")) {
+				uint si = uint(safe_int(ws_sel.substr(5), 0, WALLET_SLOTS - 1, 0));
+				WalletSlot@ slot = prof.wallet[si];
+				if (!slot.is_empty()) {
+					string u = slot.username;
+					prof.remove_wallet_slot(slot.host, slot.port);
+					say("Cleared saved login for " + u + ".", true);
+				}
+			}
+		}
+	}
+}
+
+void run_news_menu(NetClient@ nc) {
+	menu m;
+	init_std_menu(m, "News and Changelog. %0 items.");
+	string cur_motd = (@nc != null && nc.motd.length() > 0) ? nc.motd : "";
+	string[] lines;
+	if (@nc != null && nc.changelog.length() > 0) lines = nc.changelog;
+
+	if (cur_motd.length() == 0) {
+		string mp = file_exists("server/data/motd.txt") ? "server/data/motd.txt" : (file_exists("../server/data/motd.txt") ? "../server/data/motd.txt" : "data/motd.txt");
+		if (file_exists(mp)) cur_motd = file_get_contents(mp).replace("\r", "", true).trim_whitespace();
+		else cur_motd = GAME_NAME + " version " + GAME_VERSION + ". Welcome to the wilderness.";
+	}
+	if (lines.length() == 0) {
+		string cp = file_exists("server/data/changelog.txt") ? "server/data/changelog.txt" : (file_exists("../server/data/changelog.txt") ? "../server/data/changelog.txt" : "data/changelog.txt");
+		if (file_exists(cp)) {
+			string[]@ raw_l = split_keep_empty(file_get_contents(cp).replace("\r", "", true), "\n");
+			for (uint i = 0; i < raw_l.length(); i++) {
+				string t = raw_l[i].trim_whitespace();
+				if (t.length() > 0) lines.insert_last(t);
+			}
+		}
+	}
+
+	m.add_item("Message of the Day: " + cur_motd, "motd");
+	for (uint i = 0; i < lines.length(); i++) m.add_item(lines[i], "ch:" + i);
+	m.add_item("Back", "__back");
+
+	while (m.monitor()) {
+		wait(5);
+		pump_menu_net(nc);
+	}
+}
+
+void run_learn_sounds_menu(NetClient@ nc) {
+	string[] labels = {
+		"Grass Footsteps",
+		"Dirt Footsteps",
+		"Stone Footsteps",
+		"Wood Footsteps",
+		"Sand Footsteps",
+		"Water Splash Steps",
+		"Wall Bump Obstacle",
+		"Melee Swing",
+		"Bow Release",
+		"Shield Block",
+		"Chop Tree",
+		"Mine Stone",
+		"Campfire Crackling",
+		"Door Open and Lock",
+		"Beacon Ping",
+		"Wolf Growl",
+		"Bear Roar",
+		"Sonar Radar Ping",
+		"Private Message Alert",
+		"Done"
+	};
+	string[] files = {
+		"steps/grass_1.ogg",
+		"steps/dirt_1.ogg",
+		"steps/stone_1.ogg",
+		"steps/wood_1.ogg",
+		"steps/sand_1.ogg",
+		"steps/water_1.ogg",
+		"steps/wall_bump_stone.ogg",
+		"combat/swing_melee.ogg",
+		"combat/bow_release.ogg",
+		"combat/hit_block.ogg",
+		"survival/chop_wood.ogg",
+		"survival/mine_stone.ogg",
+		"survival/campfire_ignite.ogg",
+		"builder/door_open.ogg",
+		"builder/beacon_ping.ogg",
+		"wildlife/wolf_growl.ogg",
+		"wildlife/bear_roar.ogg",
+		"ui/sonar_ping.ogg",
+		"ui/msg_pm.ogg",
+		"__done"
+	};
+
+	menu m;
+	init_std_menu(m, "Learn Game Sounds. Arrow up and down, press Enter to hear a sound.");
+	for (uint i = 0; i < labels.length(); i++) m.add_item(labels[i], files[i]);
+
+	while (true) {
+		while (m.monitor()) { wait(5); pump_menu_net(nc); }
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__done") return;
+		g_audio.play_ui_cue(sel, 0.9f);
+		// Keep same menu active for seamless previewing
+		int cur = m.selected_item;
+		m.reset(false);
+		init_std_menu(m, "Learn Game Sounds.");
+		m.automatic_intro = false;
+		for (uint i = 0; i < labels.length(); i++) m.add_item(labels[i], files[i]);
+		if (cur >= 0) m.set_focused_item(cur, false);
+	}
+}
+
+string run_pause_menu(NetClient@ nc, ClientProfile@ prof) {
+	menu m;
+	init_std_menu(m, "Pause Menu. %0 items.");
+	m.add_item("Resume Game", "resume");
+	m.add_item("Inventory (I)", "inv");
+	m.add_item("Crafting (C)", "craft");
+	m.add_item("Survival Building (B)", "build");
+	if (nc.my_rank >= RANK_BUILDER) m.add_item("Audio Map Builder (F8)", "mapbuild");
+	m.add_item("Social and Online Players (F2)", "social");
+	if (nc.my_rank >= RANK_MOD) m.add_item("Moderation Panel", "mod");
+	if (nc.my_rank >= RANK_DEV) m.add_item("Developer Console", "dev");
+	m.add_item("Settings and 7-Layer Mixer", "settings");
+	m.add_item("Interactive Audio Tutorial", "tutorial");
+	m.add_item("News and Changelog", "news");
+	m.add_item("Learn Game Sounds", "sounds");
+	m.add_item("Sign Out and Forget Saved Login", "signout");
+	m.add_item("Disconnect to Main Menu", "disconnect");
+
+	while (m.monitor()) {
+		wait(5);
+		pump_menu_net(nc);
+		if (nc.state != CONN_READY) return "disconnect";
+	}
+	string sel = m.selected_item_id;
+	if (sel.length() == 0 || sel == "resume") return "resume";
+	if (sel == "inv") { run_inventory_menu(nc); return "resume"; }
+	if (sel == "craft") { run_crafting_menu(nc); return "resume"; }
+	if (sel == "build") { run_survival_build_menu(nc); return "resume"; }
+	if (sel == "mapbuild") { nc.send_control("BUILDMAP|toggle"); return "resume"; }
+	if (sel == "social") { run_social_menu(nc, prof); return "resume"; }
+	if (sel == "mod") { run_mod_menu(nc); return "resume"; }
+	if (sel == "dev") { run_dev_menu(nc); return "resume"; }
+	if (sel == "settings") { run_settings_menu(prof, nc); return "resume"; }
+	if (sel == "tutorial") { run_interactive_tutorial(prof); g_audio.set_map(nc.map); return "resume"; }
+	if (sel == "news") { run_news_menu(nc); return "resume"; }
+	if (sel == "sounds") { run_learn_sounds_menu(nc); return "resume"; }
+	if (sel == "signout") {
+		if (@prof != null) prof.remove_wallet_slot(nc.host, nc.port);
+		nc.send_control("LOGOUT");
+		return "disconnect";
+	}
+	return "disconnect";
+}

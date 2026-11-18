@@ -1,0 +1,178 @@
+// Wire safety: escaping, splitting, and parsing things you did not write.
+//
+// Drop this into common/ - both programs need it, and they must agree
+// character for character about what an escaped message means.
+//
+// EVERYTHING HERE TREATS ITS INPUT AS HOSTILE. A packet arrives from a program
+// on somebody else's computer that you do not control, and a saved file is
+// editable by hand and outlives the version that wrote it. Neither may reach a
+// parser that can throw inside a tick loop, and neither may be trusted to be
+// the shape you expect.
+//
+// The two bugs this file exists to prevent have both sunk real audio games:
+// a player whose NAME contained the field separator, and an empty field in the
+// middle of a record silently renumbering every field after it.
+
+const string FIELD_SEP = "|";
+
+// ---------------------------------------------------------------- escaping
+
+// Make free text safe to put in a field.
+//
+//     escape table:   \ -> \\      | -> \p      LF -> \n      CR -> dropped
+//
+// THE BACKSLASH IS ESCAPED FIRST. Doing it later would double-escape the
+// backslashes the other replacements just introduced, and the message would
+// come back with visible junk in it.
+string wire_escape(const string&in raw) {
+	string res = raw.replace("\\", "\\\\", true);
+	res = res.replace(FIELD_SEP, "\\p", true);
+	res = res.replace("\n", "\\n", true);
+	res = res.replace("\r", "", true);
+	return res;
+}
+
+// UNESCAPING IS A SINGLE PASS, not the replacements run backwards.
+//
+// Running them backwards is the obvious thing and it is wrong: a player who
+// types a literal backslash followed by a p sends "\\p", and a pass that turns
+// "\p" into a separator first finds one inside it. One left-to-right scan that
+// consumes the escape character and then decides cannot be fooled that way.
+string wire_unescape(const string&in raw) {
+	string res;
+	for (uint i = 0; i < raw.length(); i++) {
+		string c = raw.substr(i, 1);
+		if (c == "\\" && i + 1 < raw.length()) {
+			string n = raw.substr(i + 1, 1);
+			if (n == "p") { res += FIELD_SEP; i++; continue; }
+			if (n == "n") { res += "\n"; i++; continue; }
+			if (n == "\\") { res += "\\"; i++; continue; }
+		}
+		res += c;
+	}
+	return res;
+}
+
+// ---------------------------------------------------------------- splitting
+
+// SPLIT THAT KEEPS THE EMPTY FIELDS, because the built-in one usually does not.
+//
+// `"a|b||c".split("|")` gives three parts in most engines and puts "c" at index
+// 2, so one empty field renumbers everything after it. For a PROTOCOL message
+// that is survivable if you follow the rule that the field which can be empty
+// goes last.
+//
+// A STORED RECORD CANNOT FOLLOW THAT RULE. An account row has twenty columns,
+// several of them text that is routinely empty - no friends, no ban reason -
+// and every column after the first empty one is read out of the wrong place.
+// Nobody notices while the columns behind it are all zeros that mean the same
+// thing whichever you read; you find out at the first column somebody misses.
+//
+// So split records with this: one pass, no drops, as many fields out as there
+// are separators plus one.
+string[]@ split_keep_empty(const string&in text, const string&in sep) {
+	string[] parts;
+	if (sep.length() == 0) { parts.insert_last(text); return parts; }
+	uint from = 0;
+	while (true) {
+		int at = text.find(sep, from);
+		if (at < 0) break;
+		parts.insert_last(text.substr(from, uint(at) - from));
+		from = uint(at) + sep.length();
+	}
+	parts.insert_last(text.substr(from));
+	return parts;
+}
+
+// Safe field read: the fallback rather than an exception when the index is out
+// of range. Use this everywhere rather than indexing the array directly, and a
+// truncated packet becomes a default instead of a crash.
+string field(string[]@ parts, uint index, const string&in fallback = "") {
+	if (@parts == null) return fallback;
+	if (index >= parts.length()) return fallback;
+	return parts[index];
+}
+
+// ----------------------------------------------------------------- numbers
+
+int clampi(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+double clampd(double v, double lo, double hi) { return v < lo ? lo : (v > hi ? hi : v); }
+
+// Parse an int, clamped to a legal range, with a fallback for garbage.
+//
+// CLAMPED, NOT JUST PARSED. "How many bots" arriving as two billion is not a
+// parse error - it is a valid integer that then allocates until the server
+// dies. Every number that crosses the wire has a range it is allowed to be in,
+// and this is where that range gets applied.
+int safe_int(const string&in s, int lo, int hi, int fallback) {
+	if (s.length() == 0 || s.length() > 12) return fallback;
+	for (uint i = 0; i < s.length(); i++) {
+		string c = s.substr(i, 1);
+		if (c == "-" && i == 0) continue;
+		if (c < "0" || c > "9") return fallback;
+	}
+	// parse_int returns a 64-bit value, and the clamp happens in that width on
+	// purpose: a twelve digit number does not fit in an int, so narrowing it
+	// first would wrap it round into the legal range instead of rejecting it.
+	int64 v = parse_int(s);
+	if (v < int64(lo)) return lo;
+	if (v > int64(hi)) return hi;
+	return int(v);
+}
+
+// The same for a decimal. Rejects anything that is not a plain decimal number,
+// so no exotic literal - hex, an exponent, an infinity - reaches the
+// simulation and turns a position into something no arithmetic recovers from.
+double safe_double(const string&in s, double lo, double hi, double fallback) {
+	if (s.length() == 0 || s.length() > 24) return fallback;
+	bool seen_digit = false;
+	bool seen_dot = false;
+	for (uint i = 0; i < s.length(); i++) {
+		string c = s.substr(i, 1);
+		if (c == "-" && i == 0) continue;
+		if (c == ".") {
+			if (seen_dot) return fallback;
+			seen_dot = true;
+			continue;
+		}
+		if (c < "0" || c > "9") return fallback;
+		seen_digit = true;
+	}
+	if (!seen_digit) return fallback;
+	return clampd(parse_double(s), lo, hi);
+}
+
+// ------------------------------------------------------------------- names
+
+const uint MIN_NAME_LEN = 3;
+const uint MAX_NAME_LEN = 20;
+
+// Reduce a name to the one narrow rule the whole game uses: letters, digits,
+// underscore and hyphen, length-capped.
+//
+// APPLY THIS EVERYWHERE A NAME IS READ, including from your own files, not just
+// where one is registered. A name goes into a delimited protocol and a
+// delimited file, so a name that can contain a separator breaks both - and the
+// file was written by an older version, or edited by hand, and does not know
+// about the rule you added last week.
+string sanitize_name(const string&in raw) {
+	string res = "";
+	for (uint i = 0; i < raw.length() && res.length() < MAX_NAME_LEN; i++) {
+		string c = raw.substr(i, 1);
+		bool ok = (c >= "a" && c <= "z") || (c >= "A" && c <= "Z")
+			|| (c >= "0" && c <= "9") || c == "_" || c == "-";
+		if (ok) res += c;
+	}
+	return res;
+}
+
+bool name_is_valid(const string&in name) {
+	return name.length() >= MIN_NAME_LEN && name == sanitize_name(name);
+}
+
+// Case-insensitive comparison, for uniqueness checks. Two accounts called
+// Ramrod and ramrod are two accounts nobody can tell apart by ear, which makes
+// impersonation free.
+bool names_match(const string&in a, const string&in b) {
+	return a.lower() == b.lower();
+}

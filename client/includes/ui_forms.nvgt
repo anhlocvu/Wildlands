@@ -1,0 +1,300 @@
+// Accessible audio_form dialogs for authentication, custom servers, text prompts, and key remapping.
+
+#include "audio_engine.nvgt"
+
+funcdef void ui_pump_fn();
+ui_pump_fn@ g_global_ui_pump = null;
+
+void ui_pump_tick(ui_pump_fn@ pump) {
+	g_audio.tick_menu_audio();
+	if (@pump != null) pump();
+	else if (@g_global_ui_pump != null) g_global_ui_pump();
+}
+
+bool show_register_form(string&out out_user, string&out out_pass, ui_pump_fn@ pump = null) {
+	out_user = "";
+	out_pass = "";
+	string cur_user = "";
+	string cur_p1 = "";
+	string cur_p2 = "";
+	bool show_pw = false;
+
+	while (true) {
+		audio_form f;
+		f.create_window("Create Account", false, true);
+		string mask = show_pw ? "" : "*";
+		int f_user = f.create_input_box("Username, 3 to 20 letters or numbers", cur_user, "", int(MAX_NAME_LEN));
+		int f_p1 = f.create_input_box("Password, minimum 6 characters", cur_p1, mask, int(MAX_PASS_LEN));
+		int f_p2 = f.create_input_box("Confirm Password", cur_p2, mask, int(MAX_PASS_LEN));
+		int f_show = f.create_checkbox("Show password characters", show_pw);
+		int f_ok = f.create_button("Create Account", true, false);
+		int f_cancel = f.create_button("Cancel", false, true);
+		f.focus(f_user);
+
+		bool rebuild = false;
+		while (true) {
+			wait(5);
+			ui_pump_tick(pump);
+			bool enter_on_chk = (key_pressed(KEY_RETURN) || key_pressed(KEY_NUMPAD_ENTER)) && (f.get_current_focus() == f_show);
+			f.monitor();
+			if (f.is_checked(f_show) != show_pw) {
+				cur_user = f.get_text(f_user);
+				cur_p1 = f.get_text(f_p1);
+				cur_p2 = f.get_text(f_p2);
+				show_pw = f.is_checked(f_show);
+				rebuild = true;
+				break;
+			}
+			if (f.is_pressed(f_cancel)) {
+				g_audio.play_ui_cue("menu_back.ogg", 0.8f);
+				return false;
+			}
+			if (f.is_pressed(f_ok) || enter_on_chk) {
+				string raw_u = f.get_text(f_user).trim_whitespace();
+				string u = sanitize_name(raw_u);
+				string p1 = f.get_text(f_p1);
+				string p2 = f.get_text(f_p2);
+				if (raw_u.length() == 0 || raw_u != u || !name_is_valid(u)) {
+					g_audio.play_ui_cue("error.ogg", 0.8f);
+					say("Username must be 3 to 20 plain letters, digits, hyphens, or underscores.", true);
+					f.focus(f_user);
+					continue;
+				}
+				if (p1.length() < MIN_PASS_LEN) {
+					g_audio.play_ui_cue("error.ogg", 0.8f);
+					say("Password must be at least " + MIN_PASS_LEN + " characters.", true);
+					f.focus(f_p1);
+					continue;
+				}
+				if (p1 != p2) {
+					g_audio.play_ui_cue("error.ogg", 0.8f);
+					say("Passwords do not match.", true);
+					f.focus(f_p2);
+					continue;
+				}
+				g_audio.play_ui_cue("menu_select.ogg", 0.8f);
+				out_user = u;
+				out_pass = p1;
+				return true;
+			}
+		}
+		if (!rebuild) break;
+	}
+	return false;
+}
+
+bool show_login_form(const string&in default_user, string&out out_user, string&out out_pass, bool&out remember, ui_pump_fn@ pump = null) {
+	out_user = "";
+	out_pass = "";
+	remember = true;
+	string cur_user = default_user;
+	string cur_pw = "";
+	bool show_pw = false;
+
+	while (true) {
+		audio_form f;
+		f.create_window("Sign In", false, true);
+		string mask = show_pw ? "" : "*";
+		int f_user = f.create_input_box("Username", cur_user, "", int(MAX_NAME_LEN));
+		int f_pw = f.create_input_box("Password", cur_pw, mask, int(MAX_PASS_LEN));
+		int f_show = f.create_checkbox("Show password characters", show_pw);
+		int f_rem = f.create_checkbox("Stay signed in on this server", remember);
+		int f_ok = f.create_button("Sign In", true, false);
+		int f_cancel = f.create_button("Cancel", false, true);
+		f.focus(cur_user.length() > 0 ? f_pw : f_user);
+
+		bool rebuild = false;
+		while (true) {
+			wait(5);
+			ui_pump_tick(pump);
+			int foc = f.get_current_focus();
+			bool enter_on_chk = (key_pressed(KEY_RETURN) || key_pressed(KEY_NUMPAD_ENTER)) && (foc == f_show || foc == f_rem);
+			f.monitor();
+			remember = f.is_checked(f_rem);
+			if (f.is_checked(f_show) != show_pw) {
+				cur_user = f.get_text(f_user);
+				cur_pw = f.get_text(f_pw);
+				show_pw = f.is_checked(f_show);
+				rebuild = true;
+				break;
+			}
+			if (f.is_pressed(f_cancel)) {
+				g_audio.play_ui_cue("menu_back.ogg", 0.8f);
+				return false;
+			}
+			if (f.is_pressed(f_ok) || enter_on_chk) {
+				string raw_u = f.get_text(f_user).trim_whitespace();
+				string u = sanitize_name(raw_u);
+				string pw = f.get_text(f_pw);
+				if (raw_u.length() == 0 || raw_u != u || !name_is_valid(u)) {
+					g_audio.play_ui_cue("error.ogg", 0.8f);
+					say("Enter a valid username, 3 to 20 letters or digits.", true);
+					f.focus(f_user);
+					continue;
+				}
+				if (pw.length() < MIN_PASS_LEN) {
+					g_audio.play_ui_cue("error.ogg", 0.8f);
+					say("Password must be at least " + MIN_PASS_LEN + " characters.", true);
+					f.focus(f_pw);
+					continue;
+				}
+				g_audio.play_ui_cue("menu_select.ogg", 0.8f);
+				out_user = u;
+				out_pass = pw;
+				return true;
+			}
+		}
+		if (!rebuild) break;
+	}
+	return false;
+}
+
+bool show_custom_server_form(string&inout host, uint16&inout port, ui_pump_fn@ pump = null) {
+	audio_form f;
+	f.create_window("Custom Server", false, true);
+	int f_host = f.create_input_box("Server Host or IP Address", host, "", 80);
+	int f_port = f.create_input_box("Port number, default " + DEFAULT_PORT, "" + port, "", 6);
+	int f_ok = f.create_button("Save and Connect", true, false);
+	int f_cancel = f.create_button("Cancel", false, true);
+	f.focus(f_host);
+
+	while (true) {
+		wait(5);
+		ui_pump_tick(pump);
+		f.monitor();
+		if (f.is_pressed(f_cancel)) {
+			g_audio.play_ui_cue("menu_back.ogg", 0.8f);
+			return false;
+		}
+		if (f.is_pressed(f_ok)) {
+			string h = strip_control_chars(f.get_text(f_host), 80);
+			int p = safe_int(f.get_text(f_port).trim_whitespace(), 1024, 65535, -1);
+			if (h.length() == 0 || p < 1024) {
+				g_audio.play_ui_cue("error.ogg", 0.8f);
+				say("Please enter a valid host and a port between 1024 and 65535.", true);
+				continue;
+			}
+			g_audio.play_ui_cue("menu_select.ogg", 0.8f);
+			host = h;
+			port = uint16(p);
+			return true;
+		}
+	}
+	return false;
+}
+
+bool show_text_prompt(const string&in title, const string&in caption, const string&in def_val, string&out out_val, uint max_len = 64, ui_pump_fn@ pump = null) {
+	out_val = "";
+	audio_form f;
+	f.create_window(title, false, true);
+	int f_in = f.create_input_box(caption, def_val, "", int(max_len));
+	int f_ok = f.create_button("OK", true, false);
+	int f_cancel = f.create_button("Cancel", false, true);
+	f.focus(f_in);
+
+	while (true) {
+		wait(5);
+		ui_pump_tick(pump);
+		f.monitor();
+		if (f.is_pressed(f_cancel)) {
+			g_audio.play_ui_cue("menu_back.ogg", 0.8f);
+			return false;
+		}
+		if (f.is_pressed(f_ok)) {
+			out_val = strip_control_chars(f.get_text(f_in), max_len);
+			if (out_val.length() == 0) {
+				g_audio.play_ui_cue("error.ogg", 0.8f);
+				say("Input cannot be empty.", true);
+				continue;
+			}
+			g_audio.play_ui_cue("menu_select.ogg", 0.8f);
+			return true;
+		}
+	}
+	return false;
+}
+
+int capture_single_key(const string&in action_label, ui_pump_fn@ pump = null) {
+	say("Press the new key for " + action_label + ", or Escape to cancel.", true);
+	while (keys_down().length() > 0) {
+		wait(5);
+		ui_pump_tick(pump);
+	}
+	while (true) {
+		wait(5);
+		ui_pump_tick(pump);
+		int[]@ pressed = keys_pressed();
+		for (uint i = 0; i < pressed.length(); i++) {
+			int kc = pressed[i];
+			if (kc == KEY_ESCAPE) {
+				g_audio.play_ui_cue("menu_back.ogg", 0.8f);
+				say("Cancelled.", true);
+				return -1;
+			}
+			if (kc == KEY_LGUI || kc == KEY_RGUI) continue;
+			g_audio.play_ui_cue("menu_select.ogg", 0.8f);
+			return kc;
+		}
+	}
+	return -1;
+}
+
+void show_keybinds_form(ClientProfile@ prof, ui_pump_fn@ pump = null) {
+	if (@prof == null) return;
+	audio_form f;
+	f.create_window("Key Remapping", false, true);
+	int f_list = f.create_list("Key Bindings", 0, false, true);
+	for (uint i = 0; i < prof.keybinds.length(); i++) {
+		KeyBind@ kb = prof.keybinds[i];
+		f.add_list_item(f_list, kb.label + ": " + key_code_name(kb.key), kb.action);
+	}
+	f.set_list_position(f_list, 0, false);
+	int f_rebind = f.create_button("Rebind Selected Key", true, false);
+	int f_reset = f.create_button("Reset All to Defaults", false, false);
+	int f_done = f.create_button("Done", false, true);
+	f.focus(f_list);
+
+	while (true) {
+		wait(5);
+		ui_pump_tick(pump);
+		f.monitor();
+		if (f.is_pressed(f_done)) {
+			prof.save_settings();
+			g_audio.play_ui_cue("menu_back.ogg", 0.8f);
+			return;
+		}
+		if (f.is_pressed(f_reset)) {
+			prof.reset_keybinds();
+			prof.save_settings();
+			f.clear_list(f_list);
+			for (uint i = 0; i < prof.keybinds.length(); i++) {
+				f.add_list_item(f_list, prof.keybinds[i].label + ": " + key_code_name(prof.keybinds[i].key), prof.keybinds[i].action);
+			}
+			f.set_list_position(f_list, 0, false);
+			g_audio.play_ui_cue("menu_select.ogg", 0.8f);
+			say("All keys restored to defaults.", true);
+			continue;
+		}
+		if (f.is_pressed(f_rebind)) {
+			int pos = f.get_list_position(f_list);
+			if (pos < 0 || uint(pos) >= prof.keybinds.length()) continue;
+			KeyBind@ kb = prof.keybinds[uint(pos)];
+			int nk = capture_single_key(kb.label, pump);
+			if (nk > 0) {
+				string conflict = prof.bind_conflict_label(kb.action, nk);
+				kb.key = nk;
+				prof.save_settings();
+				f.delete_list_item(f_list, pos, false, false);
+				f.add_list_item(f_list, kb.label + ": " + key_code_name(kb.key), kb.action, pos);
+				f.set_list_position(f_list, pos, false);
+				if (conflict.length() > 0) {
+					g_audio.play_ui_cue("error.ogg", 0.7f);
+					say(kb.label + " set to " + key_code_name(nk) + ". Warning: also bound to " + conflict + ".", true);
+				} else {
+					say(kb.label + " set to " + key_code_name(nk) + ".", true);
+				}
+			}
+			f.focus(f_list);
+		}
+	}
+}

@@ -1,0 +1,91 @@
+// Offline console check for salted stretched hashing, constant-time compare,
+// bearer tokens, atomic temp+bak save, corrupt store detection, and rank rules.
+// Run: nvgt tools/auth_check.nvgt
+
+#pragma console
+#include "../server/includes/accounts.nvgt"
+
+int fails = 0;
+
+void check(const string&in what, bool ok, const string&in detail = "") {
+	println((ok ? "  ok    " : "  FAIL  ") + what + (detail.length() > 0 ? "   [" + detail + "]" : ""));
+	if (!ok) fails++;
+}
+
+void main() {
+	string tmp_dir = "_tmp_auth_test";
+	if (directory_exists(tmp_dir)) directory_delete(tmp_dir, true);
+	directory_create(tmp_dir);
+
+	AccountStore store;
+	store.db_path = tmp_dir + "/accounts.dat";
+	store.devs_path = tmp_dir + "/devs.txt";
+	file_put_contents(store.devs_path, "devlead\n");
+	store.load_devs();
+
+	check("constant_time_eq equal", constant_time_eq("abc123", "abc123"));
+	check("constant_time_eq diff", !constant_time_eq("abc123", "abc124"));
+	check("constant_time_eq len", !constant_time_eq("abc", "abcd"));
+
+	timer t;
+	string salt = make_salt_hex();
+	string h1 = hash_password("SecretPass!", salt);
+	uint64 elapsed = t.elapsed;
+	check("salt hex length 32", salt.length() == 32);
+	check("pw hash hex length 64", h1.length() == 64);
+	check("hash timing reasonable (<250ms)", elapsed < 250, "ms=" + elapsed);
+	check("different salt gives different hash", hash_password("SecretPass!", make_salt_hex()) != h1);
+
+	AccountRecord@ a1 = null;
+	string err, tok1;
+	bool reg_ok = store.register_account("DevLead", "Secret123", 50.0, 46.0, 0.0, a1, err, tok1);
+	check("register DevLead", reg_ok && @a1 != null && tok1.length() == 64, err);
+	check("dev rank granted by devs.txt", store.effective_rank(a1) == RANK_DEV);
+
+	AccountRecord@ a_dup = null;
+	string tok_dup;
+	check("rejects case-insensitive duplicate", !store.register_account("devlead", "OtherPass1", 50.0, 46.0, 0.0, a_dup, err, tok_dup));
+
+	AccountRecord@ a2 = null;
+	string tok2;
+	check("register regular player", store.register_account("Ranger_1", "Timber99", 50.0, 46.0, 0.0, a2, err, tok2));
+	check("token auth works", store.authenticate_token("Ranger_1", tok2, 1000, a2, err));
+	check("wrong token rejected", !store.authenticate_token("Ranger_1", tok1, 1000, a2, err));
+
+	// Rotating token via password invalidates old token.
+	string tok2_new;
+	check("password login rotates token", store.authenticate_password("ranger_1", "Timber99", 1000, a2, err, tok2_new) && tok2_new != tok2);
+	check("old token invalidated after new login", !store.authenticate_token("Ranger_1", tok2, 1000, a2, err));
+	check("new token accepted", store.authenticate_token("Ranger_1", tok2_new, 1000, a2, err));
+
+	// Rank moderation hierarchy.
+	check("dev can mod admin", can_moderate(RANK_DEV, RANK_ADMIN));
+	check("mod cannot mod mod (sideways)", !can_moderate(RANK_MOD, RANK_MOD));
+	check("mod cannot mod admin (upwards)", !can_moderate(RANK_MOD, RANK_ADMIN));
+	check("player cannot mod player", !can_moderate(RANK_PLAYER, RANK_PLAYER));
+
+	// Save + reload roundtrip + .bak creation.
+	a2.friends.insert_last("devlead");
+	a2.ban_reason = "pipe|test\\reason";
+	a2.banned_until = 5000;
+	check("save store succeeds", store.save(err), err);
+	check("second save creates .bak", store.save(err) && file_exists(store.db_path + ".bak"), err);
+
+	AccountStore store2;
+	store2.db_path = store.db_path;
+	store2.devs_path = store.devs_path;
+	check("reload saved store", store2.load(err), err);
+	AccountRecord@ r2 = store2.find("Ranger_1");
+	check("reloaded escaped ban_reason + friends", @r2 != null && r2.ban_reason == "pipe|test\\reason" && r2.has_friend("devlead"));
+	check("ban message active at t=1000", store2.ban_message_if_active(r2, 1000).find("pipe|test\\reason") >= 0);
+
+	// Corrupt account store MUST fail fatally instead of returning empty list.
+	file_put_contents(store.db_path, "CORRUPTED_GARBAGE\n", false);
+	AccountStore bad_store;
+	bad_store.db_path = store.db_path;
+	check("corrupt store fails load fatally", !bad_store.load(err) && err.length() > 0, err);
+
+	directory_delete(tmp_dir, true);
+	println(fails == 0 ? "PASS" : (fails + " failure(s)"));
+	exit(fails == 0 ? 0 : 1);
+}

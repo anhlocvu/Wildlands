@@ -1,0 +1,186 @@
+// Server Developer Panel (target-based idempotent world actions) & Ranked Moderation.
+
+#include "builder_srv.nvgt"
+
+void admin_handle_dev(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
+	if (@ps == null || !ps.authed) return;
+	if (ps.rank != RANK_DEV || !ctx.accounts.is_dev_allowlisted(ps.name)) {
+		ctx.logger.log("REFUSED", "DEV action refused for " + ps.name);
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Developer access denied.");
+		return;
+	}
+	string cmd = field(p, 1, "");
+	string arg1 = field(p, 2, "");
+	string arg2 = field(p, 3, "");
+
+	ctx.logger.log("DEV", ps.name + " ran DEV " + cmd + " (" + arg1 + ", " + arg2 + ")");
+
+	if (cmd == "set_bots") {
+		int cnt = safe_int(arg1, 0, 20, 0);
+		wildlife_set_target_count(ctx, cnt, true);
+		ctx.broadcast_speech(MBUF_SYSTEM, false, "Developer set practice bots to " + cnt + ".");
+	} else if (cmd == "set_wildlife") {
+		int cnt = safe_int(arg1, 0, 40, 12);
+		wildlife_set_target_count(ctx, cnt, false);
+		ctx.broadcast_speech(MBUF_SYSTEM, false, "Developer set wildlife population to " + cnt + ".");
+	} else if (cmd == "weather") {
+		ctx.is_raining = (arg1 == "rain");
+		ctx.broadcast_speech(MBUF_GAME, false, ctx.is_raining ? "Developer summoned rain." : "Developer cleared the weather.");
+	} else if (cmd == "time") {
+		ctx.is_night = (arg1 == "night");
+		ctx.cycle_sec = ctx.is_night ? 800 : 300;
+		ctx.broadcast_speech(MBUF_GAME, false, ctx.is_night ? "Developer set time to night." : "Developer set time to day.");
+	} else if (cmd == "announce") {
+		string msg = strip_control_chars(wire_unescape(arg1), 200);
+		if (msg.length() > 0) ctx.broadcast_speech(MBUF_SYSTEM, true, "Server Announcement: " + msg);
+	} else if (cmd == "reload_all") {
+		ctx.load_soft_data();
+		string err;
+		WorldMap fresh;
+		if (fresh.load_from_file(ctx.active_map_path, err)) {
+			ctx.map = fresh;
+			builder_reload_all_clients(ctx);
+		}
+		for (uint i = 0; i < ctx.sessions.length(); i++) {
+			if (ctx.sessions[i].authed && ctx.sessions[i].peer_id != 0) ctx.send_news(ctx.sessions[i]);
+		}
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Reloaded MOTD, changelog, devs, and map.");
+	} else if (cmd == "spawn_item") {
+		PlayerSession@ dest = @ps;
+		string iid = arg1;
+		int q = safe_int(arg2, 1, 50, 1);
+		if (p.length() >= 5) {
+			@dest = ctx.find_session_by_name(arg1);
+			if (@dest == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Player " + arg1 + " is not online."); return; }
+			iid = arg2;
+			q = safe_int(field(p, 4, "1"), 1, 50, 1);
+		}
+		ItemDef@ d = find_item(iid);
+		if (@d == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Unknown item id: " + iid); return; }
+		dest.add_item(d.id, q);
+		ctx.send_inv(dest);
+		if (@dest != @ps) ctx.send_speech(dest, MBUF_GAME, false, "Developer granted you " + q + " " + d.name + ".");
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Granted " + q + " " + d.name + " to " + dest.name + ".");
+	} else if (cmd == "tp") {
+		PlayerSession@ dest = @ps;
+		double tx = safe_double(arg1, 1.0, double(ctx.map.width - 1), ps.x);
+		double ty = safe_double(arg2, 1.0, double(ctx.map.height - 1), ps.y);
+		if (p.length() >= 5) {
+			@dest = ctx.find_session_by_name(arg1);
+			if (@dest == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Player " + arg1 + " is not online."); return; }
+			tx = safe_double(arg2, 1.0, double(ctx.map.width - 1), dest.x);
+			ty = safe_double(field(p, 4, "1"), 1.0, double(ctx.map.height - 1), dest.y);
+		}
+		dest.x = tx; dest.y = ty; dest.z = ctx.map.ground_z_at(tx, ty, dest.z);
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Teleported " + dest.name + " to " + int(tx) + ", " + int(ty) + ".");
+	} else if (cmd == "save_now") {
+		string serr;
+		for (uint i = 0; i < ctx.sessions.length(); i++) {
+			PlayerSession@ sp = ctx.sessions[i];
+			if (sp.authed && @sp.account != null) {
+				sp.account.last_x = sp.x; sp.account.last_y = sp.y; sp.account.last_z = sp.z;
+				ctx.accounts.dirty = true;
+			}
+		}
+		ctx.accounts.save(serr);
+		world_save_objects(ctx, serr);
+		ctx.send_speech(ps, MBUF_SYSTEM, false, "Saved accounts and world objects.");
+	} else if (cmd == "grant_rank") {
+		// Grant up to RANK_ADMIN only; RANK_DEV can NEVER be granted over network.
+		AccountRecord@ target = ctx.accounts.find(arg1);
+		int nr = safe_int(arg2, RANK_PLAYER, RANK_ADMIN, RANK_PLAYER);
+		if (@target == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Account not found."); return; }
+		if (ctx.accounts.is_dev_allowlisted(target.name)) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Cannot modify allowlisted developer."); return; }
+		target.rank = nr;
+		ctx.accounts.dirty = true;
+		PlayerSession@ live = ctx.find_session_by_name(target.name);
+		if (@live != null) {
+			live.rank = nr;
+			ctx.send_control(live, pkt_4("AUTH_OK", live.name, "" + live.rank, "-"));
+			ctx.send_speech(live, MBUF_SYSTEM, true, "Your rank was updated to " + rank_label(nr) + ".");
+		}
+		ctx.send_speech(ps, MBUF_SYSTEM, true, target.name + " rank set to " + rank_label(nr) + ".");
+	}
+}
+
+void admin_handle_mod(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, int64 now_sec) {
+	if (@ps == null || !ps.authed) return;
+	string cmd = field(p, 1, "");
+	string target_name = sanitize_name(field(p, 2, ""));
+	int duration_min = safe_int(field(p, 3, "10"), 0, 525600, 10);
+	string reason = strip_control_chars(wire_unescape(field(p, 4, "Moderator decision")), 160);
+	if (reason.length() == 0) reason = "Moderator decision";
+
+	if (ps.rank < RANK_MOD) {
+		ctx.logger.log("REFUSED", "MOD " + cmd + " denied for " + ps.name + " (not mod)");
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "You do not have moderation permissions.");
+		return;
+	}
+
+	AccountRecord@ target_acc = ctx.accounts.find(target_name);
+	PlayerSession@ target_live = ctx.find_session_by_name(target_name);
+	int target_rank = @target_acc != null ? ctx.accounts.effective_rank(target_acc) : (@target_live != null ? target_live.rank : RANK_PLAYER);
+
+	if (cmd == "unban") {
+		if (@target_acc == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Account not found."); return; }
+		target_acc.banned_until = 0;
+		target_acc.ban_reason = "";
+		ctx.accounts.dirty = true;
+		ctx.logger.log("MOD", ps.name + " unbanned " + target_acc.name);
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Unbanned " + target_acc.name + ".");
+		return;
+	}
+
+	if (!can_moderate(ps.rank, target_rank)) {
+		ctx.logger.log("REFUSED", ps.name + " (" + rank_label(ps.rank) + ") tried MOD " + cmd + " on " + target_name + " (" + rank_label(target_rank) + ")");
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Action refused: you cannot moderate players of equal or higher rank.");
+		return;
+	}
+
+	if (cmd == "kick") {
+		if (@target_live == null || target_live.peer_id == 0) {
+			ctx.send_speech(ps, MBUF_SYSTEM, true, target_name + " is not online.");
+			return;
+		}
+		ctx.logger.log("MOD", ps.name + " kicked " + target_live.name + ": " + reason);
+		ctx.send_control(target_live, pkt_3("REFUSE", "kicked", wire_escape("You were kicked by " + ps.name + ". Reason: " + reason)));
+		ctx.net.flush();
+		ctx.net.disconnect_peer_softly(target_live.peer_id);
+		target_live.peer_id = 0;
+		target_live.authed = false;
+		ctx.broadcast_speech(MBUF_SYSTEM, false, target_live.name + " was kicked.");
+		return;
+	}
+
+	if (@target_acc == null) {
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Cannot mute or ban an unregistered guest permanently; kick instead.");
+		return;
+	}
+
+	if (cmd == "mute") {
+		int mins = duration_min > 0 ? duration_min : 10;
+		target_acc.muted_until = now_sec + int64(mins) * 60;
+		ctx.accounts.dirty = true;
+		ctx.logger.log("MOD", ps.name + " muted " + target_acc.name + " for " + mins + "m: " + reason);
+		if (@target_live != null) ctx.send_speech(target_live, MBUF_SYSTEM, true, "You were muted for " + mins + " minutes. Reason: " + reason);
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Muted " + target_acc.name + " for " + mins + " minutes.");
+		return;
+	}
+
+	if (cmd == "ban") {
+		target_acc.banned_until = duration_min == 0 ? -1 : (now_sec + int64(duration_min) * 60);
+		target_acc.ban_reason = reason;
+		target_acc.token_hash = "";
+		ctx.accounts.dirty = true;
+		ctx.logger.log("MOD", ps.name + " banned " + target_acc.name + " (" + duration_min + "m): " + reason);
+		if (@target_live != null && target_live.peer_id != 0) {
+			string bmsg = ctx.accounts.ban_message_if_active(target_acc, now_sec);
+			ctx.send_control(target_live, pkt_3("REFUSE", "banned", wire_escape(bmsg)));
+			ctx.net.flush();
+			ctx.net.disconnect_peer_softly(target_live.peer_id);
+			target_live.peer_id = 0;
+			target_live.authed = false;
+		}
+		ctx.broadcast_speech(MBUF_SYSTEM, false, target_acc.name + " was banned.");
+	}
+}

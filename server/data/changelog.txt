@@ -1,0 +1,4 @@
+v1.0.0: Initial release of Wildlands Online!
+v1.0.0: Added Survival Base Builder (walls, lockable doors with sound occlusion, chests, watchtowers, beacons).
+v1.0.0: Added Interactive Audio Map Builder (F8 for Builder+ rank) with live server reload.
+v1.0.0: Added 6-channel ENet transport, 6-channel message buffers, multi-scope / chat, and 94 verified real CC0/open recordings.

@@ -1,0 +1,64 @@
+// Offline console check for wire, compass, protocol, and catalog invariants.
+// Run: nvgt tools/common_check.nvgt
+// No window, no sound, exits non-zero on failure.
+
+#pragma console
+#include "../common/compass.nvgt"
+#include "../common/protocol.nvgt"
+#include "../common/items.nvgt"
+
+int fails = 0;
+
+void check(const string&in what, bool ok, const string&in detail = "") {
+	println((ok ? "  ok    " : "  FAIL  ") + what + (detail.length() > 0 ? "   [" + detail + "]" : ""));
+	if (!ok) fails++;
+}
+
+void roundtrip(const string&in raw) {
+	string esc = wire_escape(raw);
+	string back = wire_unescape(esc);
+	check("wire roundtrip", back == raw, "in=" + raw + " esc=" + esc + " out=" + back);
+}
+
+void main() {
+	roundtrip("hello world");
+	roundtrip("a|b|c");
+	roundtrip("back\\slash");
+	roundtrip("literal\\p not a sep");
+	roundtrip("two\nlines");
+	roundtrip("|||\\n\\p\\\\");
+
+	string[]@ p = pkt_parse("ACC|v1|1|Hero||hash");
+	check("split_keep_empty preserves middle empty", p.length() == 6 && field(p, 4) == "" && field(p, 5) == "hash");
+	check("field out of bounds returns fallback", field(p, 99, "fb") == "fb");
+	check("safe_int clamps upper", safe_int("9999999999", 0, 100, 1) == 100);
+	check("safe_int rejects alpha", safe_int("12a", 0, 100, 7) == 7);
+	check("safe_double parses decimal", safe_double("12.35", 0.0, 50.0, 0.0) == 12.35);
+	check("safe_double rejects scientific/hex", safe_double("1e5", 0.0, 999999.0, -1.0) == -1.0);
+	check("fmt2 zero sign clean", fmt2(-0.0001) == "0.00");
+	check("fmt2 formats positive", fmt2(12.346) == "12.35");
+	check("fmt2 formats negative", fmt2(-3.5) == "-3.50");
+	check("strip_control_chars", strip_control_chars("hi\r\nthere\x07!") == "hithere!");
+
+	check("name valid", name_is_valid("Wild_Hero-1"));
+	check("name rejects pipe", !name_is_valid("Bad|Name"));
+	check("name rejects short", !name_is_valid("ab"));
+	check("names match ci", names_match("Hero", "hero"));
+
+	check("compass north", compass_name(0) == "north");
+	check("compass snap left from 3", snap_deg(3, 45, -1) == 0);
+	check("compass snap right from 3", snap_deg(3, 45, 1) == 45);
+	check("describe_target", describe_target("Wolf", 90, 0, 0, 0, 10, 4, 0) == "Wolf, ahead and to your left, 11 steps.");
+
+	init_catalog();
+	check("items loaded", g_items.length() >= 24);
+	check("recipes loaded", g_recipes.length() >= 18);
+	check("structs loaded", g_structs.length() >= 8);
+	check("species loaded", g_species.length() >= 6);
+	check("find_item wood_wall_kit", @find_item("wood_wall_kit") != null);
+	check("find_recipe r_campfire", @find_recipe("r_campfire") != null);
+	check("find_struct wood_door is door & lockable", find_struct("wood_door").is_door && find_struct("wood_door").lockable);
+
+	println(fails == 0 ? "PASS" : (fails + " failure(s)"));
+	exit(fails == 0 ? 0 : 1);
+}

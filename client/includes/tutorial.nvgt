@@ -1,0 +1,154 @@
+// Self-paced interactive audio tutorial with live 3D HRTF campfire bisection, surface footsteps,
+// sonar echolocation, and buffer navigation practice. Escape exits at any point.
+
+#include "audio_engine.nvgt"
+
+void run_interactive_tutorial(ClientProfile@ prof) {
+	if (@prof == null) return;
+
+	g_audio.set_menu_music(false);
+	WorldMap tut_map;
+	string err;
+	string raw = "NAME=Tutorial Clearing\nWIDTH=30\nHEIGHT=30\nMAXZ=10\nSURFACE=grass\n"
+		+ "ZONE|Timber Path|8|4|16|12|dirt|ambience/forest_day.ogg|1\n"
+		+ "WALL|North Stone Wall|6|20|18|22|0|4|stone\n";
+	tut_map.load_from_string(raw, err);
+
+	double px = 12.0, py = 6.0, pz = 0.0;
+	double smooth_fac = 180.0; // Facing south at start so campfire behind player demonstrates HRTF turn
+	int fac = 180;
+	double fire_x = 12.0, fire_y = 14.0, fire_z = 0.0;
+
+	g_audio.stop_world_audio();
+	g_audio.set_map(tut_map);
+	int fire_slot = g_audio.play_world_sfx("ambience", "survival/campfire_loop.ogg", fire_x, fire_y, fire_z, 0.90f, true, true, true);
+
+	int stage = 0;
+	int snap_turns_done = 0;
+	bool bufs_switched = false;
+	timer step_timer;
+	timer smooth_timer;
+	timer frame_timer;
+
+	say("Welcome to the interactive Wildlands tutorial. Step 1: Turn using Left and Right arrows to hear your compass snap. Press Escape anytime to exit.", true);
+
+	while (true) {
+		wait(5);
+		double dt = double(frame_timer.elapsed) / 1000.0;
+		if (dt > 0.05) dt = 0.05;
+		frame_timer.restart();
+
+		if (key_pressed(KEY_ESCAPE)) {
+			g_audio.play_ui_cue("menu_back.ogg", 0.8f);
+			say("Tutorial exited.", true);
+			break;
+		}
+
+		bool shift = key_down(KEY_LSHIFT) || key_down(KEY_RSHIFT);
+		if (shift) {
+			if (key_down(prof.get_bind_key("turn_left")) && smooth_timer.elapsed >= 16) {
+				smooth_timer.restart();
+				smooth_fac = turn_smooth(smooth_fac, 130.0 * dt, -1);
+				fac = round_deg(smooth_fac);
+			}
+			if (key_down(prof.get_bind_key("turn_right")) && smooth_timer.elapsed >= 16) {
+				smooth_timer.restart();
+				smooth_fac = turn_smooth(smooth_fac, 130.0 * dt, 1);
+				fac = round_deg(smooth_fac);
+			}
+		} else {
+			if (prof.key_pressed_bind("turn_left")) {
+				fac = snap_deg(fac, prof.turn_snap_deg, -1);
+				smooth_fac = double(fac);
+				g_audio.play_ui_cue("menu_move.ogg", 0.5f);
+				say(compass_name(double(fac)), true);
+				snap_turns_done++;
+			}
+			if (prof.key_pressed_bind("turn_right")) {
+				fac = snap_deg(fac, prof.turn_snap_deg, 1);
+				smooth_fac = double(fac);
+				g_audio.play_ui_cue("menu_move.ogg", 0.5f);
+				say(compass_name(double(fac)), true);
+				snap_turns_done++;
+			}
+		}
+
+		// Movement on Stage >= 2
+		if (stage >= 2) {
+			double mx = 0.0, my = 0.0;
+			if (prof.key_down_bind("move_fwd") || key_down(KEY_UP)) {
+				mx += bearing_x(double(fac));
+				my += bearing_y(double(fac));
+			}
+			if (prof.key_down_bind("move_back") || key_down(KEY_DOWN)) {
+				mx -= bearing_x(double(fac));
+				my -= bearing_y(double(fac));
+			}
+			double mag = sqrt(mx * mx + my * my);
+			if (mag > 0.01) {
+				mx /= mag; my /= mag;
+				double nx = clampd(px + mx * WALK_SPEED_PER_SEC * dt, 2.0, 28.0);
+				double ny = clampd(py + my * WALK_SPEED_PER_SEC * dt, 2.0, 28.0);
+				string mat;
+				if (!tut_map.blocked_by_wall(nx, ny, pz, PLAYER_RADIUS, mat)) {
+					px = nx; py = ny;
+					if (step_timer.elapsed >= 400) {
+						step_timer.restart();
+						g_audio.play_local_footstep(tut_map.surface_at(px, py, pz));
+					}
+				} else if (step_timer.elapsed >= 450) {
+					step_timer.restart();
+					g_audio.play_ui_cue("steps/wall_bump_stone.ogg", 0.7f);
+				}
+			}
+		}
+
+		// Stage checks
+		double dist_fire = get_2d_distance(px, py, fire_x, fire_y);
+		double fire_bearing = bearing_to(px, py, fire_x, fire_y);
+		double aim_err = angle_diff(double(fac), fire_bearing);
+		if (aim_err < 0.0) aim_err = -aim_err;
+
+		if (stage == 0 && snap_turns_done >= 2) {
+			stage = 1;
+			g_audio.play_ui_cue("multi/level_up.ogg", 0.75f);
+			say("Good! Step 2: Listen for the crackling campfire in 3D space. Hold Shift with Left or Right arrow to turn smoothly until you face it.", true);
+		} else if (stage == 1 && aim_err <= 22.0) {
+			stage = 2;
+			g_audio.play_ui_cue("multi/level_up.ogg", 0.75f);
+			say("Centered on the fire! Step 3: Hold W or Up arrow to walk forward to the fire, noticing footsteps shift from dirt to grass.", true);
+		} else if (stage == 2 && dist_fire <= 2.4) {
+			stage = 3;
+			g_audio.play_ui_cue("multi/level_up.ogg", 0.75f);
+			say("Nice! Step 4: Press V to send an acoustic sonar ping and detect nearby stone walls, or T to scan landmarks.", true);
+		} else if (stage == 3 && (prof.key_pressed_bind("sonar") || prof.key_pressed_bind("scanner"))) {
+			g_audio.play_world_sfx("self", "ui/sonar_ping.ogg", 12.0, 20.0, 0.0, 0.9f, false);
+			stage = 4;
+			add_buffer(BUF_CHAT, "Tutorial Guide says: Welcome to chat buffers!");
+			add_buffer(BUF_SYSTEM, "System tip: Use comma and period to switch buffer channels.");
+			say("Sonar detected the north stone wall! Final step: Press Comma or Period to browse your message buffers.", true);
+		} else if (stage == 4) {
+			if (prof.key_pressed_bind("buf_prev") || key_pressed(KEY_PAGEUP)) { buffer_left(); bufs_switched = true; }
+			if (prof.key_pressed_bind("buf_next") || key_pressed(KEY_PAGEDOWN)) { buffer_right(); bufs_switched = true; }
+			if (bufs_switched) {
+				stage = 5;
+				prof.tutorial_done = true;
+				prof.save_settings();
+				g_audio.play_ui_cue("multi/connect_ok.ogg", 0.9f);
+				say("Tutorial complete! You are ready to explore Wildlands Online.", true);
+				timer wait_end;
+				while (wait_end.elapsed < 1800) { wait(5); g_audio.update_world(px, py, pz, fac, false, false, "ambience/forest_day.ogg"); }
+				break;
+			}
+		}
+
+		if (prof.key_pressed_bind("compass")) say("Facing " + compass_name(double(fac)), true);
+		if (prof.key_pressed_bind("repeat_spoken")) repeat_last_spoken();
+
+		g_audio.update_world(px, py, pz, fac, false, false, "ambience/forest_day.ogg");
+	}
+
+	if (fire_slot >= 0) g_audio.pool.destroy_sound(fire_slot);
+	g_audio.stop_world_audio();
+	g_audio.set_map(null);
+}

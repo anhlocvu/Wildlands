@@ -1,0 +1,67 @@
+// Offline console check for server maps: parsing, bounds, spawns, roundtrip, occlusion, and chunk sizing.
+// Run: nvgt tools/map_check.nvgt
+
+#pragma console
+#include "../common/map.nvgt"
+
+int fails = 0;
+
+void check(const string&in what, bool ok, const string&in detail = "") {
+	println((ok ? "  ok    " : "  FAIL  ") + what + (detail.length() > 0 ? "   [" + detail + "]" : ""));
+	if (!ok) fails++;
+}
+
+void main() {
+	string map_path = "server/maps/wildlands_valley.map";
+	if (!file_exists(map_path)) map_path = "../server/maps/wildlands_valley.map";
+
+	WorldMap m;
+	string err;
+	bool loaded = m.load_from_file(map_path, err);
+	check("starter map loads", loaded, err);
+
+	if (loaded) {
+		check("has spawns", m.spawns.length() >= 2);
+		check("has zones", m.zones.length() >= 4);
+		check("has walls", m.walls.length() >= 5);
+		check("has water", m.waters.length() >= 2);
+		check("has emitters", m.emitters.length() >= 3);
+		check("has resources", m.resources.length() >= 15);
+
+		check("settlement is safe zone", m.is_safe_at(50.0, 50.0));
+		check("woods not safe zone", !m.is_safe_at(50.0, 90.0));
+		check("surface in creek is water", m.surface_at(87.0, 30.0, 0.0) == "water");
+		check("surface in settlement is dirt", m.surface_at(50.0, 50.0, 0.0) == "dirt");
+		check("watchtower ramp rises smoothly", m.ground_z_at(44.0, 51.0, 2.0) > 1.0 && m.ground_z_at(44.0, 51.0, 2.0) < 2.0);
+		check("watchtower deck z=3.0", abs(m.ground_z_at(42.0, 58.0, 3.0) - 3.0) < 0.05);
+
+		string mat;
+		check("lodge north wall blocks", m.blocked_by_wall(55.0, 56.5, 0.0, 0.35, mat) && mat == "wood");
+		check("lodge door gap passable", !m.blocked_by_wall(57.0, 48.5, 0.0, 0.35, mat));
+		check("wall occlusion across lodge north wall", m.segment_occluded(55.0, 52.0, 0.0, 55.0, 60.0, 0.0));
+		check("no occlusion in open clearing", !m.segment_occluded(48.0, 46.0, 0.0, 50.0, 50.0, 0.0));
+
+		// Roundtrip serialize -> reload check.
+		string serialized = m.serialize();
+		WorldMap m2;
+		string err2;
+		bool reloaded = m2.load_from_string(serialized, err2);
+		check("map serialize roundtrip", reloaded && m2.zones.length() == m.zones.length() && m2.walls.length() == m.walls.length(), err2);
+
+		// Chunk sizing check (every MAP_CHK must fit under MAX_UDP_PAYLOAD).
+		string esc = wire_escape(serialized);
+		uint total_chunks = (esc.length() + uint(MAP_CHUNK_BYTES) - 1) / uint(MAP_CHUNK_BYTES);
+		check("chunk count bounded", total_chunks > 0 && total_chunks < 64, "chunks=" + total_chunks);
+		bool all_fit = true;
+		for (uint i = 0; i < total_chunks; i++) {
+			uint start = i * uint(MAP_CHUNK_BYTES);
+			uint len = start + uint(MAP_CHUNK_BYTES) <= esc.length() ? uint(MAP_CHUNK_BYTES) : esc.length() - start;
+			string pkt = pkt_3("MAP_CHK", "" + i, esc.substr(start, len));
+			if (!fits_udp(pkt)) all_fit = false;
+		}
+		check("all MAP_CHK packets <= MAX_UDP_PAYLOAD", all_fit);
+	}
+
+	println(fails == 0 ? "PASS" : (fails + " failure(s)"));
+	exit(fails == 0 ? 0 : 1);
+}

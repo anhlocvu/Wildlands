@@ -1,0 +1,217 @@
+2026-11-18 09:38:05 [INFO] Loaded map 'Wildlands Valley' (120x120), 21 resource nodes.
+2026-11-18 09:38:05 [READY] Server listening on port 7100 (proto=1, accounts=0, objects=0).
+2026-11-18 09:38:07 [INFO] Server shut down cleanly.
+2026-11-18 09:38:09 [INFO] Loaded map 'Wildlands Valley' (120x120), 21 resource nodes.
+2026-11-18 09:38:09 [READY] Server listening on port 7100 (proto=1, accounts=0, objects=0).
+2026-11-18 09:39:13 [INFO] Server shut down cleanly.
+2026-11-18 09:46:45 [INFO] Loaded map 'Wildlands Valley' (120x120), 21 resource nodes.
+2026-11-18 09:46:45 [READY] Server listening on port 7100 (proto=1, accounts=0, objects=0).
+2026-11-18 09:47:33 [NET] Peer 1 connected from 127.0.0.1:54651
+2026-11-18 09:47:49 [NET] Peer 1 () disconnected (timeout)
+2026-11-18 09:48:38 [NET] Peer 2 connected from 127.0.0.1:54265
+2026-11-18 09:48:45 [NET] Peer 2 () disconnected (closed)
+2026-11-18 09:48:47 [NET] Peer 3 connected from 127.0.0.1:54270
+2026-11-18 09:48:49 [NET] Peer 3 () disconnected (closed)
+2026-11-18 09:49:03 [INFO] Server shut down cleanly.
+2026-11-18 09:54:06 [INFO] Loaded map 'Wildlands Valley' (120x120), 21 resource nodes.
+2026-11-18 09:54:06 [READY] Server listening on port 7198 (proto=1, accounts=0, objects=0).
+2026-11-18 09:54:08 [NET] Peer 1 connected from 127.0.0.1:52261
+2026-11-18 09:54:08 [AUTH] Signed in SmokeUser (Player) from 127.0.0.1:52261
+2026-11-18 09:54:08 [NET] Peer 1 (SmokeUser) disconnected (closed)
+2026-11-18 10:03:16 [INFO] Loaded map 'Wildlands Valley' (120x120), 21 resource nodes.
+2026-11-18 10:03:16 [READY] Server listening on port 7198 (proto=1, accounts=0, objects=0).
+2026-11-18 10:05:03 [INFO] Loaded map 'Wildlands Valley' (120x120), 21 resource nodes.
+2026-11-18 10:05:03 [READY] Server listening on port 7198 (proto=1, accounts=0, objects=0).
+2026-11-18 10:05:06 [NET] Peer 1 connected from 127.0.0.1:53532
+2026-11-18 10:05:24 [AUTH_REG] Registered new account ClientHero from 127.0.0.1:53532
+2026-11-18 10:05:24 [AUTH] Signed in ClientHero (Player) from 127.0.0.1:53532
+2026-11-18 10:05:24 [NET] Peer 1 (ClientHero) disconnected (closed)
+2026-11-18 10:05:24 [NET] Peer 2 connected from 127.0.0.1:59358
+2026-11-18 10:05:25 [AUTH] Signed in ClientHero (Player) from 127.0.0.1:59358
+2026-11-18 10:05:25 [NET] Peer 2 (ClientHero) disconnected (closed)
+2026-11-18 10:05:25 [NET] Peer 3 connected from 127.0.0.1:59359
+2026-11-18 10:05:25 [AUTH_FAIL] LOGIN refused for ClientHero from 127.0.0.1:59359: Unknown account name or incorrect password.
+2026-11-18 10:05:25 [AUTH_FAIL] REG refused for clienthero from 127.0.0.1:59359: That account name is already taken.
+2026-11-18 10:05:25 [NET] Peer 3 () disconnected (closed)
+2026-11-18 10:05:25 [NET] Peer 4 connected from 127.0.0.1:59360
+2026-11-18 10:05:25 [AUTH] Signed in ClientHero (Player) from 127.0.0.1:59360
+2026-11-18 10:05:25 [CHAT] ClientHero: Hello from Client E2E
+2026-11-18 10:06:32 [INFO] Loaded map 'Wildlands Valley' (120x120), 21 resource nodes.
+2026-11-18 10:06:32 [READY] Server listening on port 7198 (proto=1, accounts=0, objects=0).
+2026-11-18 10:06:35 [NET] Peer 1 connected from 127.0.0.1:57567
+2026-11-18 10:06:53 [AUTH_REG] Registered new account ClientHero from 127.0.0.1:57567
+2026-11-18 10:06:53 [AUTH] Signed in ClientHero (Player) from 127.0.0.1:57567
+2026-11-18 10:06:53 [NET] Peer 1 (ClientHero) disconnected (closed)
+2026-11-18 10:06:53 [NET] Peer 2 connected from 127.0.0.1:57572
+2026-11-18 10:06:53 [AUTH] Signed in ClientHero (Player) from 127.0.0.1:57572
+2026-11-18 10:06:53 [NET] Peer 2 (ClientHero) disconnected (closed)
+2026-11-18 10:06:53 [NET] Peer 3 connected from 127.0.0.1:57573
+2026-11-18 10:06:53 [AUTH_FAIL] LOGIN refused for ClientHero from 127.0.0.1:57573: Unknown account name or incorrect password.
+2026-11-18 10:06:53 [AUTH_FAIL] REG refused for clienthero from 127.0.0.1:57573: That account name is already taken.
+2026-11-18 10:06:53 [NET] Peer 3 () disconnected (closed)
+2026-11-18 10:06:54 [NET] Peer 4 connected from 127.0.0.1:57574
+2026-11-18 10:06:54 [AUTH] Signed in ClientHero (Player) from 127.0.0.1:57574
+2026-11-18 10:06:54 [CHAT] ClientHero: Hello from Client E2E
+2026-11-18 10:06:54 [PM] ClientHero -> ClientHero (len=8)
+2026-11-18 10:06:55 [NET] Peer 4 (ClientHero) disconnected (closed)
+2026-11-18 10:11:20 [INFO] Loaded map 'Wildlands Valley' (120x120), 21 resource nodes.
+2026-11-18 10:11:20 [READY] Server listening on port 7100 (proto=1, accounts=0, objects=0).
+2026-11-18 10:11:24 [NET] Peer 1 connected from 127.0.0.1:57612
+2026-11-18 10:11:34 [AUTH_REG] Registered new account anhloc from 127.0.0.1:57612
+2026-11-18 10:11:34 [AUTH] Signed in anhloc (Player) from 127.0.0.1:57612
+2026-11-18 10:11:35 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 48ms
+2026-11-18 10:11:50 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 9ms
+2026-11-18 10:12:05 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 10:12:20 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 8ms
+2026-11-18 10:12:35 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 23ms
+2026-11-18 10:12:50 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 23ms
+2026-11-18 10:12:58 [CHAT] anhloc: hi
+2026-11-18 10:13:03 [CHAT] anhloc: do you fuck me
+2026-11-18 10:13:05 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 21ms
+2026-11-18 10:13:20 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 7ms
+2026-11-18 10:13:35 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 10:13:50 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 10:14:05 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 29ms
+2026-11-18 10:14:20 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 21ms
+2026-11-18 10:14:24 [REFUSED] BUILDMAP denied for anhloc (rank 0)
+2026-11-18 10:14:27 [REFUSED] BUILDMAP denied for anhloc (rank 0)
+2026-11-18 10:14:35 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 21ms
+2026-11-18 10:14:50 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 10:15:05 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 30ms
+2026-11-18 10:15:20 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 8ms
+2026-11-18 10:15:35 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 22ms
+2026-11-18 10:15:50 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 11ms
+2026-11-18 10:16:05 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 10:16:20 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 12ms
+2026-11-18 10:16:35 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 36ms
+2026-11-18 10:16:50 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 10ms
+2026-11-18 10:17:05 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 18ms
+2026-11-18 10:17:20 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 12ms
+2026-11-18 10:17:35 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 31ms
+2026-11-18 10:17:50 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 9ms
+2026-11-18 10:18:05 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 10:18:09 [NET] Peer 1 (anhloc) disconnected (timeout)
+2026-11-18 10:20:13 [INFO] Server shut down cleanly.
+2026-11-18 10:20:46 [INFO] Loaded map 'Wildlands Valley' (120x120), 21 resource nodes.
+2026-11-18 10:20:46 [READY] Server listening on port 7100 (proto=1, accounts=1, objects=0).
+2026-11-18 10:20:53 [NET] Peer 1 connected from 127.0.0.1:61334
+2026-11-18 10:20:53 [AUTH] Signed in anhloc (Developer) from 127.0.0.1:61334
+2026-11-18 10:21:01 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 30ms
+2026-11-18 10:21:16 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 10:21:31 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 10:21:46 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 23ms
+2026-11-18 10:22:01 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 10ms
+2026-11-18 10:22:16 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 22ms
+2026-11-18 10:22:31 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 10:22:46 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 10:23:01 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 13ms
+2026-11-18 10:23:16 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 19ms
+2026-11-18 10:23:31 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 7ms
+2026-11-18 10:23:46 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 14ms
+2026-11-18 10:24:01 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 21ms
+2026-11-18 10:24:16 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 21ms
+2026-11-18 10:24:31 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 10:24:46 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 8ms
+2026-11-18 10:25:01 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 29ms
+2026-11-18 10:25:16 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 19ms
+2026-11-18 10:25:31 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 10:25:46 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 20ms
+2026-11-18 10:26:01 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 10:26:16 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 10:26:29 [NET] Peer 1 (anhloc) disconnected (closed)
+2026-11-18 10:26:38 [INFO] Server shut down cleanly.
+2026-11-18 11:17:06 [INFO] Loaded map 'Wildlands Valley' (120x120), 21 resource nodes.
+2026-11-18 11:17:06 [READY] Server listening on port 7100 (proto=1, accounts=1, objects=0).
+2026-11-18 11:17:16 [NET] Peer 1 connected from 127.0.0.1:58977
+2026-11-18 11:17:16 [AUTH] Signed in anhloc (Developer) from 127.0.0.1:58977
+2026-11-18 11:17:21 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 3ms
+2026-11-18 11:17:36 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:17:51 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:18:06 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:18:21 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 9ms
+2026-11-18 11:18:36 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 11:18:51 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 11:19:06 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 18ms
+2026-11-18 11:19:21 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 8ms
+2026-11-18 11:19:36 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 11:19:51 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 10ms
+2026-11-18 11:20:06 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 9ms
+2026-11-18 11:20:21 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 9ms
+2026-11-18 11:20:36 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 10ms
+2026-11-18 11:20:51 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 51ms
+2026-11-18 11:21:06 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 20ms
+2026-11-18 11:21:21 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 26ms
+2026-11-18 11:21:36 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 117ms
+2026-11-18 11:21:51 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 20ms
+2026-11-18 11:22:06 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 13ms
+2026-11-18 11:22:21 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 21ms
+2026-11-18 11:22:36 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 7ms
+2026-11-18 11:22:51 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 19ms
+2026-11-18 11:23:06 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 9ms
+2026-11-18 11:23:21 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 10ms
+2026-11-18 11:23:36 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:23:51 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:24:06 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 11:24:21 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:24:36 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:24:51 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:25:06 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 7ms
+2026-11-18 11:25:21 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 11:25:36 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:25:51 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 12ms
+2026-11-18 11:26:06 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 11:26:21 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 8ms
+2026-11-18 11:26:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:26:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 11:27:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 11:27:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:27:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 11:27:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:28:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:28:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 11:28:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 11:28:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 11:29:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 7ms
+2026-11-18 11:29:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:29:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:29:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:30:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 18ms
+2026-11-18 11:30:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 23ms
+2026-11-18 11:30:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 11:30:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:31:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:31:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:31:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 21ms
+2026-11-18 11:31:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:32:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 13ms
+2026-11-18 11:32:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 14ms
+2026-11-18 11:32:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 14ms
+2026-11-18 11:32:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 13ms
+2026-11-18 11:33:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 9ms
+2026-11-18 11:33:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 11ms
+2026-11-18 11:33:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 8ms
+2026-11-18 11:33:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 20ms
+2026-11-18 11:34:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 20ms
+2026-11-18 11:34:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:34:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 11:34:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:35:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 11:35:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 18ms
+2026-11-18 11:35:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:35:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 24ms
+2026-11-18 11:36:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:36:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 11:36:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 8ms
+2026-11-18 11:36:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:37:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 12ms
+2026-11-18 11:37:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 11:37:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 15ms
+2026-11-18 11:37:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 18ms
+2026-11-18 11:38:07 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 17ms
+2026-11-18 11:38:22 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:38:37 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:38:52 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:39:08 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:39:23 [STAT] Online: 1 | Mobs: 12 | Objects: 0 | Worst tick: 16ms
+2026-11-18 11:39:33 [NET] Peer 1 (anhloc) disconnected (closed)
+2026-11-18 11:39:36 [INFO] Server shut down cleanly.

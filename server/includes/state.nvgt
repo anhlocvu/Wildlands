@@ -1,0 +1,384 @@
+// Shared authoritative server state, session structures, and network helper methods.
+
+#include "../../common/map.nvgt"
+#include "../../common/items.nvgt"
+#include "../../common/compass.nvgt"
+#include "accounts.nvgt"
+#include "logger.nvgt"
+
+const uint AI_IDLE = 0;
+const uint AI_ROAM = 1;
+const uint AI_FLEE = 2;
+const uint AI_STALK = 3;
+const uint AI_WINDUP = 4;
+
+class PlayerSession {
+	uint64 peer_id = 0;
+	string ip = "";
+	bool handshake_ok = false;
+	bool authed = false;
+	bool is_guest = false;
+	bool client_is_source = false;
+	AccountRecord@ account = null;
+
+	string name = "";
+	int rank = RANK_PLAYER;
+	double x = 50.0, y = 46.0, z = 0.0;
+	double vx = 0.0, vy = 0.0, vz = 0.0;
+	int facing = 0;
+	bool on_ground = true;
+	double fall_start_z = 0.0;
+
+	int hp = 100;
+	int hunger = 100;
+	int thirst = 100;
+	int stamina = 100;
+	int warmth = 100;
+
+	uint input_mask = 0;
+	bool blocking = false;
+	uint64 block_until_ms = 0;
+	uint64 last_step_sfx_ms = 0;
+	uint64 last_wall_bump_ms = 0;
+	uint64 last_attack_ms = 0;
+	uint64 last_gather_ms = 0;
+	uint64 last_chat_ms = 0;
+	uint64 last_vital_tick_ms = 0;
+	uint64 last_heartbeat_ms = 0;
+	uint64 last_vital_warn_ms = 0;
+	uint64 last_snapshot_ms = 0;
+	string last_pm_sender = "";
+
+	string last_zone = "";
+	string last_surface = "";
+
+	ItemStack@[] inv;
+	int belt_slot = 0;
+
+	bool builder_mode = false;
+	int builder_cx = 50, builder_cy = 46, builder_cz = 0;
+	bool builder_has_mark = false;
+	int builder_mx = 0, builder_my = 0, builder_mz = 0;
+
+	string duel_invite_from = "";
+	string duel_opponent = "";
+	uint64 duel_until_ms = 0;
+	bool debug_readout = false;
+
+	uint64 disconnected_at_ms = 0;
+	uint64 grace_until_ms = 0;
+	uint64 join_ms = 0;
+	uint64 last_playtime_ms = 0;
+
+	void init_starter_inv() {
+		inv.resize(0);
+		inv.insert_last(ItemStack("stone_axe", 1));
+		inv.insert_last(ItemStack("water_flask_full", 1));
+		inv.insert_last(ItemStack("berries", 4));
+		inv.insert_last(ItemStack("torch", 1));
+		belt_slot = 0;
+	}
+
+	int count_item(const string&in item_id) {
+		int total = 0;
+		for (uint i = 0; i < inv.length(); i++) {
+			if (inv[i].id == item_id) total += inv[i].qty;
+		}
+		return total;
+	}
+
+	bool add_item(const string&in item_id, int qty) {
+		if (qty <= 0) return false;
+		ItemDef@ def = find_item(item_id);
+		if (@def == null) return false;
+		int rem = qty;
+		for (uint i = 0; i < inv.length() && rem > 0; i++) {
+			if (inv[i].id == item_id && inv[i].qty < def.stack_max) {
+				int add = def.stack_max - inv[i].qty;
+				if (add > rem) add = rem;
+				inv[i].qty += add;
+				rem -= add;
+			}
+		}
+		while (rem > 0 && inv.length() < uint(MAX_INV_SLOTS)) {
+			int add = rem > def.stack_max ? def.stack_max : rem;
+			inv.insert_last(ItemStack(item_id, add));
+			rem -= add;
+		}
+		return rem == 0;
+	}
+
+	bool remove_item(const string&in item_id, int qty) {
+		if (qty <= 0 || count_item(item_id) < qty) return false;
+		int rem = qty;
+		for (int i = int(inv.length()) - 1; i >= 0 && rem > 0; i--) {
+			if (inv[uint(i)].id == item_id) {
+				if (inv[uint(i)].qty <= rem) {
+					rem -= inv[uint(i)].qty;
+					inv.remove_at(uint(i));
+				} else {
+					inv[uint(i)].qty -= rem;
+					rem = 0;
+				}
+			}
+		}
+		if (belt_slot >= int(inv.length())) belt_slot = inv.length() > 0 ? int(inv.length()) - 1 : 0;
+		return true;
+	}
+
+	ItemStack@ active_item() {
+		if (inv.length() == 0) return null;
+		if (belt_slot < 0 || belt_slot >= int(inv.length())) return null;
+		return inv[uint(belt_slot)];
+	}
+}
+
+class ResourceNode {
+	uint64 id = 0;
+	string type;
+	double x = 0.0, y = 0.0, z = 0.0;
+	int charges = 3;
+	int max_charges = 3;
+	int respawn_sec = 45;
+	uint64 next_respawn_ms = 0;
+}
+
+class WorldStructure {
+	uint64 id = 0;
+	string map_name;
+	string type;
+	string owner;
+	double x = 0.0, y = 0.0, z = 0.0;
+	int facing = 0;
+	int hp = 100, max_hp = 100;
+	bool locked = false;
+	bool is_open = false;
+	int fuel_sec = 0;
+	ItemStack@[] chest_items;
+}
+
+class LootDrop {
+	uint64 id = 0;
+	string item_id;
+	int qty = 1;
+	double x = 0.0, y = 0.0, z = 0.0;
+	uint64 expires_ms = 0;
+}
+
+class ArrowProjectile {
+	uint64 id = 0;
+	uint64 owner_peer = 0;
+	string owner_name;
+	double x = 0.0, y = 0.0, z = 0.0;
+	double vx = 0.0, vy = 0.0, vz = 0.0;
+	int damage = 28;
+	uint64 expires_ms = 0;
+}
+
+class WildlifeMob {
+	uint64 id = 0;
+	string kind;
+	string name;
+	uint ai_state = AI_ROAM;
+	double x = 0.0, y = 0.0, z = 0.0;
+	double vx = 0.0, vy = 0.0;
+	int facing = 0;
+	int hp = 50, max_hp = 50;
+	double home_x = 0.0, home_y = 0.0, home_z = 0.0;
+	uint64 aggro_peer = 0;
+	uint64 next_think_ms = 0;
+	uint64 windup_end_ms = 0;
+	uint64 next_attack_ms = 0;
+	uint64 next_sound_ms = 0;
+	bool is_bot = false;
+}
+
+class ServerCtx {
+	network@ net = null;
+	ServerLogger logger;
+	AccountStore accounts;
+	WorldMap map;
+	string active_map_path = "maps/wildlands_valley.map";
+	string data_dir = "data";
+	string objects_db_path = "data/world_objects.dat";
+
+	uint16 port = DEFAULT_PORT;
+	bool test_mode = false;
+	bool allow_guests = false;
+	bool headless = false;
+	int target_wildlife = 12;
+	int target_bots = 0;
+	int guest_seq = 1;
+	uint64 next_entity_id = 1;
+	uint64 tick_count = 0;
+
+	// Environment & News
+	string server_name = "Wildlands Valley Official";
+	string motd = "Welcome to Wildlands Online!";
+	string[] changelog;
+	int cycle_sec = 300; // starts mid-morning
+	bool is_night = false;
+	bool is_raining = false;
+	uint64 next_weather_ms = 0;
+	uint64 next_autosave_ms = 0;
+
+	PlayerSession@[] sessions;
+	ResourceNode@[] nodes;
+	WorldStructure@[] structures;
+	LootDrop@[] drops;
+	ArrowProjectile@[] arrows;
+	WildlifeMob@[] mobs;
+	bool objects_dirty = false;
+
+	PlayerSession@ find_session_by_peer(uint64 peer_id) {
+		if (peer_id == 0) return null;
+		for (uint i = 0; i < sessions.length(); i++) {
+			if (sessions[i].peer_id == peer_id) return sessions[i];
+		}
+		return null;
+	}
+
+	PlayerSession@ find_session_by_name(const string&in name) {
+		string low = sanitize_name(name).lower();
+		if (low.length() == 0) return null;
+		for (uint i = 0; i < sessions.length(); i++) {
+			if (sessions[i].authed && sessions[i].name.lower() == low) return sessions[i];
+		}
+		return null;
+	}
+
+	void send_ch(uint64 peer_id, uint8 ch, const string&in msg, bool reliable = true) {
+		if (@net == null || peer_id == 0) return;
+		if (!fits_udp(msg) && !reliable) return;
+		net.send(peer_id, msg, ch, reliable);
+	}
+
+	void send_speech(PlayerSession@ ps, uint buf_ch, bool interrupt, const string&in text) {
+		if (@ps == null || ps.peer_id == 0) return;
+		string pkt = pkt_4("SPEAK", "" + buf_ch, interrupt ? "1" : "0", wire_escape(text));
+		send_ch(ps.peer_id, CH_SPEECH, pkt, true);
+	}
+
+	void broadcast_speech(uint buf_ch, bool interrupt, const string&in text) {
+		string pkt = pkt_4("SPEAK", "" + buf_ch, interrupt ? "1" : "0", wire_escape(text));
+		for (uint i = 0; i < sessions.length(); i++) {
+			if (sessions[i].authed && sessions[i].peer_id != 0) send_ch(sessions[i].peer_id, CH_SPEECH, pkt, true);
+		}
+	}
+
+	void send_sfx_to(PlayerSession@ ps, const string&in layer, const string&in sfx, double sx, double sy, double sz, double vol = 1.0) {
+		if (@ps == null || ps.peer_id == 0) return;
+		string pkt = pkt_build("SFX", {layer, sfx, fmt2(sx), fmt2(sy), fmt2(sz), fmt2(vol), "1"});
+		send_ch(ps.peer_id, CH_AUDIO, pkt, true);
+	}
+
+	void broadcast_sfx_3d(const string&in layer, const string&in sfx, double sx, double sy, double sz, double vol = 1.0, double max_dist = EARSHOT_RADIUS) {
+		string pkt = pkt_build("SFX", {layer, sfx, fmt2(sx), fmt2(sy), fmt2(sz), fmt2(vol), "1"});
+		for (uint i = 0; i < sessions.length(); i++) {
+			PlayerSession@ ps = sessions[i];
+			if (!ps.authed || ps.peer_id == 0) continue;
+			if (get_3d_distance(ps.x, ps.y, ps.z, sx, sy, sz) <= max_dist) {
+				send_ch(ps.peer_id, CH_AUDIO, pkt, true);
+			}
+		}
+	}
+
+	void send_control(PlayerSession@ ps, const string&in pkt) {
+		if (@ps == null || ps.peer_id == 0) return;
+		send_ch(ps.peer_id, CH_CONTROL, pkt, true);
+	}
+
+	void send_inv(PlayerSession@ ps) {
+		if (@ps == null || ps.peer_id == 0) return;
+		string list = "";
+		for (uint i = 0; i < ps.inv.length(); i++) {
+			if (i > 0) list += ";";
+			list += ps.inv[i].id + ":" + ps.inv[i].qty;
+		}
+		if (list.length() == 0) list = "-";
+		send_control(ps, pkt_3("INV", "" + ps.belt_slot, list));
+	}
+
+	string encode_obj(WorldStructure@ st) {
+		return st.id + "|" + st.type + "|" + fmt2(st.x) + "|" + fmt2(st.y) + "|" + fmt2(st.z) + "|"
+			+ st.facing + "|" + st.hp + "|" + st.max_hp + "|" + (st.locked ? "1" : "0") + "|"
+			+ (st.is_open ? "1" : "0") + "|" + wire_escape(st.owner);
+	}
+
+	void broadcast_obj(const string&in op, WorldStructure@ st) {
+		string pkt = "MAP_OBJ|" + op + "|" + encode_obj(st);
+		for (uint i = 0; i < sessions.length(); i++) {
+			if (sessions[i].authed && sessions[i].peer_id != 0) send_ch(sessions[i].peer_id, CH_CONTROL, pkt, true);
+		}
+	}
+
+	void sync_map_occluders() {
+		map.dyn_occluders.resize(0);
+		for (uint i = 0; i < structures.length(); i++) {
+			WorldStructure@ st = structures[i];
+			if (st.map_name != map.name) continue;
+			StructDef@ def = find_struct(st.type);
+			if (@def == null) continue;
+			DynOccluder occ;
+			occ.id = st.id;
+			occ.x = st.x; occ.y = st.y; occ.z = st.z;
+			occ.half_w = def.half_w;
+			occ.height = def.height;
+			occ.blocks_move = def.blocks_move && !(def.is_door && st.is_open);
+			occ.occludes_sound = def.occludes_sound && !(def.is_door && st.is_open);
+			occ.material = "wood";
+			map.dyn_occluders.insert_last(occ);
+		}
+	}
+
+	void load_soft_data() {
+		string motd_path = data_dir + "/motd.txt";
+		if (file_exists(motd_path)) {
+			string raw = file_get_contents(motd_path).replace("\r", "", true).trim_whitespace();
+			if (raw.length() > 0) motd = raw;
+		} else {
+			logger.log("WARN", motd_path + " not found; using default MOTD.");
+		}
+		changelog.resize(0);
+		string ch_path = data_dir + "/changelog.txt";
+		if (file_exists(ch_path)) {
+			string raw = file_get_contents(ch_path).replace("\r", "", true);
+			string[]@ lines = split_keep_empty(raw, "\n");
+			for (uint i = 0; i < lines.length(); i++) {
+				string ln = lines[i].trim_whitespace();
+				if (ln.length() > 0) changelog.insert_last(ln);
+			}
+		}
+	}
+
+	void send_news(PlayerSession@ ps) {
+		send_control(ps, pkt_2("MOTD", wire_escape(motd)));
+		for (uint i = 0; i < changelog.length() && i < 10; i++) {
+			send_control(ps, pkt_3("CHANGELOG", "" + i, wire_escape(changelog[i])));
+		}
+	}
+
+	bool send_map_sync(PlayerSession@ ps) {
+		string ser = map.serialize();
+		string esc = wire_escape(ser);
+		uint chunks = (esc.length() + uint(MAP_CHUNK_BYTES) - 1) / uint(MAP_CHUNK_BYTES);
+		if (chunks == 0) chunks = 1;
+		send_control(ps, pkt_build("MAP_HDR", {wire_escape(map.name), "" + map.width, "" + map.height, "" + map.max_z, map.default_surface, "" + chunks}));
+		for (uint i = 0; i < chunks; i++) {
+			uint start = i * uint(MAP_CHUNK_BYTES);
+			uint len = start + uint(MAP_CHUNK_BYTES) <= esc.length() ? uint(MAP_CHUNK_BYTES) : esc.length() - start;
+			string pkt = pkt_3("MAP_CHK", "" + i, esc.substr(start, len));
+			if (!fits_udp(pkt)) {
+				logger.log("ERROR", "MAP_CHK exceeded MAX_UDP_PAYLOAD");
+				return false;
+			}
+			send_control(ps, pkt);
+		}
+		for (uint i = 0; i < structures.length(); i++) {
+			if (structures[i].map_name == map.name) {
+				send_control(ps, "MAP_OBJ|add|" + encode_obj(structures[i]));
+			}
+		}
+		return true;
+	}
+}

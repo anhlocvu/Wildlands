@@ -1,0 +1,214 @@
+// Server chat routing, rate limits, mute/block checks, WHO, PING, friends, duels, profiles, leaderboard.
+
+#include "wildlife.nvgt"
+
+void chat_send_msg(ServerCtx@ ctx, PlayerSession@ to, const string&in scope, const string&in sender, int sender_rank, const string&in text) {
+	if (@to == null || to.peer_id == 0) return;
+	string rtag = rank_tag(sender_rank);
+	if (rtag.length() == 0) rtag = "-";
+	string pkt = pkt_5("CHAT_MSG", scope, wire_escape(sender), rtag, wire_escape(text));
+	ctx.send_ch(to.peer_id, CH_CHAT, pkt, true);
+}
+
+bool player_is_blocking(PlayerSession@ receiver, const string&in sender_lower) {
+	if (@receiver == null || @receiver.account == null) return false;
+	return receiver.account.has_blocked(sender_lower);
+}
+
+void chat_handle_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 now_ms, int64 now_sec) {
+	if (@ps == null || !ps.authed) return;
+	string scope = field(p, 1, "global");
+	string target = sanitize_name(field(p, 2, ""));
+	string raw_text = wire_unescape(field(p, 3, ""));
+	string text = strip_control_chars(raw_text, MAX_CHAT_LEN);
+
+	if (text.length() == 0) return;
+	if (!ctx.test_mode && now_ms - ps.last_chat_ms < CHAT_RATE_LIMIT_MS) {
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Slow down. Wait a moment before sending another message.");
+		return;
+	}
+	if (@ps.account != null && ps.account.muted_until > now_sec) {
+		int mins = int((ps.account.muted_until - now_sec + 59) / 60);
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "You are muted for " + mins + " more minutes.");
+		return;
+	}
+	ps.last_chat_ms = now_ms;
+	string sender_low = ps.name.lower();
+
+	if (scope == "pm") {
+		if (target == "r" && ps.last_pm_sender.length() > 0) target = ps.last_pm_sender;
+		PlayerSession@ dest = ctx.find_session_by_name(target);
+		if (@dest == null || dest.peer_id == 0) {
+			ctx.send_speech(ps, MBUF_PM, true, "Player " + target + " is not online.");
+			return;
+		}
+		if (player_is_blocking(dest, sender_low)) {
+			ctx.send_speech(ps, MBUF_PM, true, dest.name + " is not accepting messages from you.");
+			return;
+		}
+		dest.last_pm_sender = ps.name;
+		chat_send_msg(ctx, dest, "pm_in", ps.name, ps.rank, text);
+		chat_send_msg(ctx, ps, "pm_out", dest.name, dest.rank, text);
+		ctx.logger.log("PM", ps.name + " -> " + dest.name + " (len=" + text.length() + ")");
+		return;
+	}
+
+	if (scope == "local" || scope == "emote") {
+		for (uint i = 0; i < ctx.sessions.length(); i++) {
+			PlayerSession@ other = ctx.sessions[i];
+			if (!other.authed || other.peer_id == 0) continue;
+			if (@other != @ps && player_is_blocking(other, sender_low)) continue;
+			if (get_3d_distance(ps.x, ps.y, ps.z, other.x, other.y, other.z) <= EARSHOT_RADIUS) {
+				chat_send_msg(ctx, other, scope, ps.name, ps.rank, text);
+			}
+		}
+		return;
+	}
+
+	if (scope == "team") {
+		string my_zone = ctx.map.zone_name_at(ps.x, ps.y);
+		for (uint i = 0; i < ctx.sessions.length(); i++) {
+			PlayerSession@ other = ctx.sessions[i];
+			if (!other.authed || other.peer_id == 0) continue;
+			if (@other != @ps && player_is_blocking(other, sender_low)) continue;
+			bool is_friend = @ps.account != null && ps.account.has_friend(other.name.lower());
+			if (@other == @ps || is_friend || ctx.map.zone_name_at(other.x, other.y) == my_zone) {
+				chat_send_msg(ctx, other, "team", ps.name, ps.rank, text);
+			}
+		}
+		return;
+	}
+
+	// Default: Global
+	for (uint i = 0; i < ctx.sessions.length(); i++) {
+		PlayerSession@ other = ctx.sessions[i];
+		if (!other.authed || other.peer_id == 0) continue;
+		if (@other != @ps && player_is_blocking(other, sender_low)) continue;
+		chat_send_msg(ctx, other, "global", ps.name, ps.rank, text);
+	}
+	ctx.logger.log("CHAT", ps.name + ": " + text);
+}
+
+void social_send_who(ServerCtx@ ctx, PlayerSession@ ps) {
+	int online = 0;
+	string entries = "";
+	for (uint i = 0; i < ctx.sessions.length(); i++) {
+		PlayerSession@ other = ctx.sessions[i];
+		if (!other.authed || other.peer_id == 0) continue;
+		online++;
+		if (entries.length() > 0) entries += ";";
+		string zname = ctx.map.zone_name_at(other.x, other.y);
+		string ftag = (@ps.account != null && ps.account.has_friend(other.name.lower())) ? "1" : "0";
+		entries += wire_escape(other.name) + ":" + wire_escape(zname) + ":" + other.rank + ":" + ftag;
+	}
+	if (entries.length() == 0) entries = "-";
+	ctx.send_control(ps, pkt_3("WHO_RES", "" + online, entries));
+}
+
+void social_notify_friends_presence(ServerCtx@ ctx, PlayerSession@ ps, bool joined) {
+	if (@ps == null || ps.is_guest) return;
+	string low = ps.name.lower();
+	for (uint i = 0; i < ctx.sessions.length(); i++) {
+		PlayerSession@ other = ctx.sessions[i];
+		if (@other == @ps || !other.authed || other.peer_id == 0 || @other.account == null) continue;
+		if (other.account.has_friend(low)) {
+			ctx.send_speech(other, MBUF_SOCIAL, false, "Friend " + ps.name + (joined ? " came online." : " went offline."));
+			if (joined) ctx.send_sfx_to(other, "self", "ui/notify_friend.ogg", other.x, other.y, other.z, 0.8);
+		}
+	}
+}
+
+void social_handle_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 now_ms) {
+	if (@ps == null || !ps.authed) return;
+	string op = field(p, 1, "");
+	string target_raw = sanitize_name(field(p, 2, ""));
+	string tlow = target_raw.lower();
+
+	if (op == "leaderboard") {
+		ctx.send_speech(ps, MBUF_SOCIAL, true, ctx.accounts.format_leaderboard());
+		return;
+	}
+	if (op == "profile") {
+		string lookup = target_raw.length() > 0 ? target_raw : ps.name;
+		AccountRecord@ acc = ctx.accounts.find(lookup);
+		if (@acc == null) {
+			ctx.send_speech(ps, MBUF_SOCIAL, true, "No account named " + lookup + ".");
+			return;
+		}
+		int r = ctx.accounts.effective_rank(acc);
+		double ratio = acc.deaths == 0 ? double(acc.kills_pvp + acc.kills_pve) : double(acc.kills_pvp + acc.kills_pve) / double(acc.deaths);
+		uint mins = uint(acc.playtime_sec / 60);
+		ctx.send_speech(ps, MBUF_SOCIAL, true,
+			acc.name + ", " + rank_label(r) + ". " + acc.kills_pve + " wildlife hunts, " + acc.kills_pvp + " player defeats, "
+			+ acc.deaths + " deaths, ratio " + fmt2(ratio) + ", " + acc.built_count + " builds, " + acc.gathered_count + " gathers, " + mins + " minutes played.");
+		return;
+	}
+
+	if (ps.is_guest && (op == "friend_add" || op == "friend_rem" || op == "block" || op == "unblock")) {
+		ctx.send_speech(ps, MBUF_SOCIAL, true, "Guests do not have saved friend or block lists. Register an account.");
+		return;
+	}
+	if (tlow.length() == 0 || tlow == ps.name.lower()) {
+		ctx.send_speech(ps, MBUF_SOCIAL, true, "Specify another player's valid name.");
+		return;
+	}
+
+	if (op == "friend_add") {
+		AccountRecord@ tacc = ctx.accounts.find(target_raw);
+		if (@tacc == null) { ctx.send_speech(ps, MBUF_SOCIAL, true, "Player " + target_raw + " does not exist."); return; }
+		ps.account.add_friend(tlow);
+		ctx.accounts.dirty = true;
+		ctx.send_sfx_to(ps, "self", "ui/msg_social.ogg", ps.x, ps.y, ps.z, 0.8);
+		ctx.send_speech(ps, MBUF_SOCIAL, true, "Added " + tacc.name + " to friends.");
+		return;
+	}
+	if (op == "friend_rem") {
+		ps.account.remove_friend(tlow);
+		ctx.accounts.dirty = true;
+		ctx.send_speech(ps, MBUF_SOCIAL, true, "Removed " + target_raw + " from friends.");
+		return;
+	}
+	if (op == "block") {
+		ps.account.add_block(tlow);
+		ctx.accounts.dirty = true;
+		ctx.send_speech(ps, MBUF_SOCIAL, true, "Blocked " + target_raw + ". Their chat, whispers, and duel invites are hidden.");
+		return;
+	}
+	if (op == "unblock") {
+		ps.account.remove_block(tlow);
+		ctx.accounts.dirty = true;
+		ctx.send_speech(ps, MBUF_SOCIAL, true, "Unblocked " + target_raw + ".");
+		return;
+	}
+
+	PlayerSession@ dest = ctx.find_session_by_name(target_raw);
+	if (@dest == null || dest.peer_id == 0) {
+		ctx.send_speech(ps, MBUF_SOCIAL, true, target_raw + " is not online.");
+		return;
+	}
+	if (op == "duel_ask") {
+		if (player_is_blocking(dest, ps.name.lower())) {
+			ctx.send_speech(ps, MBUF_SOCIAL, true, dest.name + " is not accepting challenges from you.");
+			return;
+		}
+		dest.duel_invite_from = ps.name;
+		ctx.send_sfx_to(dest, "self", "ui/msg_social.ogg", dest.x, dest.y, dest.z, 0.9);
+		ctx.send_speech(dest, MBUF_SOCIAL, true, ps.name + " challenged you to a duel! Open Social menu or accept to fight.");
+		ctx.send_speech(ps, MBUF_SOCIAL, false, "Duel challenge sent to " + dest.name + ".");
+		return;
+	}
+	if (op == "duel_acc") {
+		if (ps.duel_invite_from.lower() != tlow) {
+			ctx.send_speech(ps, MBUF_SOCIAL, true, "No pending duel challenge from " + target_raw + ".");
+			return;
+		}
+		ps.duel_invite_from = "";
+		ps.duel_opponent = dest.name;
+		ps.duel_until_ms = now_ms + 120000;
+		dest.duel_opponent = ps.name;
+		dest.duel_until_ms = now_ms + 120000;
+		ctx.broadcast_sfx_3d("threat", "combat/duel_start.ogg", ps.x, ps.y, ps.z, 0.9, 25.0);
+		ctx.send_speech(ps, MBUF_GAME, true, "Duel begun against " + dest.name + " for 2 minutes!");
+		ctx.send_speech(dest, MBUF_GAME, true, ps.name + " accepted your duel! Fight!");
+	}
+}

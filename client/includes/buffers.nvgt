@@ -1,0 +1,342 @@
+// Message buffers - every line the game says to you, kept, sorted into channels,
+// and readable after the moment has passed.
+//
+// Drop this into your client's includes directory and edit the CHANNELS block
+// below to suit the game. Everything else should be usable unchanged.
+//
+// WHY THIS EXISTS. The problem is specific to a game with no screen. Chat, a
+// duel challenge, a friend request, a moderator's warning and "you killed
+// Ramrod" all arrive as speech, through one voice, while you are in the middle
+// of something. Speech is destructive: the next thing to arrive interrupts the
+// last, and what it interrupted is gone. A sighted game puts these in a corner
+// of the screen and lets you glance. This is the glance.
+//
+// THE MODEL IS BORROWED, DELIBERATELY. Buffers - left and right between
+// channels, up and down through one channel's history - are how audio games
+// have solved this for twenty years, and a player arriving from another one
+// already knows the keys. Inventing something better here would mean teaching
+// it to everybody for no gain.
+//
+// WHAT THIS FILE NEEDS FROM YOUR CLIENT. Three things, which you almost
+// certainly already have:
+//
+//   void say(const string&in text, bool interrupt = false)
+//       Speaks through the screen reader (or your TTS fallback).
+//   void play_ui(const string&in filename, float volume = 1.0)
+//       Plays a non-positional interface sound.
+//   timer clock
+//       A running timer, for the arrival time on each line.
+//
+// If yours are named differently, change the three call sites rather than
+// renaming everything in your client - they are all in the reading section.
+
+// ---------------------------------------------------------------- CHANNELS
+//
+// The channels, in the order the left and right keys walk them. All is first
+// because it is the one you want when you do not know where something landed.
+//
+// FIXED, DECLARED HERE, rather than created by name at runtime. A buffer
+// created on first use means a typo silently makes a new channel nothing ever
+// reads, and the player finds out by not hearing something.
+//
+// Edit this list and buffers_init() together to suit your game.
+
+const uint BUF_ALL = 0;
+const uint BUF_CHAT = 1;
+const uint BUF_PM = 2;
+const uint BUF_SOCIAL = 3;    // friends, challenges, invitations
+const uint BUF_GAME = 4;      // what happened to you: kills, rounds, pickups
+const uint BUF_SYSTEM = 5;    // the server talking: moderation, warnings, errors
+const uint BUF_COUNT = 6;
+
+void buffers_init() {
+	if (buffers.length() > 0) return;
+	buffers.insert_last(message_buffer("All"));
+	buffers.insert_last(message_buffer("Chat"));
+	buffers.insert_last(message_buffer("Messages"));
+	buffers.insert_last(message_buffer("Social"));
+	buffers.insert_last(message_buffer("Game"));
+	buffers.insert_last(message_buffer("System"));
+}
+
+// How many lines a channel keeps. Old lines fall off the bottom.
+//
+// Two hundred is about an hour of a busy lobby and a few tens of kilobytes -
+// this is a text log, not a recording. It is capped at all because an uncapped
+// one is a slow leak that only shows up in the sessions that matter, which are
+// the long ones.
+const uint BUFFER_MAX_LINES = 200;
+
+// ------------------------------------------------------------------ STORAGE
+
+class buffer_line {
+	string text;
+	uint64 at;        // ms on the client clock, for "how long ago"
+	uint channel;     // which channel it belongs to, so All can say where
+
+	buffer_line(const string&in t, uint64 when, uint ch) {
+		text = t; at = when; channel = ch;
+	}
+}
+
+class message_buffer {
+	string name;
+	buffer_line@[] lines;
+	uint pos;         // where the reading cursor is
+	bool muted;       // lines still arrive, they just do not interrupt
+
+	message_buffer(const string&in n) {
+		name = n;
+		pos = 0;
+		muted = false;
+	}
+}
+
+message_buffer@[] buffers;
+uint buffer_at = BUF_ALL;       // which channel is focused
+buffer_line@[] all_lines;       // BUF_ALL's view, in arrival order
+uint all_pos = 0;
+
+// PUT A LINE IN A CHANNEL. Says nothing, on purpose: the CALLER decides whether
+// this is worth interrupting for, because only the caller knows whether the
+// player is standing in a lobby or mid-swing. The usual shape at a call site is
+//
+//     add_buffer(BUF_CHAT, line);
+//     if (!buffer_is_muted(BUF_CHAT)) say(line);
+//
+void add_buffer(uint channel, const string&in text) {
+	buffers_init();
+	if (channel >= BUF_COUNT || channel == BUF_ALL) return;
+	if (text.length() == 0) return;
+
+	buffer_line@ line = buffer_line(text, clock.elapsed, channel);
+	message_buffer@ b = buffers[channel];
+
+	// THE CURSOR FOLLOWS THE END ONLY IF IT WAS ALREADY THERE. Somebody reading
+	// back through an argument they missed should not be dragged to the bottom
+	// every time another line lands.
+	bool at_end = b.lines.length() == 0 || b.pos + 1 >= b.lines.length();
+	b.lines.insert_last(line);
+	while (b.lines.length() > BUFFER_MAX_LINES) {
+		b.lines.remove_at(0);
+		if (b.pos > 0) b.pos--;
+	}
+	if (at_end) b.pos = b.lines.length() - 1;
+
+	// ALL IS A VIEW, NOT A BUFFER. The channels own their lines and All holds
+	// handles to the same objects in arrival order. Storing a second copy means
+	// every line exists twice and clearing one place leaves the other.
+	bool all_at_end = all_lines.length() == 0 || all_pos + 1 >= all_lines.length();
+	all_lines.insert_last(line);
+	while (all_lines.length() > BUFFER_MAX_LINES * 2) {
+		all_lines.remove_at(0);
+		if (all_pos > 0) all_pos--;
+	}
+	if (all_at_end) all_pos = all_lines.length() - 1;
+}
+
+bool buffer_is_muted(uint channel) {
+	buffers_init();
+	if (channel >= BUF_COUNT) return false;
+	return buffers[channel].muted;
+}
+
+uint focused_count() {
+	buffers_init();
+	return buffer_at == BUF_ALL ? all_lines.length() : buffers[buffer_at].lines.length();
+}
+
+uint focused_pos() {
+	buffers_init();
+	return buffer_at == BUF_ALL ? all_pos : buffers[buffer_at].pos;
+}
+
+void set_focused_pos(uint p) {
+	buffers_init();
+	if (buffer_at == BUF_ALL) all_pos = p;
+	else buffers[buffer_at].pos = p;
+}
+
+buffer_line@ focused_line() {
+	buffers_init();
+	uint n = focused_count();
+	if (n == 0) return null;
+	uint p = focused_pos();
+	if (p >= n) p = n - 1;
+	return buffer_at == BUF_ALL ? all_lines[p] : buffers[buffer_at].lines[p];
+}
+
+// ------------------------------------------------------------------ READING
+
+// The line the cursor is on, said in full.
+//
+// IN THE ALL CHANNEL EVERY LINE SAYS WHERE IT CAME FROM, because that is the
+// whole difference between a merged view and a pile. "Messages. Ramrod says
+// good luck" is a private message; the same words without the channel could be
+// anybody saying it to everybody.
+void speak_focused_line(bool with_position = false) {
+	buffers_init();
+	buffer_line@ l = focused_line();
+	if (@l == null) {
+		say(buffers[buffer_at].name + ". Nothing here yet.", true);
+		return;
+	}
+
+	string line = "";
+	if (buffer_at == BUF_ALL) line += buffers[l.channel].name + ". ";
+	line += l.text;
+	if (with_position) line += ". " + (focused_pos() + 1) + " of " + focused_count();
+	say(line, true);
+}
+
+// The channel itself: what it is, how much is in it, and where you are.
+void speak_focused_buffer() {
+	buffers_init();
+	uint n = focused_count();
+	string line = buffers[buffer_at].name;
+	if (buffers[buffer_at].muted) line += ", muted";
+	line += n == 0 ? ". Empty." : (". " + (focused_pos() + 1) + " of " + n + ".");
+	line += " Buffer " + (buffer_at + 1) + " of " + BUF_COUNT + ".";
+	say(line, true);
+
+	// And then the line you have landed on, so moving between channels reads
+	// the thing rather than only its label.
+	buffer_line@ l = focused_line();
+	if (@l != null) say(l.text, false);
+}
+
+// LEFT AND RIGHT WALK EVERY CHANNEL, INCLUDING EMPTY ONES.
+//
+// Skipping empties is helpful right up to the moment you want to mute a channel
+// that has nothing in it yet - the one you reach for precisely because it is
+// about to get noisy. An empty channel says "Empty" and costs one keypress.
+void buffer_left() {
+	buffers_init();
+	buffer_at = buffer_at == 0 ? BUF_COUNT - 1 : buffer_at - 1;
+	play_ui("menu_move.ogg", 0.5);
+	speak_focused_buffer();
+}
+
+void buffer_right() {
+	buffers_init();
+	buffer_at = (buffer_at + 1) % BUF_COUNT;
+	play_ui("menu_move.ogg", 0.5);
+	speak_focused_buffer();
+}
+
+void buffer_previous_line() {
+	buffers_init();
+	if (focused_count() == 0) { speak_focused_buffer(); return; }
+	uint p = focused_pos();
+	if (p == 0) {
+		play_ui("error.ogg", 0.5);
+		speak_focused_line(true);
+		return;
+	}
+	set_focused_pos(p - 1);
+	speak_focused_line();
+}
+
+void buffer_next_line() {
+	buffers_init();
+	uint n = focused_count();
+	if (n == 0) { speak_focused_buffer(); return; }
+	uint p = focused_pos();
+	if (p + 1 >= n) {
+		play_ui("error.ogg", 0.5);
+		speak_focused_line(true);
+		return;
+	}
+	set_focused_pos(p + 1);
+	speak_focused_line();
+}
+
+void buffer_first_line() {
+	buffers_init();
+	if (focused_count() == 0) { speak_focused_buffer(); return; }
+	set_focused_pos(0);
+	speak_focused_line(true);
+}
+
+void buffer_last_line() {
+	buffers_init();
+	uint n = focused_count();
+	if (n == 0) { speak_focused_buffer(); return; }
+	set_focused_pos(n - 1);
+	speak_focused_line(true);
+}
+
+// MUTING A CHANNEL DOES NOT CLOSE IT. Lines keep arriving and stay readable
+// here; what stops is the speaking over whatever the player was doing. That
+// distinction is the point - somebody who mutes chat in the middle of a round
+// still wants to read it afterwards.
+void buffer_toggle_mute() {
+	buffers_init();
+	if (buffer_at == BUF_ALL) {
+		say("All is every other channel at once. Mute them one at a time.", true);
+		return;
+	}
+	message_buffer@ b = buffers[buffer_at];
+	b.muted = !b.muted;
+	play_ui(b.muted ? "menu_back.ogg" : "menu_select.ogg", 0.7);
+	say(b.name + (b.muted ? " muted. It still collects." : " unmuted."), true);
+}
+
+void buffer_clear_focused() {
+	buffers_init();
+	if (buffer_at == BUF_ALL) {
+		for (uint i = 0; i < buffers.length(); i++) {
+			buffers[i].lines.resize(0);
+			buffers[i].pos = 0;
+		}
+		all_lines.resize(0);
+		all_pos = 0;
+		say("Everything cleared.", true);
+		return;
+	}
+
+	// Clearing one channel has to take its lines out of All as well, or the
+	// merged view keeps showing what the player just threw away.
+	message_buffer@ b = buffers[buffer_at];
+	for (int i = int(all_lines.length()) - 1; i >= 0; i--) {
+		if (all_lines[uint(i)].channel == buffer_at) all_lines.remove_at(uint(i));
+	}
+	if (all_pos >= all_lines.length()) {
+		all_pos = all_lines.length() == 0 ? 0 : all_lines.length() - 1;
+	}
+	b.lines.resize(0);
+	b.pos = 0;
+	say(b.name + " cleared.", true);
+}
+
+// Copy the focused line, for the one thing a screen reader user always ends up
+// wanting: somebody said a name or a number and you need it exactly.
+void buffer_copy_focused() {
+	buffer_line@ l = focused_line();
+	if (@l == null) {
+		play_ui("error.ogg", 0.7);
+		say("Nothing to copy.", true);
+		return;
+	}
+	clipboard_set_text(l.text);
+	play_ui("menu_select.ogg", 0.7);
+	say("Copied.", true);
+}
+
+// The last few lines of the focused channel, in order, for the player who wants
+// the gist rather than a cursor.
+void speak_buffer_recent(uint how_many = 5) {
+	buffers_init();
+	uint n = focused_count();
+	if (n == 0) {
+		say(buffers[buffer_at].name + " is empty.", true);
+		return;
+	}
+	uint start = n > how_many ? n - how_many : 0;
+	string line = buffers[buffer_at].name + ". ";
+	for (uint i = start; i < n; i++) {
+		buffer_line@ l = buffer_at == BUF_ALL ? all_lines[i] : buffers[buffer_at].lines[i];
+		line += l.text + ". ";
+	}
+	say(line, true);
+}

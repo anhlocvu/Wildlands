@@ -1,0 +1,222 @@
+// Shared items, crafting recipes, survival structures, and wildlife definitions.
+// Used identically by both server (authoritative simulation) and client (readable menus).
+
+#include "constants.nvgt"
+
+class ItemStack {
+	string id;
+	int qty;
+	ItemStack() { id = ""; qty = 0; }
+	ItemStack(const string&in i, int q) { id = i; qty = q; }
+}
+
+class ItemDef {
+	string id;
+	string name;
+	string category; // raw, food, drink, med, tool, weapon, ammo, kit
+	int stack_max;
+	int tool_tier;
+	int damage;
+	double range;
+	int cooldown_ms;
+	int heal_hp;
+	int feed_hunger;
+	int quench_thirst;
+	int warmth_boost;
+	string build_type;
+}
+
+class RecipeDef {
+	string id;
+	string output_id;
+	int output_qty;
+	bool requires_bench;
+	bool requires_fire;
+	string[] ing_ids;
+	int[] ing_qtys;
+}
+
+class StructDef {
+	string type;
+	string name;
+	int max_hp;
+	bool blocks_move;
+	bool occludes_sound;
+	bool lockable;
+	bool is_door;
+	bool is_chest;
+	bool is_campfire;
+	bool is_bench;
+	bool is_beacon;
+	double height;
+	double half_w;
+}
+
+class SpeciesDef {
+	string kind;
+	string name;
+	int max_hp;
+	double speed;
+	bool hostile;
+	double aggro_range;
+	double attack_range;
+	int damage;
+	uint64 windup_ms;
+	uint64 cooldown_ms;
+	string snd_idle;
+	string snd_attack;
+	string snd_hurt;
+	string drop_item;
+	int drop_qty;
+}
+
+ItemDef@[] g_items;
+RecipeDef@[] g_recipes;
+StructDef@[] g_structs;
+SpeciesDef@[] g_species;
+bool g_catalog_loaded = false;
+
+void reg_item(const string&in id, const string&in name, const string&in cat, int smax, int tier, int dmg, double rng, int cd, int hp, int hun, int thi, int warm, const string&in btype = "") {
+	ItemDef d;
+	d.id = id; d.name = name; d.category = cat; d.stack_max = smax;
+	d.tool_tier = tier; d.damage = dmg; d.range = rng; d.cooldown_ms = cd;
+	d.heal_hp = hp; d.feed_hunger = hun; d.quench_thirst = thi; d.warmth_boost = warm;
+	d.build_type = btype;
+	g_items.insert_last(d);
+}
+
+void reg_recipe(const string&in id, const string&in out_id, int out_qty, bool bench, bool fire, const string&in i1, int q1, const string&in i2 = "", int q2 = 0, const string&in i3 = "", int q3 = 0) {
+	RecipeDef r;
+	r.id = id; r.output_id = out_id; r.output_qty = out_qty;
+	r.requires_bench = bench; r.requires_fire = fire;
+	if (i1.length() > 0) { r.ing_ids.insert_last(i1); r.ing_qtys.insert_last(q1); }
+	if (i2.length() > 0) { r.ing_ids.insert_last(i2); r.ing_qtys.insert_last(q2); }
+	if (i3.length() > 0) { r.ing_ids.insert_last(i3); r.ing_qtys.insert_last(q3); }
+	g_recipes.insert_last(r);
+}
+
+void reg_struct(const string&in type, const string&in name, int hp, bool blk, bool occ, bool lock, bool door, bool chest, bool fire, bool bench, bool beacon, double h, double hw) {
+	StructDef s;
+	s.type = type; s.name = name; s.max_hp = hp;
+	s.blocks_move = blk; s.occludes_sound = occ; s.lockable = lock;
+	s.is_door = door; s.is_chest = chest; s.is_campfire = fire;
+	s.is_bench = bench; s.is_beacon = beacon; s.height = h; s.half_w = hw;
+	g_structs.insert_last(s);
+}
+
+void reg_species(const string&in kind, const string&in name, int hp, double spd, bool host, double agg, double atk_rng, int dmg, uint64 windup, uint64 cd, const string&in si, const string&in sa, const string&in sh, const string&in drop, int dqty) {
+	SpeciesDef sp;
+	sp.kind = kind; sp.name = name; sp.max_hp = hp; sp.speed = spd;
+	sp.hostile = host; sp.aggro_range = agg; sp.attack_range = atk_rng;
+	sp.damage = dmg; sp.windup_ms = windup; sp.cooldown_ms = cd;
+	sp.snd_idle = si; sp.snd_attack = sa; sp.snd_hurt = sh;
+	sp.drop_item = drop; sp.drop_qty = dqty;
+	g_species.insert_last(sp);
+}
+
+void init_catalog() {
+	if (g_catalog_loaded) return;
+	g_catalog_loaded = true;
+
+	// Raw & Consumable items
+	reg_item("wood", "Wood", "raw", 50, 0, 0, 0.0, 0, 0, 0, 0, 0);
+	reg_item("stone", "Stone", "raw", 50, 0, 0, 0.0, 0, 0, 0, 0, 0);
+	reg_item("iron_ore", "Iron Ore", "raw", 30, 0, 0, 0.0, 0, 0, 0, 0, 0);
+	reg_item("berries", "Wild Berries", "food", 20, 0, 0, 0.0, 0, 4, 18, 6, 0);
+	reg_item("herbs", "Healing Herbs", "raw", 20, 0, 0, 0.0, 0, 8, 2, 0, 0);
+	reg_item("raw_meat", "Raw Meat", "food", 15, 0, 0, 0.0, 0, -5, 15, 0, 0);
+	reg_item("cooked_meat", "Cooked Meat", "food", 15, 0, 0, 0.0, 0, 15, 45, 0, 10);
+	reg_item("hide", "Animal Hide", "raw", 20, 0, 0, 0.0, 0, 0, 0, 0, 0);
+	reg_item("water_flask_empty", "Empty Water Flask", "raw", 5, 0, 0, 0.0, 0, 0, 0, 0, 0);
+	reg_item("water_flask_full", "Full Water Flask", "drink", 5, 0, 0, 0.0, 0, 2, 0, 50, 0);
+	reg_item("bandage", "Bandage", "med", 10, 0, 0, 0.0, 1500, 35, 0, 0, 0);
+	reg_item("torch", "Lit Torch", "tool", 5, 1, 8, 2.0, 500, 0, 0, 0, 25);
+
+	// Tools & Weapons
+	reg_item("stone_axe", "Stone Axe", "tool", 1, 1, 14, 2.3, 650, 0, 0, 0, 0);
+	reg_item("stone_pickaxe", "Stone Pickaxe", "tool", 1, 1, 12, 2.2, 700, 0, 0, 0, 0);
+	reg_item("iron_axe", "Iron Axe", "tool", 1, 2, 22, 2.4, 550, 0, 0, 0, 0);
+	reg_item("spear", "Wooden Spear", "weapon", 1, 0, 24, 3.0, 750, 0, 0, 0, 0);
+	reg_item("wooden_bow", "Wooden Bow", "weapon", 1, 0, 28, 22.0, 950, 0, 0, 0, 0);
+	reg_item("arrow", "Wooden Arrow", "ammo", 60, 0, 0, 0.0, 0, 0, 0, 0, 0);
+
+	// Structure Placement Kits
+	reg_item("campfire_kit", "Campfire Kit", "kit", 5, 0, 0, 0.0, 0, 0, 0, 0, 0, "campfire");
+	reg_item("craft_bench_kit", "Crafting Bench Kit", "kit", 3, 0, 0, 0.0, 0, 0, 0, 0, 0, "craft_bench");
+	reg_item("wood_wall_kit", "Wooden Wall Kit", "kit", 10, 0, 0, 0.0, 0, 0, 0, 0, 0, "wood_wall");
+	reg_item("wood_door_kit", "Wooden Door Kit", "kit", 5, 0, 0, 0.0, 0, 0, 0, 0, 0, "wood_door");
+	reg_item("wood_floor_kit", "Wooden Floor Platform Kit", "kit", 10, 0, 0, 0.0, 0, 0, 0, 0, 0, "wood_floor");
+	reg_item("wood_stairs_kit", "Wooden Stairs Kit", "kit", 5, 0, 0, 0.0, 0, 0, 0, 0, 0, "wood_stairs");
+	reg_item("chest_kit", "Storage Chest Kit", "kit", 5, 0, 0, 0.0, 0, 0, 0, 0, 0, "chest");
+	reg_item("beacon_kit", "Sound Beacon Kit", "kit", 5, 0, 0, 0.0, 0, 0, 0, 0, 0, "beacon");
+
+	// Crafting Recipes
+	reg_recipe("r_stone_axe", "stone_axe", 1, false, false, "wood", 2, "stone", 2);
+	reg_recipe("r_stone_pick", "stone_pickaxe", 1, false, false, "wood", 2, "stone", 3);
+	reg_recipe("r_campfire", "campfire_kit", 1, false, false, "wood", 4, "stone", 2);
+	reg_recipe("r_torch", "torch", 1, false, false, "wood", 2);
+	reg_recipe("r_bandage", "bandage", 1, false, false, "herbs", 2, "hide", 1);
+	reg_recipe("r_cook_meat", "cooked_meat", 1, false, true, "raw_meat", 1);
+	reg_recipe("r_flask", "water_flask_empty", 1, false, false, "hide", 2);
+	reg_recipe("r_bench", "craft_bench_kit", 1, false, false, "wood", 6, "stone", 2);
+	reg_recipe("r_spear", "spear", 1, false, false, "wood", 3, "stone", 1);
+	reg_recipe("r_bow", "wooden_bow", 1, true, false, "wood", 4, "hide", 1);
+	reg_recipe("r_arrows", "arrow", 6, false, false, "wood", 2, "stone", 1);
+	reg_recipe("r_iron_axe", "iron_axe", 1, true, true, "wood", 2, "iron_ore", 3);
+	reg_recipe("r_wall", "wood_wall_kit", 1, false, false, "wood", 4);
+	reg_recipe("r_door", "wood_door_kit", 1, false, false, "wood", 4, "stone", 1);
+	reg_recipe("r_floor", "wood_floor_kit", 1, false, false, "wood", 3);
+	reg_recipe("r_stairs", "wood_stairs_kit", 1, false, false, "wood", 5);
+	reg_recipe("r_chest", "chest_kit", 1, true, false, "wood", 6, "iron_ore", 1);
+	reg_recipe("r_beacon", "beacon_kit", 1, true, false, "wood", 3, "iron_ore", 2);
+
+	// Structures
+	reg_struct("wood_wall", "Wooden Wall", 160, true, true, false, false, false, false, false, false, 3.0, 0.5);
+	reg_struct("wood_door", "Wooden Door", 130, true, true, true, true, false, false, false, false, 3.0, 0.5);
+	reg_struct("wood_floor", "Wooden Floor Platform", 140, false, false, false, false, false, false, false, false, 0.2, 1.5);
+	reg_struct("wood_stairs", "Wooden Stairs", 140, false, false, false, false, false, false, false, false, 1.0, 1.5);
+	reg_struct("campfire", "Campfire", 80, false, false, false, false, false, true, false, false, 0.5, 0.5);
+	reg_struct("chest", "Storage Chest", 150, true, false, true, false, true, false, false, false, 1.0, 0.5);
+	reg_struct("craft_bench", "Crafting Bench", 150, true, false, false, false, false, false, true, false, 1.2, 0.6);
+	reg_struct("beacon", "Sound Beacon", 100, false, false, false, false, false, false, false, true, 2.0, 0.4);
+
+	// Wildlife Species & Bots
+	reg_species("rabbit", "Rabbit", 20, 4.4, false, 7.0, 0.0, 0, 0, 1500, "wildlife/rabbit_rustle.ogg", "", "wildlife/rabbit_rustle.ogg", "raw_meat", 1);
+	reg_species("deer", "Wild Deer", 45, 5.4, false, 9.0, 0.0, 0, 0, 2000, "wildlife/deer_call.ogg", "", "wildlife/deer_call.ogg", "raw_meat", 2);
+	reg_species("wolf", "Timber Wolf", 65, 4.9, true, 14.0, 2.1, 14, 550, 1400, "wildlife/wolf_growl.ogg", "wildlife/wolf_attack.ogg", "wildlife/wolf_hurt.ogg", "raw_meat", 2);
+	reg_species("bear", "Grizzly Bear", 140, 3.9, true, 12.0, 2.4, 24, 750, 1900, "wildlife/bear_roar.ogg", "wildlife/bear_roar.ogg", "wildlife/wolf_hurt.ogg", "hide", 2);
+	reg_species("bandit", "Wilderness Bandit", 95, 4.3, true, 15.0, 2.2, 16, 500, 1300, "steps/dirt_1.ogg", "combat/swing_melee.ogg", "combat/hurt.ogg", "arrow", 4);
+	reg_species("bot_survivor", "Practice Survivor Bot", 100, 4.0, false, 10.0, 2.0, 10, 600, 1500, "steps/grass_1.ogg", "combat/swing_melee.ogg", "combat/hurt.ogg", "berries", 2);
+}
+
+ItemDef@ find_item(const string&in id) {
+	init_catalog();
+	for (uint i = 0; i < g_items.length(); i++) {
+		if (g_items[i].id == id) return @g_items[i];
+	}
+	return null;
+}
+
+RecipeDef@ find_recipe(const string&in id) {
+	init_catalog();
+	for (uint i = 0; i < g_recipes.length(); i++) {
+		if (g_recipes[i].id == id) return @g_recipes[i];
+	}
+	return null;
+}
+
+StructDef@ find_struct(const string&in type) {
+	init_catalog();
+	for (uint i = 0; i < g_structs.length(); i++) {
+		if (g_structs[i].type == type) return @g_structs[i];
+	}
+	return null;
+}
+
+SpeciesDef@ find_species(const string&in kind) {
+	init_catalog();
+	for (uint i = 0; i < g_species.length(); i++) {
+		if (g_species[i].kind == kind) return @g_species[i];
+	}
+	return null;
+}

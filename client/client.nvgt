@@ -1,0 +1,454 @@
+// Wildlands Online — Accessible Multiplayer 3D Survival Audio Game Client.
+// Compile: nvgt -c client/client.nvgt
+
+#include "includes/menus.nvgt"
+#include "includes/chat_input.nvgt"
+
+ClientProfile@ g_profile = null;
+NetClient@ g_net = null;
+
+bool g_cli_headless = false;
+bool g_cli_test_mode = false;
+bool g_cli_autoconnect = false;
+bool g_cli_smoke_test = false;
+string g_cli_host = "";
+uint16 g_cli_port = DEFAULT_PORT;
+
+void parse_client_cli() {
+	string raw = COMMAND_LINE;
+	string[]@ tok = split_keep_empty(raw.trim_whitespace(), " ");
+	for (uint i = 0; i < tok.length(); i++) {
+		string a = tok[i].trim_whitespace();
+		if (a.length() == 0) continue;
+		if (i == 0 && (a.ends_with(".exe") || a.ends_with(".nvgt"))) continue;
+		if (a == "--") continue;
+		if (a == "--headless") { g_cli_headless = true; continue; }
+		if (a == "--test-mode") { g_cli_test_mode = true; continue; }
+		if (a == "--connect-now") { g_cli_autoconnect = true; continue; }
+		if (a == "--smoke-test") { g_cli_smoke_test = true; continue; }
+		if (a == "--profile-dir" && i + 1 < tok.length()) {
+			g_profile.dir_override = tok[++i];
+			continue;
+		}
+		if (a == "--host" && i + 1 < tok.length()) {
+			g_cli_host = tok[++i];
+			continue;
+		}
+		if (a == "--port" && i + 1 < tok.length()) {
+			g_cli_port = uint16(safe_int(tok[++i], 1024, 65535, DEFAULT_PORT));
+			continue;
+		}
+	}
+}
+
+timer g_auth_keepalive_timer;
+bool g_preserve_main_speech = false;
+
+void client_ui_pump() {
+	if (@g_net != null && g_net.state != CONN_IDLE && g_net.state != CONN_DISCONNECTED) {
+		g_net.pump();
+		if (g_net.state == CONN_WAIT_AUTH && g_auth_keepalive_timer.elapsed >= 2500) {
+			g_auth_keepalive_timer.restart();
+			g_net.send_control("PING|0");
+		}
+	}
+}
+
+bool handle_auth_flow(const string&in host, uint16 port, bool force_account_dialog = false) {
+	say("Connecting to " + host + " port " + port + "...", true);
+	if (!g_net.start_connect(host, port, g_profile, 5000)) {
+		g_audio.play_ui_cue("error.ogg", 0.9f);
+		string msg = g_net.disconnect_reason.length() > 0 ? g_net.disconnect_reason : "Could not reach server.";
+		say(msg, true);
+		g_preserve_main_speech = true;
+		return false;
+	}
+
+	bool preserve_menu_speech = false;
+	// Automatic token login from AppData wallet unless user explicitly chose Sign In / Register
+	WalletSlot@ ws = g_profile.find_wallet_slot(host, port);
+	if (!force_account_dialog && @ws != null) {
+		say("Signing in as " + ws.username + "...", true);
+		if (g_net.auth_with_token(ws.username, ws.token, 5000)) {
+			return true;
+		}
+		preserve_menu_speech = true;
+	}
+
+	while (g_net.state == CONN_WAIT_AUTH) {
+		menu am;
+		init_std_menu(am, "Server " + g_net.server_name + ". Account menu. %0 choices.");
+		if (preserve_menu_speech) {
+			am.intro_interrupt = false;
+			preserve_menu_speech = false;
+		}
+		am.add_item("Sign In to Existing Account", "login");
+		am.add_item("Create New Account", "register");
+		if (g_net.guests_allowed) am.add_item("Join as Guest", "guest");
+		am.add_item("Disconnect", "cancel");
+
+		while (am.monitor()) {
+			wait(5);
+			client_ui_pump();
+			g_audio.tick_menu_audio();
+			if (g_net.state == CONN_DISCONNECTED || g_net.state == CONN_IDLE) {
+				g_preserve_main_speech = true;
+				return false;
+			}
+		}
+		string sel = am.selected_item_id;
+		if (sel.length() == 0 || sel == "cancel") {
+			g_net.disconnect_clean();
+			return false;
+		}
+		if (sel == "login") {
+			string u, pw;
+			bool rem = true;
+			string def_u = @ws != null ? ws.username : "";
+			if (show_login_form(def_u, u, pw, rem)) {
+				say("Signing in as " + u + "...", true);
+				if (g_net.auth_with_login(u, pw, rem, 6000)) return true;
+				if (g_net.last_auth_err.length() > 0) preserve_menu_speech = true;
+			}
+		} else if (sel == "register") {
+			string u, pw;
+			if (show_register_form(u, pw)) {
+				say("Creating account " + u + "...", true);
+				if (g_net.auth_with_register(u, pw, true, 6000)) return true;
+				if (g_net.last_auth_err.length() > 0) preserve_menu_speech = true;
+			}
+		} else if (sel == "guest" && g_net.guests_allowed) {
+			say("Joining as guest...", true);
+			if (g_net.auth_as_guest(5000)) return true;
+			if (g_net.last_auth_err.length() > 0) preserve_menu_speech = true;
+		}
+	}
+	if (g_net.state != CONN_READY && (g_net.last_auth_err.length() > 0 || g_net.disconnect_reason.length() > 0)) {
+		g_preserve_main_speech = true;
+	}
+	return g_net.state == CONN_READY;
+}
+
+void speak_context_help() {
+	if (g_net.map_builder_active) {
+		say("Map Builder controls: Arrow keys step cursor, Page Up and Down adjust height, M marks corner, B or Enter opens build palette, Ctrl+S saves map, F8 exits builder.", true);
+	} else {
+		say("World controls: W A S D walk, Left and Right snap turn, Shift with Left or Right smooth turn, E interact or gather, F attack, G guard, Q use item, 1 to 9 belt slots, I inventory, C crafting, B building, H vitals, X coordinates, K compass, T radar scan, V sonar, slash chat, comma period buffers, F2 social, Escape pause.", true);
+	}
+}
+
+void run_world_session() {
+	g_audio.set_menu_music(false);
+	int scan_idx = -1;
+	timer ping_hud_timer;
+	timer local_step_timer;
+	timer smooth_turn_timer;
+	timer input_send_timer;
+	timer frame_timer;
+	uint last_sent_mask = 999;
+	int last_sent_facing = -1;
+
+	while (g_net.state == CONN_READY) {
+		wait(5);
+		double dt = double(frame_timer.elapsed) / 1000.0;
+		if (dt > 0.05) dt = 0.05;
+		frame_timer.restart();
+
+		g_net.pump();
+		if (g_net.state != CONN_READY) break;
+
+		if (g_net.chest_open_pending) {
+			run_chest_menu(g_net);
+			continue;
+		}
+
+		// Global hotkeys
+		if (key_pressed(KEY_F1)) { speak_context_help(); continue; }
+		if (key_pressed(KEY_ESCAPE) || key_pressed(KEY_F10)) {
+			if (g_net.map_builder_active) {
+				run_map_builder_palette(g_net);
+			} else {
+				string p_act = run_pause_menu(g_net, g_profile);
+				if (p_act != "resume") {
+					g_net.disconnect_clean();
+					break;
+				}
+			}
+			continue;
+		}
+
+		bool ctrl = key_down(KEY_LCTRL) || key_down(KEY_RCTRL);
+		bool shift = key_down(KEY_LSHIFT) || key_down(KEY_RSHIFT);
+
+		// Map Builder toggle & cursor mode
+		if (g_profile.key_pressed_bind("map_builder")) {
+			g_net.send_control("BUILDMAP|toggle");
+			continue;
+		}
+
+		if (g_net.map_builder_active) {
+			if (ctrl && key_pressed(KEY_S)) { g_net.send_control("BUILDMAP|save"); continue; }
+			if (key_pressed(KEY_UP)) g_net.send_control("BUILDMAP|step|0|1|0");
+			if (key_pressed(KEY_DOWN)) g_net.send_control("BUILDMAP|step|0|-1|0");
+			if (key_pressed(KEY_LEFT)) g_net.send_control("BUILDMAP|step|-1|0|0");
+			if (key_pressed(KEY_RIGHT)) g_net.send_control("BUILDMAP|step|1|0|0");
+			if (key_pressed(KEY_PAGEUP)) g_net.send_control("BUILDMAP|step|0|0|1");
+			if (key_pressed(KEY_PAGEDOWN)) g_net.send_control("BUILDMAP|step|0|0|-1");
+			if (key_pressed(KEY_M)) g_net.send_control("BUILDMAP|mark");
+			if (key_pressed(KEY_RETURN) || g_profile.key_pressed_bind("build")) run_map_builder_palette(g_net);
+		}
+
+		// Repeat spoken & Buffer browsing
+		if (g_profile.key_pressed_bind("repeat_spoken") || (ctrl && key_pressed(KEY_R))) {
+			repeat_last_spoken();
+		}
+		if (g_profile.key_pressed_bind("buf_prev") || key_pressed(KEY_PAGEUP)) {
+			if (!g_net.map_builder_active) buffer_left();
+		}
+		if (g_profile.key_pressed_bind("buf_next") || key_pressed(KEY_PAGEDOWN)) {
+			if (!g_net.map_builder_active) buffer_right();
+		}
+		if (g_profile.key_pressed_bind("buf_up")) {
+			if (shift) buffer_first_line();
+			else buffer_previous_line();
+		}
+		if (g_profile.key_pressed_bind("buf_down")) {
+			if (shift) buffer_last_line();
+			else buffer_next_line();
+		}
+		if (ctrl && key_pressed(KEY_M)) buffer_toggle_mute();
+		if (ctrl && key_pressed(KEY_C)) buffer_copy_focused();
+		if (ctrl && key_pressed(KEY_DELETE)) g_net.send_control("ACT|demolish");
+
+		// Modal Chat trigger
+		if (g_profile.key_pressed_bind("chat")) {
+			g_net.send_input(0, g_net.my_facing);
+			run_modal_chat_input(g_net);
+			continue;
+		}
+
+		// Status, Radar & Online Keys
+		if (g_profile.key_pressed_bind("vitals")) speak_vitals_hud(g_net);
+		if (g_profile.key_pressed_bind("coords")) speak_coords_hud(g_net);
+		if (g_profile.key_pressed_bind("compass")) speak_compass_hud(g_net);
+		if (g_profile.key_pressed_bind("scanner")) announce_radar_step(g_net, scan_idx, shift ? -1 : 1);
+		if (g_profile.key_pressed_bind("sonar")) trigger_sonar_sweep(g_net);
+		if (g_profile.key_pressed_bind("who")) g_net.request_who(true);
+		if (g_profile.key_pressed_bind("ping")) g_net.request_ping(true);
+
+		// Quick-belt slots 1..9
+		for (int s = 0; s < BELT_SLOTS; s++) {
+			if (key_pressed(KEY_1 + s)) {
+				g_net.send_control("ACT|equip|" + s);
+			}
+		}
+
+		// Menus (when not in builder cursor capture)
+		if (!g_net.map_builder_active) {
+			if (g_profile.key_pressed_bind("inventory")) { g_net.send_input(0, g_net.my_facing); run_inventory_menu(g_net); continue; }
+			if (g_profile.key_pressed_bind("craft")) { g_net.send_input(0, g_net.my_facing); run_crafting_menu(g_net); continue; }
+			if (g_profile.key_pressed_bind("build")) { g_net.send_input(0, g_net.my_facing); run_survival_build_menu(g_net); continue; }
+			if (g_profile.key_pressed_bind("social")) { g_net.send_input(0, g_net.my_facing); run_social_menu(g_net, g_profile); continue; }
+		}
+
+		// World Combat / Gathering / Doors
+		if (g_profile.key_pressed_bind("attack")) g_net.send_control("ACT|attack");
+		if (g_profile.key_pressed_bind("interact") || (!g_net.map_builder_active && key_pressed(KEY_RETURN))) {
+			g_net.send_control("ACT|interact");
+		}
+		if (g_profile.key_pressed_bind("use_belt")) g_net.send_control("ACT|use_belt");
+		if (g_profile.key_pressed_bind("lock")) g_net.send_control("ACT|lock");
+		if (g_profile.key_pressed_bind("repair")) g_net.send_control("ACT|repair");
+
+		// Turning: 45/90 snap OR Shift + smooth turn for bisecting 3D sounds
+		if (!g_net.map_builder_active) {
+			if (shift) {
+				if (g_profile.key_down_bind("turn_left") && smooth_turn_timer.elapsed >= 16) {
+					smooth_turn_timer.restart();
+					g_net.smooth_facing = turn_smooth(g_net.smooth_facing, 130.0 * dt, -1);
+					g_net.my_facing = round_deg(g_net.smooth_facing);
+				}
+				if (g_profile.key_down_bind("turn_right") && smooth_turn_timer.elapsed >= 16) {
+					smooth_turn_timer.restart();
+					g_net.smooth_facing = turn_smooth(g_net.smooth_facing, 130.0 * dt, 1);
+					g_net.my_facing = round_deg(g_net.smooth_facing);
+				}
+			} else {
+				if (g_profile.key_pressed_bind("turn_left")) {
+					g_net.my_facing = snap_deg(g_net.my_facing, g_profile.turn_snap_deg, -1);
+					g_net.smooth_facing = double(g_net.my_facing);
+					g_audio.play_ui_cue("menu_move.ogg", 0.45f);
+					say(compass_name(double(g_net.my_facing)), true);
+				}
+				if (g_profile.key_pressed_bind("turn_right")) {
+					g_net.my_facing = snap_deg(g_net.my_facing, g_profile.turn_snap_deg, 1);
+					g_net.smooth_facing = double(g_net.my_facing);
+					g_audio.play_ui_cue("menu_move.ogg", 0.45f);
+					say(compass_name(double(g_net.my_facing)), true);
+				}
+			}
+		}
+
+		// Movement input bitmask sent at tick cadence (~33ms) or immediately on change
+		uint mask = 0;
+		if (!g_net.map_builder_active) {
+			if (g_profile.key_down_bind("move_fwd") || key_down(KEY_UP)) mask |= IN_FWD;
+			if (g_profile.key_down_bind("move_back") || key_down(KEY_DOWN)) mask |= IN_BACK;
+			if (g_profile.key_down_bind("step_left")) mask |= IN_LEFT;
+			if (g_profile.key_down_bind("step_right")) mask |= IN_RIGHT;
+			if (shift) mask |= IN_SPRINT;
+			if (g_profile.key_down_bind("jump")) mask |= IN_JUMP;
+			if (g_profile.key_down_bind("block")) mask |= IN_BLOCK;
+		}
+
+		if (mask != last_sent_mask || g_net.my_facing != last_sent_facing || input_send_timer.elapsed >= uint64(TICK_MS)) {
+			g_net.send_input(mask, g_net.my_facing);
+			last_sent_mask = mask;
+			last_sent_facing = g_net.my_facing;
+			input_send_timer.restart();
+		}
+
+		// Immediate client-side footstep feedback for self while walking cleanly
+		bool moving = (mask & (IN_FWD | IN_BACK | IN_LEFT | IN_RIGHT)) != 0;
+		if (moving && g_net.snap_received && g_net.map_loaded) {
+			double gz = g_net.map.ground_z_at(g_net.my_x, g_net.my_y, g_net.my_z);
+			if (g_net.my_z <= gz + 0.15) {
+				uint64 iv = shift ? 270 : 420;
+				if (local_step_timer.elapsed >= iv) {
+					local_step_timer.restart();
+					g_audio.play_local_footstep(g_net.map.surface_at(g_net.my_x, g_net.my_y, g_net.my_z));
+				}
+			}
+		}
+	}
+}
+
+int run_client_smoke_test() {
+	menu mm;
+	init_std_menu(mm, GAME_NAME + " Smoke Menu");
+	mm.add_item("Test Item", "test");
+	if (mm.item_count != 1) return 1;
+	if (!file_exists(sfx_path("ui/menu_move.ogg"))) return 2;
+
+	if (g_cli_host.length() > 0) {
+		if (!g_net.start_connect(g_cli_host, g_cli_port, g_profile, 4000)) return 3;
+		if (!g_net.auth_with_register("SmokeUser", "smokepass123", true, 4000)) return 4;
+		timer wt;
+		while (wt.elapsed < 3500 && (!g_net.map_loaded || !g_net.snap_received)) {
+			wait(5);
+			g_net.pump();
+		}
+		if (!g_net.map_loaded || !g_net.snap_received) return 5;
+		g_net.send_input(IN_FWD, 90);
+		g_net.request_who(false);
+		g_net.request_ping(false);
+		timer pt;
+		while (pt.elapsed < 350) { wait(5); g_net.pump(); }
+		if (g_net.ping_rtt_ms < 0) return 6;
+		g_net.disconnect_clean();
+	}
+	g_audio.stop_world_audio();
+	return 0;
+}
+
+void main() {
+	init_catalog();
+	@g_profile = ClientProfile();
+	@g_net = NetClient();
+	@g_global_ui_pump = @client_ui_pump;
+	parse_client_cli();
+	g_profile.load();
+
+	if (!g_cli_headless) {
+		show_window(GAME_NAME + " v" + GAME_VERSION);
+	}
+	g_audio.init(g_cli_headless, g_profile);
+	buffers_init();
+
+	if (g_cli_smoke_test) {
+		int rc = run_client_smoke_test();
+		g_net.disconnect_clean();
+		g_audio.stop_world_audio();
+		exit(rc);
+	}
+
+	if (g_cli_autoconnect) {
+		string h = g_cli_host.length() > 0 ? g_cli_host : LOCAL_SERVER_HOST;
+		if (handle_auth_flow(h, g_cli_port)) {
+			run_world_session();
+		}
+		g_net.disconnect_clean();
+		g_audio.stop_world_audio();
+		return;
+	}
+
+	g_audio.set_menu_music(true);
+
+	while (true) {
+		menu mm;
+		init_std_menu(mm, GAME_NAME + ". Main Menu. %0 options.");
+		if (g_preserve_main_speech) {
+			mm.intro_interrupt = false;
+			g_preserve_main_speech = false;
+		}
+		mm.add_item("Connect to Official Server (" + MAIN_SERVER_HOST + ")", "main_srv");
+		mm.add_item("Connect to Local Server (" + LOCAL_SERVER_HOST + ")", "local_srv");
+		mm.add_item("Sign In or Register on Custom Server (" + g_profile.custom_host + ":" + g_profile.custom_port + ")", "account_srv");
+		mm.add_item("Select Custom Server", "custom_srv");
+		mm.add_item("Settings and Audio Mixer", "settings");
+		mm.add_item("Interactive Audio Tutorial", "tutorial");
+		mm.add_item("News and Changelog", "news");
+		mm.add_item("Learn Game Sounds", "sounds");
+		mm.add_item("Exit Game", "exit");
+
+		while (mm.monitor()) {
+			wait(5);
+			g_audio.tick_menu_audio();
+		}
+
+		string sel = mm.selected_item_id;
+		if (sel.length() == 0 || sel == "exit") {
+			g_audio.play_ui_cue("menu_back.ogg", 0.8f);
+			say("Goodbye.", true);
+			timer qt;
+			while (qt.elapsed < 450) { wait(5); g_audio.tick_menu_audio(); }
+			break;
+		}
+		if (sel == "main_srv") {
+			if (handle_auth_flow(MAIN_SERVER_HOST, DEFAULT_PORT)) run_world_session();
+			g_net.disconnect_clean();
+			g_audio.set_menu_music(true);
+		} else if (sel == "local_srv") {
+			if (handle_auth_flow(LOCAL_SERVER_HOST, DEFAULT_PORT)) run_world_session();
+			g_net.disconnect_clean();
+			g_audio.set_menu_music(true);
+		} else if (sel == "account_srv") {
+			if (handle_auth_flow(g_profile.custom_host, g_profile.custom_port, true)) run_world_session();
+			g_net.disconnect_clean();
+			g_audio.set_menu_music(true);
+		} else if (sel == "custom_srv") {
+			string h = g_profile.custom_host;
+			uint16 p = g_profile.custom_port;
+			if (show_custom_server_form(h, p)) {
+				g_profile.custom_host = h;
+				g_profile.custom_port = p;
+				g_profile.save_settings();
+				if (handle_auth_flow(h, p)) run_world_session();
+				g_net.disconnect_clean();
+			}
+			g_audio.set_menu_music(true);
+		} else if (sel == "settings") {
+			run_settings_menu(g_profile, null);
+		} else if (sel == "tutorial") {
+			run_interactive_tutorial(g_profile);
+			g_audio.set_menu_music(true);
+		} else if (sel == "news") {
+			run_news_menu(null);
+		} else if (sel == "sounds") {
+			run_learn_sounds_menu(null);
+		}
+	}
+
+	g_net.disconnect_clean();
+	g_audio.stop_world_audio();
+}

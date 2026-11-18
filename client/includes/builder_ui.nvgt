@@ -1,0 +1,225 @@
+// Survival structure placement menu, chest storage transfer UI, and Interactive Audio Map Builder palette.
+
+#include "net_client.nvgt"
+#include "menu.nvgt"
+
+void init_std_menu(menu@ m, const string&in intro) {
+	m.reset(true);
+	resolve_sound_root();
+	m.intro_text = intro;
+	m.sounds_prefix = g_sound_root + "ui/";
+	m.click_sound = "menu_move.ogg";
+	m.select_sound = "menu_select.ogg";
+	m.edge_sound = "menu_edge.ogg";
+	m.wrap_sound = "menu_wrap.ogg";
+	m.open_sound = "menu_open.ogg";
+	m.close_sound = "menu_back.ogg";
+	m.wrap = true;
+	m.focus_first_item = true;
+}
+
+void run_survival_build_menu(NetClient@ nc) {
+	menu m;
+	init_std_menu(m, "Survival Building Menu. %0 options.");
+
+	string[] kit_ids;
+	for (uint i = 0; i < g_items.length(); i++) {
+		ItemDef@ idf = g_items[i];
+		if (idf.category != "kit") continue;
+		int have = nc.count_inv(idf.id);
+		m.add_item(idf.name + ", you have " + have, idf.build_type.length() > 0 ? idf.build_type : idf.id);
+		kit_ids.insert_last(idf.id);
+	}
+	m.add_item("Lock or unlock nearby door or chest (L)", "__lock");
+	m.add_item("Repair nearby structure (R)", "__repair");
+	m.add_item("Demolish nearby owned structure", "__demolish");
+	m.add_item("Back", "__back");
+
+	while (m.monitor()) {
+		wait(5);
+		nc.pump();
+		g_audio.tick_menu_audio();
+		if (nc.state != CONN_READY) return;
+	}
+	string sel = m.selected_item_id;
+	if (sel.length() == 0 || sel == "__back") return;
+	if (sel == "__lock") { nc.send_control("ACT|lock"); return; }
+	if (sel == "__repair") { nc.send_control("ACT|repair"); return; }
+	if (sel == "__demolish") { nc.send_control("ACT|demolish"); return; }
+	nc.send_control(pkt_3("ACT", "build", sel));
+}
+
+void populate_chest_menu(menu@ m, NetClient@ nc) {
+	m.delete_all_items();
+	for (uint i = 0; i < nc.chest_items.length(); i++) {
+		ItemStack@ st = nc.chest_items[i];
+		ItemDef@ d = find_item(st.id);
+		m.add_item("Take " + (@d != null ? d.name : st.id) + " x" + st.qty, "take:" + i);
+	}
+	for (uint i = 0; i < nc.inv.length(); i++) {
+		ItemStack@ st = nc.inv[i];
+		ItemDef@ d = find_item(st.id);
+		m.add_item("Deposit " + (@d != null ? d.name : st.id) + " x" + st.qty, "put:" + i);
+	}
+	m.add_item("Close Chest", "__close");
+}
+
+void run_chest_menu(NetClient@ nc) {
+	nc.chest_in_menu = true;
+	nc.chest_open_pending = false;
+
+	while (nc.state == CONN_READY) {
+		menu m;
+		init_std_menu(m, "Chest Storage. Chest holds " + nc.chest_items.length() + " stacks. %0 total actions.");
+		populate_chest_menu(m, nc);
+		uint seen_seq = nc.chest_seq;
+
+		while (m.monitor()) {
+			wait(5);
+			nc.pump();
+			g_audio.tick_menu_audio();
+			if (nc.state != CONN_READY) { nc.chest_in_menu = false; return; }
+			if (nc.chest_seq != seen_seq) break;
+		}
+		if (nc.chest_seq != seen_seq) continue;
+
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__close") break;
+		int col = sel.find(":");
+		if (col > 0) {
+			string op = sel.substr(0, uint(col));
+			string idx_s = sel.substr(uint(col) + 1);
+			nc.send_control(pkt_5("CHEST", op, "" + nc.chest_obj_id, idx_s, "1"));
+			// Briefly pump to receive CHEST_DATA update before rebuilding list
+			timer wt;
+			uint cur_seq = nc.chest_seq;
+			while (wt.elapsed < 600 && nc.chest_seq == cur_seq && nc.state == CONN_READY) {
+				wait(5);
+				nc.pump();
+			}
+		}
+	}
+	g_audio.play_ui_cue("builder/chest_close.ogg", 0.75f);
+	nc.chest_in_menu = false;
+}
+
+string pick_surface_menu(NetClient@ nc, const string&in title) {
+	menu m;
+	init_std_menu(m, title);
+	string[] surfs = {"grass", "dirt", "stone", "wood", "sand", "water"};
+	for (uint i = 0; i < surfs.length(); i++) m.add_item(surfs[i], surfs[i]);
+	while (m.monitor()) { wait(5); nc.pump(); }
+	return m.selected_item_id;
+}
+
+void run_map_builder_palette(NetClient@ nc) {
+	menu m;
+	init_std_menu(m, "Audio Map Builder Palette at cursor " + nc.b_cx + ", " + nc.b_cy + ", height " + nc.b_cz + ". %0 tools.");
+	m.add_item("Mark Corner 1 at cursor (M)", "mark");
+	m.add_item("Create Audio Zone", "zone");
+	m.add_item("Place Wall (Wood or Stone)", "wall");
+	m.add_item("Place Elevated Platform or Ramp", "platform");
+	m.add_item("Place Water Body", "water");
+	m.add_item("Place Resource Node (Tree, Rock, Iron, Berry, Herb)", "resource");
+	m.add_item("Place Ambient Sound Emitter Landmark", "emitter");
+	m.add_item("Place Spawn Point", "spawn");
+	m.add_item("Erase Object at Cursor", "erase");
+	m.add_item("Validate and Save .map File (Ctrl+S)", "save");
+	m.add_item("Reload Saved Map Live on Server", "reload");
+	m.add_item("Exit Map Builder Mode", "exit");
+
+	while (m.monitor()) {
+		wait(5);
+		nc.pump();
+		g_audio.tick_menu_audio();
+		if (nc.state != CONN_READY) return;
+	}
+	string cmd = m.selected_item_id;
+	if (cmd.length() == 0) return;
+
+	if (cmd == "mark") { nc.send_control("BUILDMAP|mark"); return; }
+	if (cmd == "erase") { nc.send_control("BUILDMAP|erase"); return; }
+	if (cmd == "save") { nc.send_control("BUILDMAP|save"); return; }
+	if (cmd == "reload") { nc.send_control("BUILDMAP|reload"); return; }
+	if (cmd == "exit") { nc.send_control("BUILDMAP|toggle"); return; }
+
+	if (cmd == "zone") {
+		string zname;
+		if (!show_text_prompt("New Map Zone", "Zone name", "Clearing", zname, 40)) return;
+		string surf = pick_surface_menu(nc, "Choose ground surface for " + zname);
+		if (surf.length() == 0) return;
+		string amb = "ambience/forest_day.ogg";
+		if (surf == "stone") amb = "ambience/wind_gust.ogg";
+		else if (surf == "water") amb = "ambience/river_loop.ogg";
+		else if (surf == "wood") amb = "ambience/settlement_hearth.ogg";
+		nc.send_control(pkt_build("BUILDMAP", {"zone", wire_escape(zname), surf, amb, surf == "wood" ? "1" : "0"}));
+		return;
+	}
+
+	if (cmd == "wall") {
+		menu wm;
+		init_std_menu(wm, "Choose wall material.");
+		wm.add_item("Wood Wall, height 4", "wood:4");
+		wm.add_item("Stone Wall, height 5", "stone:5");
+		while (wm.monitor()) { wait(5); nc.pump(); }
+		if (wm.selected_item_id.length() == 0) return;
+		string[]@ wp = split_keep_empty(wm.selected_item_id, ":");
+		nc.send_control(pkt_build("BUILDMAP", {"wall", wire_escape("Custom Wall"), wp[0], wp[1]}));
+		return;
+	}
+
+	if (cmd == "platform") {
+		menu pm;
+		init_std_menu(pm, "Choose platform or ramp type.");
+		pm.add_item("Flat Wood Platform", "wood:0:y:1");
+		pm.add_item("Flat Stone Ledge", "stone:0:y:1");
+		pm.add_item("Ramp Going North", "wood:1:y:1");
+		pm.add_item("Ramp Going South", "wood:1:y:-1");
+		pm.add_item("Ramp Going East", "wood:1:x:1");
+		pm.add_item("Ramp Going West", "wood:1:x:-1");
+		while (pm.monitor()) { wait(5); nc.pump(); }
+		if (pm.selected_item_id.length() == 0) return;
+		string[]@ pp = split_keep_empty(pm.selected_item_id, ":");
+		nc.send_control(pkt_build("BUILDMAP", {"platform", wire_escape("Builder Platform"), pp[0], pp[1], pp[2], pp[3]}));
+		return;
+	}
+
+	if (cmd == "water") {
+		nc.send_control(pkt_build("BUILDMAP", {"water", wire_escape("Stream"), "shallow"}));
+		return;
+	}
+
+	if (cmd == "resource") {
+		menu rm;
+		init_std_menu(rm, "Choose resource type to spawn at cursor.");
+		rm.add_item("Pine Tree", "tree");
+		rm.add_item("Stone Boulder", "rock");
+		rm.add_item("Iron Vein", "iron_vein");
+		rm.add_item("Berry Bush", "berry_bush");
+		rm.add_item("Wild Herb Patch", "herb_patch");
+		while (rm.monitor()) { wait(5); nc.pump(); }
+		if (rm.selected_item_id.length() == 0) return;
+		nc.send_control(pkt_build("BUILDMAP", {"resource", rm.selected_item_id, "4", "45"}));
+		return;
+	}
+
+	if (cmd == "emitter") {
+		menu em;
+		init_std_menu(em, "Choose ambient 3D emitter sound.");
+		em.add_item("River Water Loop", "River:ambience/river_loop.ogg");
+		em.add_item("Settlement Hearth Loop", "Hearth:ambience/settlement_hearth.ogg");
+		em.add_item("Wind Gust Loop", "Wind:ambience/wind_gust.ogg");
+		em.add_item("Audio Beacon Ping", "Beacon:builder/beacon_ping.ogg");
+		while (em.monitor()) { wait(5); nc.pump(); }
+		if (em.selected_item_id.length() == 0) return;
+		string[]@ ep = split_keep_empty(em.selected_item_id, ":");
+		nc.send_control(pkt_build("BUILDMAP", {"emitter", wire_escape(ep[0]), ep[1], "24", "0.65"}));
+		return;
+	}
+
+	if (cmd == "spawn") {
+		string sname;
+		if (!show_text_prompt("New Spawn Point", "Spawn label", "Outpost", sname, 32)) return;
+		nc.send_control(pkt_build("BUILDMAP", {"spawn", wire_escape(sname)}));
+	}
+}

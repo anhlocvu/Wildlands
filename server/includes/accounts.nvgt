@@ -1,0 +1,457 @@
+// Server authoritative accounts, salted stretched SHA-256 hashing,
+// cryptographic bearer tokens, atomic temp+bak persistence, rate limiting & ranks.
+// Intentionally free of UI/window dependencies so console tests run cleanly.
+
+#include "../../common/protocol.nvgt"
+
+string bytes_to_hex(const string&in bin) {
+	const string hex = "0123456789abcdef";
+	string res = "";
+	for (uint i = 0; i < bin.length(); i++) {
+		uint8 b = character_to_ascii(bin.substr(i, 1));
+		res += hex.substr((b >> 4) & 0x0f, 1) + hex.substr(b & 0x0f, 1);
+	}
+	return res;
+}
+
+bool constant_time_eq(const string&in a, const string&in b) {
+	uint max_len = a.length() > b.length() ? a.length() : b.length();
+	uint diff = a.length() ^ b.length();
+	for (uint i = 0; i < max_len; i++) {
+		uint8 ca = i < a.length() ? character_to_ascii(a.substr(i, 1)) : 0;
+		uint8 cb = i < b.length() ? character_to_ascii(b.substr(i, 1)) : 0;
+		diff |= uint(ca ^ cb);
+	}
+	return diff == 0;
+}
+
+string make_salt_hex() {
+	return bytes_to_hex(random_bytes(16));
+}
+
+string generate_session_token() {
+	return bytes_to_hex(random_bytes(32));
+}
+
+string hash_password(const string&in password, const string&in salt, int rounds = PBKDF_ROUNDS) {
+	string h = string_hash_sha256(salt + ":" + password);
+	for (int i = 0; i < rounds; i++) {
+		h = string_hash_sha256(salt + ":" + h + ":" + i);
+	}
+	return h;
+}
+
+string hash_token(const string&in raw_token) {
+	if (raw_token.length() == 0) return "";
+	return string_hash_sha256("wildlands-tok:" + raw_token);
+}
+
+bool can_moderate(int actor_rank, int target_rank) {
+	return actor_rank >= RANK_MOD && actor_rank > target_rank;
+}
+
+class AccountRecord {
+	uint64 id = 0;
+	string name;
+	string name_lower;
+	string salt;
+	string pw_hash;
+	string token_hash;
+	int rank = RANK_PLAYER;
+	int64 banned_until = 0; // 0=none, -1=perm, >0=epoch seconds
+	string ban_reason;
+	int64 muted_until = 0;
+	string[] friends;
+	string[] blocked;
+	uint kills_pvp = 0;
+	uint kills_pve = 0;
+	uint deaths = 0;
+	uint built_count = 0;
+	uint gathered_count = 0;
+	uint64 playtime_sec = 0;
+	double last_x = 50.0;
+	double last_y = 46.0;
+	double last_z = 0.0;
+
+	bool has_friend(const string&in who_lower) {
+		return friends.find(who_lower) >= 0;
+	}
+
+	bool has_blocked(const string&in who_lower) {
+		return blocked.find(who_lower) >= 0;
+	}
+
+	void add_friend(const string&in who_lower) {
+		if (who_lower.length() == 0 || friends.length() >= 50 || has_friend(who_lower)) return;
+		friends.insert_last(who_lower);
+	}
+
+	void remove_friend(const string&in who_lower) {
+		int idx = friends.find(who_lower);
+		if (idx >= 0) friends.remove_at(uint(idx));
+	}
+
+	void add_block(const string&in who_lower) {
+		if (who_lower.length() == 0 || blocked.length() >= 50 || has_blocked(who_lower)) return;
+		blocked.insert_last(who_lower);
+	}
+
+	void remove_block(const string&in who_lower) {
+		int idx = blocked.find(who_lower);
+		if (idx >= 0) blocked.remove_at(uint(idx));
+	}
+}
+
+class AuthRateEntry {
+	string ip;
+	int fails = 0;
+	uint64 window_start_ms = 0;
+}
+
+string join_csv_lower(string[]@ list) {
+	if (@list == null || list.length() == 0) return "";
+	string res = "";
+	for (uint i = 0; i < list.length(); i++) {
+		string clean = sanitize_name(list[i]).lower();
+		if (clean.length() == 0) continue;
+		if (res.length() > 0) res += ",";
+		res += clean;
+	}
+	return res;
+}
+
+string[]@ parse_csv_lower(const string&in csv) {
+	string[] res;
+	if (csv.length() == 0) return res;
+	string[]@ parts = split_keep_empty(csv, ",");
+	for (uint i = 0; i < parts.length(); i++) {
+		string clean = sanitize_name(parts[i]).lower();
+		if (clean.length() > 0 && res.find(clean) < 0) res.insert_last(clean);
+	}
+	return res;
+}
+
+class AccountStore {
+	string db_path = "data/accounts.dat";
+	string devs_path = "data/devs.txt";
+	AccountRecord@[] accounts;
+	dictionary by_lower;
+	string[] dev_names;
+	AuthRateEntry@[] rate_limits;
+	uint64 next_id = 1;
+	bool dirty = false;
+
+	void reset() {
+		accounts.resize(0);
+		by_lower.delete_all();
+		dev_names.resize(0);
+		rate_limits.resize(0);
+		next_id = 1;
+		dirty = false;
+	}
+
+	void load_devs(const string&in path = "") {
+		string p = path.length() > 0 ? path : devs_path;
+		dev_names.resize(0);
+		if (!file_exists(p)) return;
+		string raw = file_get_contents(p).replace("\r", "", true);
+		string[]@ lines = split_keep_empty(raw, "\n");
+		for (uint i = 0; i < lines.length(); i++) {
+			string ln = lines[i].trim_whitespace();
+			if (ln.length() == 0 || ln.starts_with("#")) continue;
+			string clean = sanitize_name(ln).lower();
+			if (clean.length() > 0 && dev_names.find(clean) < 0) dev_names.insert_last(clean);
+		}
+	}
+
+	bool is_dev_allowlisted(const string&in name) {
+		return dev_names.find(sanitize_name(name).lower()) >= 0;
+	}
+
+	int effective_rank(AccountRecord@ acc) {
+		if (@acc == null) return RANK_PLAYER;
+		if (is_dev_allowlisted(acc.name)) return RANK_DEV;
+		if (acc.rank == RANK_DEV) return RANK_ADMIN; // Never trust stale/injected DEV rank without devs.txt
+		return clampi(acc.rank, RANK_PLAYER, RANK_ADMIN);
+	}
+
+	// Strict startup loader: missing file is fine (fresh server), corrupt existing file MUST fail fatally.
+	bool load(string&out err) {
+		err = "";
+		accounts.resize(0);
+		by_lower.delete_all();
+		next_id = 1;
+		load_devs();
+
+		if (!file_exists(db_path)) return true;
+		string raw = file_get_contents(db_path);
+		if (raw.length() == 0) {
+			err = "Account database exists but is empty or unreadable: " + db_path;
+			return false;
+		}
+		string[]@ lines = split_keep_empty(raw.replace("\r", "", true), "\n");
+		bool saw_header = false;
+		for (uint i = 0; i < lines.length(); i++) {
+			string line = lines[i].trim_whitespace();
+			if (line.length() == 0 || line.starts_with("#")) continue;
+			if (!saw_header && line == "ACCOUNTS_V1") { saw_header = true; continue; }
+			string[]@ p = split_keep_empty(line, FIELD_SEP);
+			if (field(p, 0) != "ACC" || field(p, 1) != "v1" || p.length() < 22) {
+				err = "Corrupt account record at line " + (i + 1);
+				return false;
+			}
+			AccountRecord acc;
+			acc.id = uint64(parse_int(field(p, 2, "0")));
+			acc.name = sanitize_name(field(p, 3, ""));
+			if (!name_is_valid(acc.name) || acc.id == 0) {
+				err = "Invalid account identity at line " + (i + 1);
+				return false;
+			}
+			acc.name_lower = acc.name.lower();
+			if (by_lower.exists(acc.name_lower)) {
+				err = "Duplicate account name in store: " + acc.name;
+				return false;
+			}
+			acc.salt = field(p, 4, "");
+			acc.pw_hash = field(p, 5, "");
+			acc.token_hash = field(p, 6, "");
+			acc.rank = safe_int(field(p, 7, "0"), RANK_PLAYER, RANK_DEV, RANK_PLAYER);
+			acc.banned_until = parse_int(field(p, 8, "0"));
+			acc.ban_reason = wire_unescape(field(p, 9, ""));
+			acc.muted_until = parse_int(field(p, 10, "0"));
+			acc.friends = parse_csv_lower(field(p, 11, ""));
+			acc.blocked = parse_csv_lower(field(p, 12, ""));
+			acc.kills_pvp = uint(safe_int(field(p, 13, "0"), 0, 99999999, 0));
+			acc.kills_pve = uint(safe_int(field(p, 14, "0"), 0, 99999999, 0));
+			acc.deaths = uint(safe_int(field(p, 15, "0"), 0, 99999999, 0));
+			acc.built_count = uint(safe_int(field(p, 16, "0"), 0, 99999999, 0));
+			acc.gathered_count = uint(safe_int(field(p, 17, "0"), 0, 99999999, 0));
+			acc.playtime_sec = uint64(parse_int(field(p, 18, "0")));
+			acc.last_x = safe_double(field(p, 19, "50.00"), 0.0, 500.0, 50.0);
+			acc.last_y = safe_double(field(p, 20, "46.00"), 0.0, 500.0, 46.0);
+			acc.last_z = safe_double(field(p, 21, "0.00"), 0.0, 50.0, 0.0);
+
+			if (acc.id >= next_id) next_id = acc.id + 1;
+			accounts.insert_last(acc);
+			by_lower.set(acc.name_lower, @acc);
+		}
+		if (!saw_header) {
+			err = "Missing ACCOUNTS_V1 header in " + db_path;
+			return false;
+		}
+		return true;
+	}
+
+	bool save(string&out err) {
+		err = "";
+		int slash = db_path.rfind("/");
+		if (slash > 0) {
+			string dir = db_path.substr(0, uint(slash));
+			if (!directory_exists(dir)) directory_create(dir);
+		}
+		string buf = "ACCOUNTS_V1\n";
+		for (uint i = 0; i < accounts.length(); i++) {
+			AccountRecord@ a = accounts[i];
+			buf += "ACC|v1|" + a.id + "|" + a.name + "|" + a.salt + "|" + a.pw_hash + "|" + a.token_hash + "|"
+				+ a.rank + "|" + a.banned_until + "|" + wire_escape(a.ban_reason) + "|" + a.muted_until + "|"
+				+ join_csv_lower(a.friends) + "|" + join_csv_lower(a.blocked) + "|"
+				+ a.kills_pvp + "|" + a.kills_pve + "|" + a.deaths + "|" + a.built_count + "|" + a.gathered_count + "|"
+				+ a.playtime_sec + "|" + fmt2(a.last_x) + "|" + fmt2(a.last_y) + "|" + fmt2(a.last_z) + "\n";
+		}
+		string tmp = db_path + ".tmp";
+		string bak = db_path + ".bak";
+		if (!file_put_contents(tmp, buf, false)) {
+			err = "Failed to write temp account file " + tmp;
+			return false;
+		}
+		if (file_exists(db_path)) {
+			file_copy(db_path, bak, true);
+			file_delete(db_path);
+		}
+		if (!file_move(tmp, db_path)) {
+			if (!file_copy(tmp, db_path, true)) {
+				err = "Failed to replace account store " + db_path;
+				return false;
+			}
+			file_delete(tmp);
+		}
+		dirty = false;
+		return true;
+	}
+
+	AccountRecord@ find(const string&in name) {
+		string low = sanitize_name(name).lower();
+		if (!by_lower.exists(low)) return null;
+		AccountRecord@ acc = null;
+		by_lower.get(low, @acc);
+		return acc;
+	}
+
+	bool is_rate_limited(const string&in ip, uint64 now_ms, bool test_mode) {
+		if (test_mode) return false;
+		for (uint i = 0; i < rate_limits.length(); i++) {
+			AuthRateEntry@ e = rate_limits[i];
+			if (e.ip == ip) {
+				if (now_ms - e.window_start_ms > 60000) {
+					e.fails = 0;
+					e.window_start_ms = now_ms;
+					return false;
+				}
+				return e.fails >= 8;
+			}
+		}
+		return false;
+	}
+
+	void record_auth_fail(const string&in ip, uint64 now_ms) {
+		for (uint i = 0; i < rate_limits.length(); i++) {
+			AuthRateEntry@ e = rate_limits[i];
+			if (e.ip == ip) {
+				if (now_ms - e.window_start_ms > 60000) {
+					e.fails = 1;
+					e.window_start_ms = now_ms;
+				} else {
+					e.fails++;
+				}
+				return;
+			}
+		}
+		AuthRateEntry ne;
+		ne.ip = ip;
+		ne.fails = 1;
+		ne.window_start_ms = now_ms;
+		rate_limits.insert_last(ne);
+	}
+
+	void clear_auth_fail(const string&in ip) {
+		for (uint i = 0; i < rate_limits.length(); i++) {
+			if (rate_limits[i].ip == ip) {
+				rate_limits.remove_at(i);
+				return;
+			}
+		}
+	}
+
+	bool register_account(const string&in raw_name, const string&in password, double sx, double sy, double sz, AccountRecord@ &out created, string&out err, string&out issued_token) {
+		@created = null;
+		err = "";
+		issued_token = "";
+		string clean = sanitize_name(raw_name);
+		if (!name_is_valid(clean) || clean != raw_name) {
+			err = "Name must be 3 to 20 characters using only letters, digits, underscore, or hyphen.";
+			return false;
+		}
+		if (password.length() < MIN_PASS_LEN || password.length() > MAX_PASS_LEN) {
+			err = "Password must be 6 to 64 characters long.";
+			return false;
+		}
+		if (by_lower.exists(clean.lower())) {
+			err = "That account name is already taken.";
+			return false;
+		}
+
+		AccountRecord acc;
+		acc.id = next_id++;
+		acc.name = clean;
+		acc.name_lower = clean.lower();
+		acc.salt = make_salt_hex();
+		acc.pw_hash = hash_password(password, acc.salt);
+		issued_token = generate_session_token();
+		acc.token_hash = hash_token(issued_token);
+		acc.rank = is_dev_allowlisted(clean) ? RANK_DEV : RANK_PLAYER;
+		acc.last_x = sx;
+		acc.last_y = sy;
+		acc.last_z = sz;
+
+		accounts.insert_last(acc);
+		by_lower.set(acc.name_lower, @acc);
+		dirty = true;
+		@created = @acc;
+		return true;
+	}
+
+	string ban_message_if_active(AccountRecord@ acc, int64 now_sec) {
+		if (@acc == null) return "";
+		if (acc.banned_until == 0) return "";
+		if (acc.banned_until > 0 && now_sec >= acc.banned_until) {
+			acc.banned_until = 0;
+			acc.ban_reason = "";
+			dirty = true;
+			return "";
+		}
+		string dur = acc.banned_until < 0 ? "permanently" : "for " + ((acc.banned_until - now_sec + 59) / 60) + " minutes remaining";
+		string reason = acc.ban_reason.length() > 0 ? acc.ban_reason : "Rule violation";
+		return "You are banned " + dur + ". Reason: " + reason;
+	}
+
+	bool authenticate_password(const string&in raw_name, const string&in password, int64 now_sec, AccountRecord@ &out acc_out, string&out err, string&out issued_token) {
+		@acc_out = null;
+		err = "";
+		issued_token = "";
+		AccountRecord@ acc = find(raw_name);
+		if (@acc == null) {
+			err = "Unknown account name or incorrect password. Choose Create New Account if you have not registered yet.";
+			return false;
+		}
+		string candidate = hash_password(password, acc.salt);
+		if (!constant_time_eq(candidate, acc.pw_hash)) {
+			err = "Unknown account name or incorrect password.";
+			return false;
+		}
+		string ban_msg = ban_message_if_active(acc, now_sec);
+		if (ban_msg.length() > 0) {
+			err = ban_msg;
+			return false;
+		}
+		issued_token = generate_session_token();
+		acc.token_hash = hash_token(issued_token);
+		dirty = true;
+		@acc_out = @acc;
+		return true;
+	}
+
+	bool authenticate_token(const string&in raw_name, const string&in raw_token, int64 now_sec, AccountRecord@ &out acc_out, string&out err) {
+		@acc_out = null;
+		err = "";
+		AccountRecord@ acc = find(raw_name);
+		if (@acc == null || acc.token_hash.length() == 0 || raw_token.length() < 32) {
+			err = "Saved session token is invalid or expired. Please sign in with your password.";
+			return false;
+		}
+		string th = hash_token(raw_token);
+		if (!constant_time_eq(th, acc.token_hash)) {
+			err = "Saved session token was rejected because you signed in elsewhere or signed out.";
+			return false;
+		}
+		string ban_msg = ban_message_if_active(acc, now_sec);
+		if (ban_msg.length() > 0) {
+			err = ban_msg;
+			return false;
+		}
+		@acc_out = @acc;
+		return true;
+	}
+
+	string format_leaderboard() {
+		if (accounts.length() == 0) return "No registered players yet.";
+		AccountRecord@[] sorted = accounts;
+		for (uint i = 0; i < sorted.length(); i++) {
+			for (uint j = i + 1; j < sorted.length(); j++) {
+				uint score_i = sorted[i].kills_pve + sorted[i].kills_pvp * 3 + sorted[i].built_count;
+				uint score_j = sorted[j].kills_pve + sorted[j].kills_pvp * 3 + sorted[j].built_count;
+				if (score_j > score_i) {
+					AccountRecord@ tmp = @sorted[i];
+					@sorted[i] = @sorted[j];
+					@sorted[j] = @tmp;
+				}
+			}
+		}
+		string line = "Top survivors: ";
+		uint lim = sorted.length() < 5 ? sorted.length() : 5;
+		for (uint i = 0; i < lim; i++) {
+			AccountRecord@ a = sorted[i];
+			line += (i + 1) + ". " + a.name + " with " + a.kills_pve + " hunts, " + a.kills_pvp + " duels, " + a.built_count + " builds. ";
+		}
+		return line;
+	}
+}

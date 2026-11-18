@@ -1,0 +1,79 @@
+// Shared wire protocol helpers (depends on constants.nvgt + wire.nvgt).
+
+#include "constants.nvgt"
+#include "wire.nvgt"
+
+// Deterministic 2-decimal coordinate formatting (avoids float noise & "-0.00").
+string fmt2(double v) {
+	int64 scaled = int64(v >= 0.0 ? v * 100.0 + 0.5 : v * 100.0 - 0.5);
+	if (scaled == 0) return "0.00";
+	bool neg = scaled < 0;
+	if (neg) scaled = -scaled;
+	int64 whole = scaled / 100;
+	int64 frac = scaled % 100;
+	string frac_str = frac < 10 ? "0" + frac : "" + frac;
+	return (neg ? "-" : "") + whole + "." + frac_str;
+}
+
+string join_wire(string[]@ parts) {
+	if (@parts == null || parts.length() == 0) return "";
+	string out_str = parts[0];
+	for (uint i = 1; i < parts.length(); i++) {
+		out_str += FIELD_SEP + parts[i];
+	}
+	return out_str;
+}
+
+string pkt_build(const string&in op, string[]@ fields = null) {
+	if (@fields == null || fields.length() == 0) return op;
+	return op + FIELD_SEP + join_wire(fields);
+}
+
+string pkt_2(const string&in op, const string&in a) {
+	return op + FIELD_SEP + a;
+}
+
+string pkt_3(const string&in op, const string&in a, const string&in b) {
+	return op + FIELD_SEP + a + FIELD_SEP + b;
+}
+
+string pkt_4(const string&in op, const string&in a, const string&in b, const string&in c) {
+	return op + FIELD_SEP + a + FIELD_SEP + b + FIELD_SEP + c;
+}
+
+string pkt_5(const string&in op, const string&in a, const string&in b, const string&in c, const string&in d) {
+	return op + FIELD_SEP + a + FIELD_SEP + b + FIELD_SEP + c + FIELD_SEP + d;
+}
+
+string[]@ pkt_parse(const string&in raw) {
+	return split_keep_empty(raw, FIELD_SEP);
+}
+
+string pkt_op(string[]@ parts) {
+	return field(parts, 0, "");
+}
+
+bool fits_udp(const string&in payload) {
+	return payload.length() <= uint(MAX_UDP_PAYLOAD);
+}
+
+// Strip ASCII control chars from chat/input lines while preserving readable text.
+string strip_control_chars(const string&in s, uint max_len = MAX_CHAT_LEN) {
+	string res = "";
+	for (uint i = 0; i < s.length() && res.length() < max_len; i++) {
+		string ch = s.substr(i, 1);
+		uint8 b = character_to_ascii(ch);
+		if (b < 32 || b == 127) continue;
+		res += ch;
+	}
+	return res.trim_whitespace();
+}
+
+string non_empty_or_dash(const string&in s) {
+	return s.length() == 0 ? "-" : wire_escape(s);
+}
+
+string unescape_or_empty(const string&in s) {
+	if (s == "-") return "";
+	return wire_unescape(s);
+}

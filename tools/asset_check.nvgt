@@ -1,0 +1,85 @@
+// Offline console check verifying client/sounds/manifest.txt + map sound references exist and have real OGG headers.
+// Run: nvgt tools/asset_check.nvgt
+
+#pragma console
+#include "../common/map.nvgt"
+#include "../common/items.nvgt"
+
+int fails = 0;
+
+void check(const string&in what, bool ok, const string&in detail = "") {
+	println((ok ? "  ok    " : "  FAIL  ") + what + (detail.length() > 0 ? "   [" + detail + "]" : ""));
+	if (!ok) fails++;
+}
+
+bool valid_ogg_header(const string&in path) {
+	file f;
+	if (!f.open(path, "rb")) return false;
+	string head = f.read(4);
+	uint64 sz = f.get_size();
+	f.close();
+	return head == "OggS" && sz > 512;
+}
+
+void main() {
+	string sounds_dir = "client/sounds/";
+	if (!directory_exists(sounds_dir)) sounds_dir = "../client/sounds/";
+	string manifest_path = sounds_dir + "manifest.txt";
+	check("manifest exists", file_exists(manifest_path), manifest_path);
+	if (!file_exists(manifest_path)) { exit(1); }
+
+	string raw = file_get_contents(manifest_path).replace("\r", "", true);
+	string[]@ lines = split_keep_empty(raw, "\n");
+	dictionary seen;
+	int count = 0;
+	bool all_valid = true;
+	for (uint i = 0; i < lines.length(); i++) {
+		string rel = lines[i].trim_whitespace();
+		if (rel.length() == 0) continue;
+		count++;
+		seen.set(rel, true);
+		string full = sounds_dir + rel;
+		if (!file_exists(full) || !valid_ogg_header(full)) {
+			println("  FAIL  missing or invalid OGG: " + rel);
+			fails++;
+			all_valid = false;
+		}
+	}
+	check("manifest entries count >= 90", count >= 90, "count=" + count);
+	check("all manifest files valid OggS", all_valid);
+
+	string map_path = "server/maps/wildlands_valley.map";
+	if (!file_exists(map_path)) map_path = "../server/maps/wildlands_valley.map";
+	WorldMap m;
+	string err;
+	if (m.load_from_file(map_path, err)) {
+		string[]@ refs = m.collect_sound_refs();
+		bool map_refs_ok = true;
+		for (uint i = 0; i < refs.length(); i++) {
+			if (!seen.exists(refs[i])) {
+				println("  FAIL  map references sound missing from manifest: " + refs[i]);
+				fails++;
+				map_refs_ok = false;
+			}
+		}
+		check("all map sound refs in manifest", map_refs_ok);
+	}
+
+	init_catalog();
+	bool sp_refs_ok = true;
+	for (uint i = 0; i < g_species.length(); i++) {
+		SpeciesDef@ sp = g_species[i];
+		string[] checks = {sp.snd_idle, sp.snd_attack, sp.snd_hurt};
+		for (uint j = 0; j < checks.length(); j++) {
+			if (checks[j].length() > 0 && !seen.exists(checks[j])) {
+				println("  FAIL  species sound missing from manifest: " + checks[j]);
+				fails++;
+				sp_refs_ok = false;
+			}
+		}
+	}
+	check("all wildlife species sounds in manifest", sp_refs_ok);
+
+	println(fails == 0 ? "PASS" : (fails + " failure(s)"));
+	exit(fails == 0 ? 0 : 1);
+}

@@ -1,0 +1,406 @@
+// Client profile persistence in AppData (settings, custom keybinds, blocklist, 8-slot LRU wallet).
+// Numbers are strictly stored as strings so INI parsing never hits float/int type ambiguity.
+
+#include "ini.nvgt"
+#include "../../common/protocol.nvgt"
+
+class WalletSlot {
+	string host;
+	uint16 port = DEFAULT_PORT;
+	string username;
+	string token;
+	int rank = RANK_PLAYER;
+	uint64 last_used = 0;
+
+	bool is_empty() const {
+		return host.length() == 0 || username.length() == 0 || token.length() == 0;
+	}
+}
+
+class KeyBind {
+	string action;
+	string label;
+	int key = 0;
+	int default_key = 0;
+
+	KeyBind() {}
+	KeyBind(const string&in a, const string&in lbl, int def_k) {
+		action = a; label = lbl; default_key = def_k; key = def_k;
+	}
+}
+
+string key_code_name(int kc) {
+	if (kc >= KEY_A && kc <= KEY_Z) {
+		return ascii_to_character(uint8(65 + (kc - KEY_A)));
+	}
+	if (kc >= KEY_0 && kc <= KEY_9) {
+		return "" + (kc - KEY_0);
+	}
+	if (kc >= KEY_F1 && kc <= KEY_F12) {
+		return "F" + (1 + (kc - KEY_F1));
+	}
+	switch (kc) {
+		case KEY_UP: return "Up Arrow";
+		case KEY_DOWN: return "Down Arrow";
+		case KEY_LEFT: return "Left Arrow";
+		case KEY_RIGHT: return "Right Arrow";
+		case KEY_SPACE: return "Space";
+		case KEY_RETURN: return "Enter";
+		case KEY_TAB: return "Tab";
+		case KEY_BACK: return "Backspace";
+		case KEY_DELETE: return "Delete";
+		case KEY_PAGEUP: return "Page Up";
+		case KEY_PAGEDOWN: return "Page Down";
+		case KEY_HOME: return "Home";
+		case KEY_END: return "End";
+		case KEY_LSHIFT: return "Left Shift";
+		case KEY_RSHIFT: return "Right Shift";
+		case KEY_LCTRL: return "Left Ctrl";
+		case KEY_RCTRL: return "Right Ctrl";
+		case KEY_SLASH: return "Slash";
+		case KEY_COMMA: return "Comma";
+		case KEY_PERIOD: return "Period";
+		case KEY_LEFTBRACKET: return "Left Bracket";
+		case KEY_RIGHTBRACKET: return "Right Bracket";
+		case KEY_MINUS: return "Minus";
+		case KEY_EQUALS: return "Equals";
+		case KEY_SEMICOLON: return "Semicolon";
+		case KEY_APOSTROPHE: return "Apostrophe";
+		case KEY_GRAVE: return "Grave";
+		case KEY_BACKSLASH: return "Backslash";
+	}
+	return "Key " + kc;
+}
+
+class ClientProfile {
+	string dir_override = "";
+	int[] layer_pct;
+	bool use_sr = true;
+	int tts_rate = 2;
+	string tts_voice_name = "";
+	int turn_snap_deg = 45;
+	bool hrtf_enabled = true;
+	bool speech_ducking = true;
+	bool tutorial_done = false;
+	string custom_host = "127.0.0.1";
+	uint16 custom_port = DEFAULT_PORT;
+	string[] blocked_players;
+	KeyBind@[] keybinds;
+	WalletSlot@[] wallet;
+
+	ClientProfile() {
+		reset_defaults();
+	}
+
+	string app_dir() const {
+		if (dir_override.length() > 0) return dir_override;
+		return get_preferences_path(GAME_ORG, GAME_APP);
+	}
+
+	string settings_path() const { return app_dir() + "/settings.ini"; }
+	string wallet_path() const { return app_dir() + "/wallet.ini"; }
+
+	void reset_defaults() {
+		layer_pct = {100, 85, 95, 85, 85, 65, 45};
+		use_sr = true;
+		tts_rate = 2;
+		tts_voice_name = "";
+		turn_snap_deg = 45;
+		hrtf_enabled = true;
+		speech_ducking = true;
+		tutorial_done = false;
+		custom_host = "127.0.0.1";
+		custom_port = DEFAULT_PORT;
+		blocked_players.resize(0);
+		reset_keybinds();
+		wallet.resize(WALLET_SLOTS);
+		for (int i = 0; i < WALLET_SLOTS; i++) @wallet[uint(i)] = WalletSlot();
+	}
+
+	void reset_keybinds() {
+		keybinds.resize(0);
+		keybinds.insert_last(KeyBind("move_fwd", "Walk Forward", KEY_W));
+		keybinds.insert_last(KeyBind("move_back", "Walk Backward", KEY_S));
+		keybinds.insert_last(KeyBind("step_left", "Sidestep Left", KEY_A));
+		keybinds.insert_last(KeyBind("step_right", "Sidestep Right", KEY_D));
+		keybinds.insert_last(KeyBind("turn_left", "Turn Left", KEY_LEFT));
+		keybinds.insert_last(KeyBind("turn_right", "Turn Right", KEY_RIGHT));
+		keybinds.insert_last(KeyBind("jump", "Jump", KEY_SPACE));
+		keybinds.insert_last(KeyBind("use_belt", "Use Active Belt Item", KEY_Q));
+		keybinds.insert_last(KeyBind("attack", "Attack", KEY_F));
+		keybinds.insert_last(KeyBind("block", "Block / Guard", KEY_G));
+		keybinds.insert_last(KeyBind("interact", "Interact / Gather / Door", KEY_E));
+		keybinds.insert_last(KeyBind("vitals", "Check Vitals", KEY_H));
+		keybinds.insert_last(KeyBind("coords", "Check Coordinates and Zone", KEY_X));
+		keybinds.insert_last(KeyBind("compass", "Check Compass Heading", KEY_K));
+		keybinds.insert_last(KeyBind("scanner", "Scan Nearby Landmarks", KEY_T));
+		keybinds.insert_last(KeyBind("sonar", "Acoustic Sonar Ping", KEY_V));
+		keybinds.insert_last(KeyBind("inventory", "Inventory Menu", KEY_I));
+		keybinds.insert_last(KeyBind("craft", "Crafting Menu", KEY_C));
+		keybinds.insert_last(KeyBind("build", "Survival Build Menu", KEY_B));
+		keybinds.insert_last(KeyBind("lock", "Lock or Unlock Door or Chest", KEY_L));
+		keybinds.insert_last(KeyBind("repair", "Repair Nearby Structure", KEY_R));
+		keybinds.insert_last(KeyBind("chat", "Open Chat Input", KEY_SLASH));
+		keybinds.insert_last(KeyBind("who", "Who Is Online", KEY_U));
+		keybinds.insert_last(KeyBind("ping", "Ping Latency", KEY_P));
+		keybinds.insert_last(KeyBind("social", "Social and Profile Menu", KEY_F2));
+		keybinds.insert_last(KeyBind("map_builder", "Audio Map Builder", KEY_F8));
+		keybinds.insert_last(KeyBind("repeat_spoken", "Repeat Last Spoken Line", KEY_GRAVE));
+		keybinds.insert_last(KeyBind("buf_prev", "Previous Buffer Channel", KEY_COMMA));
+		keybinds.insert_last(KeyBind("buf_next", "Next Buffer Channel", KEY_PERIOD));
+		keybinds.insert_last(KeyBind("buf_up", "Older Buffer Line", KEY_LEFTBRACKET));
+		keybinds.insert_last(KeyBind("buf_down", "Newer Buffer Line", KEY_RIGHTBRACKET));
+	}
+
+	int get_bind_key(const string&in action) const {
+		for (uint i = 0; i < keybinds.length(); i++) {
+			if (keybinds[i].action == action) return keybinds[i].key;
+		}
+		return 0;
+	}
+
+	void set_bind_key(const string&in action, int kc) {
+		for (uint i = 0; i < keybinds.length(); i++) {
+			if (keybinds[i].action == action) { keybinds[i].key = kc; return; }
+		}
+	}
+
+	string bind_conflict_label(const string&in action, int kc) const {
+		for (uint i = 0; i < keybinds.length(); i++) {
+			if (keybinds[i].action != action && keybinds[i].key == kc) return keybinds[i].label;
+		}
+		return "";
+	}
+
+	bool key_pressed_bind(const string&in action) const {
+		int k = get_bind_key(action);
+		return k != 0 && key_pressed(k);
+	}
+
+	bool key_down_bind(const string&in action) const {
+		int k = get_bind_key(action);
+		return k != 0 && key_down(k);
+	}
+
+	bool is_blocked(const string&in name) const {
+		string low = sanitize_name(name).lower();
+		if (low.length() == 0) return false;
+		for (uint i = 0; i < blocked_players.length(); i++) {
+			if (blocked_players[i] == low) return true;
+		}
+		return false;
+	}
+
+	bool add_block(const string&in name) {
+		string low = sanitize_name(name).lower();
+		if (low.length() == 0 || is_blocked(low)) return false;
+		blocked_players.insert_last(low);
+		save_settings();
+		return true;
+	}
+
+	bool remove_block(const string&in name) {
+		string low = sanitize_name(name).lower();
+		for (uint i = 0; i < blocked_players.length(); i++) {
+			if (blocked_players[i] == low) {
+				blocked_players.remove_at(i);
+				save_settings();
+				return true;
+			}
+		}
+		return false;
+	}
+
+	bool write_atomic(const string&in path, const string&in content) const {
+		string dir = app_dir();
+		if (!directory_exists(dir)) directory_create(dir);
+		string tmp = path + ".tmp";
+		string bak = path + ".bak";
+		file f;
+		if (!f.open(tmp, "wb")) return false;
+		f.write(content);
+		f.close();
+		if (file_exists(path)) {
+			file_copy(path, bak, true);
+			file_delete(path);
+		}
+		return file_move(tmp, path);
+	}
+
+	bool load() {
+		load_settings();
+		load_wallet();
+		return true;
+	}
+
+	void load_settings() {
+		ini cfg;
+		string p = settings_path();
+		if (!file_exists(p) && file_exists(p + ".bak")) file_copy(p + ".bak", p, true);
+		if (!file_exists(p) || !cfg.load(p)) return;
+
+		for (int i = 0; i < LAYER_COUNT; i++) {
+			string s = cfg.get_string("audio", "layer_" + i, "");
+			if (s.length() > 0) layer_pct[uint(i)] = safe_int(s, 0, 100, layer_pct[uint(i)]);
+		}
+		hrtf_enabled = safe_int(cfg.get_string("audio", "hrtf", "1"), 0, 1, 1) == 1;
+		speech_ducking = safe_int(cfg.get_string("audio", "ducking", "1"), 0, 1, 1) == 1;
+		use_sr = safe_int(cfg.get_string("speech", "use_sr", "1"), 0, 1, 1) == 1;
+		tts_rate = safe_int(cfg.get_string("speech", "rate", "2"), -10, 10, 2);
+		tts_voice_name = cfg.get_string("speech", "voice", "");
+
+		int snap = safe_int(cfg.get_string("controls", "turn_snap", "45"), 45, 90, 45);
+		turn_snap_deg = (snap == 90) ? 90 : 45;
+		for (uint i = 0; i < keybinds.length(); i++) {
+			string kv = cfg.get_string("keybinds", keybinds[i].action, "");
+			if (kv.length() > 0) keybinds[i].key = safe_int(kv, 1, 512, keybinds[i].default_key);
+		}
+
+		string ch = strip_control_chars(cfg.get_string("network", "custom_host", LOCAL_SERVER_HOST), 80);
+		if (ch.length() > 0) custom_host = ch;
+		custom_port = uint16(safe_int(cfg.get_string("network", "custom_port", "" + DEFAULT_PORT), 1024, 65535, DEFAULT_PORT));
+		tutorial_done = safe_int(cfg.get_string("player", "tutorial_done", "0"), 0, 1, 0) == 1;
+
+		blocked_players.resize(0);
+		string bl = cfg.get_string("social", "blocked", "");
+		if (bl.length() > 0) {
+			string[]@ parts = split_keep_empty(bl, " ");
+			for (uint i = 0; i < parts.length(); i++) {
+				string low = sanitize_name(parts[i]).lower();
+				if (low.length() > 0 && !is_blocked(low)) blocked_players.insert_last(low);
+			}
+		}
+	}
+
+	void ini_put(ini@ doc, const string&in sec, const string&in k, const string&in v) const {
+		if (!doc.section_exists(sec)) doc.create_section(sec);
+		doc.set_string(sec, k, v);
+	}
+
+	bool save_settings() const {
+		ini cfg;
+		for (int i = 0; i < LAYER_COUNT; i++) {
+			ini_put(cfg, "audio", "layer_" + i, "" + layer_pct[uint(i)]);
+		}
+		ini_put(cfg, "audio", "hrtf", hrtf_enabled ? "1" : "0");
+		ini_put(cfg, "audio", "ducking", speech_ducking ? "1" : "0");
+		ini_put(cfg, "speech", "use_sr", use_sr ? "1" : "0");
+		ini_put(cfg, "speech", "rate", "" + tts_rate);
+		ini_put(cfg, "speech", "voice", tts_voice_name);
+		ini_put(cfg, "controls", "turn_snap", "" + turn_snap_deg);
+		for (uint i = 0; i < keybinds.length(); i++) {
+			ini_put(cfg, "keybinds", keybinds[i].action, "" + keybinds[i].key);
+		}
+		ini_put(cfg, "network", "custom_host", custom_host);
+		ini_put(cfg, "network", "custom_port", "" + custom_port);
+		ini_put(cfg, "player", "tutorial_done", tutorial_done ? "1" : "0");
+
+		string bl = "";
+		for (uint i = 0; i < blocked_players.length(); i++) {
+			if (i > 0) bl += " ";
+			bl += blocked_players[i];
+		}
+		ini_put(cfg, "social", "blocked", bl);
+		return write_atomic(settings_path(), cfg.dump());
+	}
+
+	void load_wallet() {
+		wallet.resize(WALLET_SLOTS);
+		for (int i = 0; i < WALLET_SLOTS; i++) @wallet[uint(i)] = WalletSlot();
+		ini w;
+		string p = wallet_path();
+		if (!file_exists(p) && file_exists(p + ".bak")) file_copy(p + ".bak", p, true);
+		if (!file_exists(p) || !w.load(p)) return;
+
+		for (int i = 0; i < WALLET_SLOTS; i++) {
+			string sec = "slot_" + i;
+			WalletSlot@ s = wallet[uint(i)];
+			s.host = strip_control_chars(w.get_string(sec, "host", ""), 80);
+			s.port = uint16(safe_int(w.get_string(sec, "port", "" + DEFAULT_PORT), 1024, 65535, DEFAULT_PORT));
+			s.username = sanitize_name(w.get_string(sec, "username", ""));
+			s.token = strip_control_chars(w.get_string(sec, "token", ""), 96);
+			s.rank = safe_int(w.get_string(sec, "rank", "0"), RANK_PLAYER, RANK_DEV, RANK_PLAYER);
+			string lu = w.get_string(sec, "last_used", "0");
+			s.last_used = uint64(parse_int(lu));
+		}
+	}
+
+	// Overwrite ALL 8 slots every time so deleted/evicted entries never persist in old INI sections.
+	bool save_wallet() const {
+		ini w;
+		for (int i = 0; i < WALLET_SLOTS; i++) {
+			string sec = "slot_" + i;
+			WalletSlot@ s = wallet[uint(i)];
+			ini_put(w, sec, "host", s.host);
+			ini_put(w, sec, "port", "" + s.port);
+			ini_put(w, sec, "username", s.username);
+			ini_put(w, sec, "token", s.token);
+			ini_put(w, sec, "rank", "" + s.rank);
+			ini_put(w, sec, "last_used", "" + s.last_used);
+		}
+		return write_atomic(wallet_path(), w.dump());
+	}
+
+	WalletSlot@ find_wallet_slot(const string&in host, uint16 port) {
+		string h = host.lower().trim_whitespace();
+		for (uint i = 0; i < wallet.length(); i++) {
+			WalletSlot@ s = wallet[i];
+			if (!s.is_empty() && s.host.lower() == h && s.port == port) return s;
+		}
+		return null;
+	}
+
+	void upsert_wallet_slot(const string&in host, uint16 port, const string&in username, const string&in token, int rank) {
+		if (host.length() == 0 || username.length() == 0 || token.length() == 0 || token == "-") return;
+		string h = host.lower().trim_whitespace();
+		uint64 ts = uint64(TIME_STAMP);
+		int target = -1;
+		for (uint i = 0; i < wallet.length(); i++) {
+			if (!wallet[i].is_empty() && wallet[i].host.lower() == h && wallet[i].port == port) {
+				target = int(i);
+				break;
+			}
+		}
+		if (target < 0) {
+			for (uint i = 0; i < wallet.length(); i++) {
+				if (wallet[i].is_empty()) { target = int(i); break; }
+			}
+		}
+		if (target < 0) {
+			uint64 oldest = wallet[0].last_used;
+			target = 0;
+			for (uint i = 1; i < wallet.length(); i++) {
+				if (wallet[i].last_used < oldest) {
+					oldest = wallet[i].last_used;
+					target = int(i);
+				}
+			}
+		}
+		WalletSlot@ s = wallet[uint(target)];
+		s.host = h;
+		s.port = port;
+		s.username = sanitize_name(username);
+		s.token = token;
+		s.rank = rank;
+		s.last_used = ts;
+		save_wallet();
+	}
+
+	bool remove_wallet_slot(const string&in host, uint16 port) {
+		string h = host.lower().trim_whitespace();
+		bool changed = false;
+		for (uint i = 0; i < wallet.length(); i++) {
+			if (!wallet[i].is_empty() && wallet[i].host.lower() == h && wallet[i].port == port) {
+				@wallet[i] = WalletSlot();
+				changed = true;
+			}
+		}
+		if (changed) save_wallet();
+		return changed;
+	}
+
+	void clear_all_wallet() {
+		for (int i = 0; i < WALLET_SLOTS; i++) @wallet[uint(i)] = WalletSlot();
+		save_wallet();
+	}
+}

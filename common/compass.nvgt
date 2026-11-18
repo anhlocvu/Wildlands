@@ -1,0 +1,205 @@
+// Facing, bearings, and how to describe where something is.
+//
+// Drop this into common/ - the server needs the angle maths as much as the
+// client needs the words, and they must agree.
+//
+// THIS SITS ON TOP OF NVGT'S OWN rotation.nvgt AND DOES NOT REPLACE IT.
+// C:\nvgt\include\rotation.nvgt is the include every audio game uses for angles
+// and distances, its conventions match what sound_pool wants for a listener
+// rotation, and it has had far more players walking around in it than anything
+// written fresh for one project. Everything here either calls it or is a thing
+// it does not provide.
+//
+// THE TWO SYSTEMS, AND WHY THEY ARE DIFFERENT.
+//
+// Your own facing is a COMPASS HEADING - north, northeast, east. Eight names
+// you can hold in your head, repeatable, and something one player can say to
+// another: "face east and walk".
+//
+// Everything else is described RELATIVE TO YOU - "ahead and to your left,
+// twelve steps". Telling a player an enemy is at north-northeast makes them
+// subtract their own heading in their head while being shot at.
+//
+// Using the wrong one of these is the clearest tell that a game was not built
+// by somebody who plays these.
+//
+// CONVENTION, inherited from rotation.nvgt: 0 is north, degrees increase
+// CLOCKWISE, north is +Y and east is +X. That is also what sound_pool's
+// rotation parameter wants, so a facing goes straight to the listener with no
+// conversion for anybody to forget.
+//
+// Facing is stored and sent as a WHOLE NUMBER of degrees, 0-359. One degree is
+// far finer than anything anybody can aim by ear, it makes the compass snaps
+// land exactly, it means client and server cannot disagree about a rounded
+// value, and it shortens every input and snapshot packet.
+
+#include "rotation.nvgt"
+
+// ------------------------------------------------------------------ angles
+
+// Normalise an integer bearing into 0-359.
+//
+// rotation.nvgt's degree_limit() is the double-domain equivalent and is NOT a
+// drop-in for this: it subtracts a turn while `deg > 359`, so 359.5 comes back
+// as -0.5. Integers are safe there; a smooth-turn accumulator is not, so both
+// domains keep their own normaliser.
+int wrap_deg(int deg) {
+	deg = deg % 360;
+	if (deg < 0) deg += 360;
+	return deg;
+}
+
+// Round a continuous angle to the nearest whole degree, normalised.
+int round_deg(double deg) {
+	return wrap_deg(int(deg + (deg < 0.0 ? -0.5 : 0.5)));
+}
+
+// Shortest signed difference from a to b, in -179..180. Positive is clockwise,
+// which is to say to the right.
+//
+// rotation.nvgt reports relative angles as 0-360; a spoken readout wants a
+// signed left or right, which is why this exists.
+int angle_diff_deg(int a, int b) {
+	int d = wrap_deg(b) - wrap_deg(a);
+	if (d > 180) d -= 360;
+	if (d <= -180) d += 360;
+	return d;
+}
+
+double angle_diff(double a, double b) {
+	double d = degree_limit(b) - degree_limit(a);
+	if (d > 180.0) d -= 360.0;
+	if (d < -180.0) d += 360.0;
+	return d;
+}
+
+// ------------------------------------------------------------------ turning
+//
+// SNAPPING IS AN OPTION, NOT A LAW. Snapped turning is the right DEFAULT -
+// eight or four headings you can name are easier to fight with than a
+// continuous number, and a snapped heading is repeatable between players. But
+// some players want 90-degree snaps, and some want to turn slowly to bisect a
+// sound and find exactly where it is coming from. Both are real ways to play.
+//
+// So a game offers: the snap size as a setting (45 and 90 are the two anybody
+// asks for), and a modifier key that turns smoothly at the character's turn
+// rate whatever the snap size is. Forcing one of these on everybody is what the
+// setting exists to avoid.
+
+// Snap to a multiple of `step` degrees. dir < 0 counterclockwise, dir > 0
+// clockwise, dir == 0 to the nearest.
+//
+// NOTE THE COUNTERCLOCKWISE CASE, which is where this differs from
+// rotation.nvgt's snapleft(): from 3 degrees, turning left lands on north
+// rather than a whole step below it at 315. The nearest point in the direction
+// you asked for is the one the player meant, and anything else feels like the
+// game fighting you when you are straightening up. snapleft()/snapright() are
+// still there if a game wants the other behaviour.
+int snap_deg(int deg, int step, int dir) {
+	deg = wrap_deg(deg);
+	if (step <= 0) return deg;
+	if (dir == 0) return wrap_deg(((deg + step / 2) / step) * step);
+	if (dir > 0) return wrap_deg((deg / step) * step + step);
+	int floored = (deg / step) * step;
+	return wrap_deg(floored == deg ? floored - step : floored);
+}
+
+// Smooth turning, for the modifier key: `rate` degrees this frame, in `dir`.
+// rotation.nvgt's turnleft()/turnright() do the work.
+double turn_smooth(double deg, double rate, int dir) {
+	return dir < 0 ? turnleft(deg, rate) : turnright(deg, rate);
+}
+
+// ----------------------------------------------------------------- bearings
+
+// Bearing from one point to another, 0-359.
+//
+// calculate_x_y_angle() with deg 0 means "absolute, not relative to a facing";
+// the two falses turn off its one-tile deadzone and its flooring, both of which
+// we want raw here so the caller decides what to round.
+double bearing_to(double fx, double fy, double tx, double ty) {
+	return calculate_x_y_angle(fx, fy, tx, ty, 0.0, false, false);
+}
+
+// Unit step along a bearing. move() special-cases the cardinals, so due south
+// is exactly (0, -1) rather than the 1.2e-16 that sin(pi) actually returns.
+double bearing_x(double deg) { return move(0.0, 0.0, degree_limit(deg)).x; }
+double bearing_y(double deg) { return move(0.0, 0.0, degree_limit(deg)).y; }
+
+// ------------------------------------------------------------------- words
+
+// The eight-point compass name for a heading, from rotation.nvgt's own table.
+//
+// getdir() FLOORS to a compass point, so the half-point offset is what makes
+// this round to the NEAREST one: at 22.5 degrees you are told northeast, not
+// north. Pass more_detail to dir_to_string for the sixteen-point names if a
+// game wants them - most do not, because "east - southeast" is a mouthful in
+// the middle of a fight.
+string compass_name(double deg) {
+	return dir_to_string(int(getdir(degree_limit(deg + 22.5))), false);
+}
+
+// Where something is, relative to the way you are facing.
+//
+// THE BUCKETS ARE UNEVEN ON PURPOSE. "Ahead" is narrow, because the difference
+// between something in front of you and something slightly off to one side is
+// the difference between hitting it and missing. "Behind" is wide, because once
+// something is behind you the exact angle does not change what you do about it:
+// you turn round.
+string relative_direction(double my_facing, double bearing) {
+	double d = angle_diff(my_facing, bearing);
+	string side = d >= 0.0 ? "right" : "left";
+	double a = d < 0.0 ? -d : d;
+
+	if (a <= 15.0) return "ahead";
+	if (a <= 60.0) return "ahead and to your " + side;
+	if (a <= 120.0) return "to your " + side;
+	if (a <= 165.0) return "behind and to your " + side;
+	return "behind you";
+}
+
+// Above or below, when the game has verticality. Empty when it is level enough
+// not to be worth saying - height only earns a word when it changes what the
+// player would do.
+string relative_elevation(double dz, double deadzone = 1.0) {
+	if (dz > deadzone) return "above";
+	if (dz < -deadzone) return "below";
+	return "";
+}
+
+// A distance in whatever unit the game counts in. Say which unit in the
+// tutorial and then use the same one everywhere - a player builds a sense of
+// scale from it, and changing units between readouts destroys that.
+string distance_words(double d, const string&in unit = "steps") {
+	int n = int(d + 0.5);
+	if (n <= 0) return "right here";
+	if (n == 1) return "1 " + (unit == "steps" ? "step" : unit);
+	return n + " " + unit;
+}
+
+// The whole sentence, which is what almost every call site actually wants.
+//
+//     say(describe_target("Ramrod", my_facing, my_x, my_y, my_z,
+//                         his_x, his_y, his_z));
+//     -> "Ramrod, ahead and to your left, 12 steps, above."
+//
+// NAME FIRST, because the player may stop listening after it - they often
+// already know where their target is and only wanted to know who it was.
+//
+// A SENTENCE LIKE THIS IS A SUPPLEMENT TO THE SOUND, NEVER A REPLACEMENT FOR
+// IT. The enemy still makes its own noise, in 3D, at its own position; this is
+// for the status key that answers "where exactly", not for turning a fight into
+// a series of announcements. A game that tells you where things are instead of
+// letting you hear them is a game you play by reading, and it is not what
+// anybody came for.
+string describe_target(const string&in name, double my_facing,
+                       double mx, double my, double mz,
+                       double tx, double ty, double tz,
+                       const string&in unit = "steps") {
+	double bearing = bearing_to(mx, my, tx, ty);
+	string line = name + ", " + relative_direction(my_facing, bearing)
+		+ ", " + distance_words(get_2d_distance(mx, my, tx, ty), unit);
+	string up = relative_elevation(tz - mz);
+	if (up.length() > 0) line += ", " + up;
+	return line + ".";
+}

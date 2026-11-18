@@ -1,0 +1,99 @@
+// Shared constants across server, client, and verification tools.
+
+const string GAME_NAME = "Wildlands Online";
+const string GAME_ORG = "WildlandsStudio";
+const string GAME_APP = "WildlandsOnline";
+const string GAME_VERSION = "1.0.0";
+const uint PROTO_VERSION = 1;
+
+// Single top-level server address constants (per online-audio-game-dev conventions).
+const string MAIN_SERVER_HOST = "wildlands.example.com";
+const string LOCAL_SERVER_HOST = "127.0.0.1";
+const uint16 DEFAULT_PORT = 7100;
+const uint16 MAX_PEERS = 64;
+
+// ENet transport channel assignments (6 dedicated channels).
+const uint8 CH_SPEECH = 0;   // Reliable: urgent spoken combat/system/moderation lines
+const uint8 CH_AUDIO = 1;    // Reliable: 3D world sound triggers
+const uint8 CH_CONTROL = 2;  // Reliable: handshake, auth, map chunks, inv, build, who, ping, news
+const uint8 CH_CHAT = 3;     // Reliable: chat, whispers, emotes
+const uint8 CH_SNAPSHOT = 4; // Unreliable: earshot-scoped positions & vitals
+const uint8 CH_INPUT = 5;    // Unreliable: client key bitmask + facing
+const uint8 MAX_CHANNELS = 6;
+
+// Simulation & networking timing.
+const int TICK_HZ = 30;
+const int TICK_MS = 33;
+const int SNAPSHOT_EVERY_TICKS = 2; // 15 Hz snapshot broadcast
+const double EARSHOT_RADIUS = 35.0;
+const int MAX_UDP_PAYLOAD = 1350;
+const int MAP_CHUNK_BYTES = 1050;
+const uint64 GRACE_DISCONNECT_MS = 15000;
+
+// Movement & world bounds.
+const double WALK_SPEED_PER_SEC = 4.5;
+const double SPRINT_SPEED_PER_SEC = 7.2;
+const double PLAYER_RADIUS = 0.35;
+const double GRAVITY_PER_SEC = 22.0;
+const double JUMP_VEL = 7.5;
+const int MAX_INV_SLOTS = 24;
+const int BELT_SLOTS = 9;
+const int MAX_CHEST_SLOTS = 12;
+
+// Account & chat validation limits.
+const uint MIN_PASS_LEN = 6;
+const uint MAX_PASS_LEN = 64;
+const uint MAX_CHAT_LEN = 220;
+const uint64 CHAT_RATE_LIMIT_MS = 700;
+const int PBKDF_ROUNDS = 5000;
+const int WALLET_SLOTS = 8;
+
+// Rank hierarchy (nobody moderates sideways or upwards).
+const int RANK_PLAYER = 0;
+const int RANK_BUILDER = 1;
+const int RANK_MOD = 2;
+const int RANK_ADMIN = 3;
+const int RANK_DEV = 4;
+
+// Input bitmask flags sent on CH_INPUT.
+const uint IN_FWD = 1 << 0;
+const uint IN_BACK = 1 << 1;
+const uint IN_LEFT = 1 << 2;
+const uint IN_RIGHT = 1 << 3;
+const uint IN_SPRINT = 1 << 4;
+const uint IN_JUMP = 1 << 5;
+const uint IN_BLOCK = 1 << 6;
+
+// Client mix layer IDs (priority order).
+const int LAYER_SPEECH = 0;
+const int LAYER_SELF = 1;
+const int LAYER_THREAT = 2;
+const int LAYER_ACTORS = 3;
+const int LAYER_WORLD = 4;
+const int LAYER_AMBIENCE = 5;
+const int LAYER_MUSIC = 6;
+const int LAYER_COUNT = 7;
+
+// Message buffer channel indices (matching client/includes/buffers.nvgt).
+const uint MBUF_ALL = 0;
+const uint MBUF_CHAT = 1;
+const uint MBUF_PM = 2;
+const uint MBUF_SOCIAL = 3;
+const uint MBUF_GAME = 4;
+const uint MBUF_SYSTEM = 5;
+
+string rank_label(int rank) {
+	if (rank == RANK_DEV) return "Developer";
+	if (rank == RANK_ADMIN) return "Admin";
+	if (rank == RANK_MOD) return "Moderator";
+	if (rank == RANK_BUILDER) return "Builder";
+	return "Player";
+}
+
+string rank_tag(int rank) {
+	if (rank == RANK_DEV) return "[DEV]";
+	if (rank == RANK_ADMIN) return "[ADMIN]";
+	if (rank == RANK_MOD) return "[MOD]";
+	if (rank == RANK_BUILDER) return "[BUILDER]";
+	return "";
+}

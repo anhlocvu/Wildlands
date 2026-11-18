@@ -1,0 +1,58 @@
+// Client accessible speech output, ducking timer, and repeat-last-spoken tracker.
+
+#include "speech.nvgt"
+#include "../../common/constants.nvgt"
+
+timer clock;
+string g_last_spoken = "";
+timer g_duck_timer;
+uint64 g_duck_until_ms = 0;
+bool g_duck_enabled = true;
+bool g_speech_silent = false;
+
+void say(const string&in text, bool interrupt = false) {
+	if (text.length() == 0) return;
+	g_last_spoken = text;
+	g_duck_timer.restart();
+	int ms = int(text.length()) * 42;
+	if (ms < 500) ms = 500;
+	if (ms > 3200) ms = 3200;
+	g_duck_until_ms = uint64(ms);
+	if (!g_speech_silent) {
+		speak(text, interrupt);
+	}
+}
+
+void repeat_last_spoken() {
+	if (g_last_spoken.length() == 0) {
+		say("Nothing has been spoken yet.", true);
+		return;
+	}
+	say(g_last_spoken, true);
+}
+
+bool is_speech_ducking_active() {
+	if (!g_duck_enabled || g_duck_until_ms == 0) return false;
+	return g_duck_timer.elapsed < g_duck_until_ms;
+}
+
+void apply_speech_prefs(bool prefer_sr, int rate, int vol_pct, const string&in voice_name) {
+	use_sr = prefer_sr;
+	int r = rate;
+	if (r < -10) r = -10;
+	if (r > 10) r = 10;
+	int v = vol_pct;
+	if (v < 0) v = 0;
+	if (v > 100) v = 100;
+	tts.set_rate(r);
+	tts.set_volume(v);
+	if (voice_name.length() > 0) {
+		string[]@ voices = tts.list_voices();
+		for (uint i = 0; i < voices.length(); i++) {
+			if (voices[i] == voice_name) {
+				tts.set_voice(int(i));
+				break;
+			}
+		}
+	}
+}

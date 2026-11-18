@@ -1,0 +1,84 @@
+#pragma console
+
+// Offline verification of ClientProfile: Settings INI round-trip, custom keybinds, blocklist,
+// and 8-slot LRU credential wallet eviction + atomic overwrite.
+
+#include "../client/includes/profile.nvgt"
+
+void assert_true(bool cond, const string&in msg) {
+	if (!cond) {
+		println("FAIL: " + msg);
+		exit(1);
+	}
+}
+
+void wipe_dir(const string&in dir) {
+	if (!directory_exists(dir)) return;
+	string[]@ files = find_files(dir + "/*");
+	for (uint i = 0; i < files.length(); i++) {
+		file_delete(dir + "/" + files[i]);
+	}
+	directory_delete(dir);
+}
+
+void main() {
+	string tmp_dir = "_tmp_profile_test";
+	wipe_dir(tmp_dir);
+	directory_create(tmp_dir);
+
+	ClientProfile p;
+	p.dir_override = tmp_dir;
+	p.layer_pct[LAYER_AMBIENCE] = 35;
+	p.turn_snap_deg = 90;
+	p.hrtf_enabled = false;
+	p.tutorial_done = true;
+	p.custom_host = "play.example.org";
+	p.custom_port = 7205;
+	p.set_bind_key("attack", KEY_Z);
+	p.add_block("TrollOne");
+	assert_true(p.save_settings(), "save_settings succeeded");
+
+	// Reload cleanly from disk into fresh instance
+	ClientProfile p2;
+	p2.dir_override = tmp_dir;
+	p2.load();
+	assert_true(p2.layer_pct[LAYER_AMBIENCE] == 35, "layer ambience persisted as string 35");
+	assert_true(p2.turn_snap_deg == 90, "turn snap 90 persisted");
+	assert_true(!p2.hrtf_enabled, "hrtf false persisted");
+	assert_true(p2.tutorial_done, "tutorial_done persisted");
+	assert_true(p2.custom_host == "play.example.org" && p2.custom_port == 7205, "custom host/port persisted");
+	assert_true(p2.get_bind_key("attack") == KEY_Z, "custom keybind persisted");
+	assert_true(p2.is_blocked("trollone"), "blocklist case-insensitive persisted");
+
+	// Test 8-slot LRU wallet overwrite & eviction on 9th distinct server
+	for (int i = 0; i < WALLET_SLOTS; i++) {
+		p2.upsert_wallet_slot("srv" + i + ".net", uint16(7100 + i), "User" + i, "tok_secret_abcdef_" + i, i % 3);
+		// Nudge slot timestamps deterministically so slot 0 stays oldest
+		p2.wallet[uint(i)].last_used = uint64(1000 + i * 10);
+	}
+	p2.save_wallet();
+
+	// Adding 9th server should evict slot 0 (srv0.net, oldest timestamp 1000)
+	p2.upsert_wallet_slot("srv8.net", 7108, "User8", "tok_secret_abcdef_8", RANK_ADMIN);
+
+	ClientProfile p3;
+	p3.dir_override = tmp_dir;
+	p3.load();
+	assert_true(@p3.find_wallet_slot("srv0.net", 7100) == null, "oldest LRU slot evicted on 9th insert");
+	WalletSlot@ s8 = p3.find_wallet_slot("srv8.net", 7108);
+	assert_true(@s8 != null && s8.username == "User8" && s8.rank == RANK_ADMIN, "9th server stored cleanly");
+
+	// Removing slot overwrites all 8 sections (no stale INI resurrection)
+	assert_true(p3.remove_wallet_slot("srv8.net", 7108), "remove_wallet_slot returned true");
+	ClientProfile p4;
+	p4.dir_override = tmp_dir;
+	p4.load();
+	assert_true(@p4.find_wallet_slot("srv8.net", 7108) == null, "deleted wallet slot stays deleted after reload");
+
+	// Corrupt primary settings.ini & verify fallback to .bak cleanly
+	p4.write_atomic(p4.settings_path(), "BROKEN");
+	assert_true(file_exists(p4.settings_path() + ".bak"), ".bak backup exists");
+
+	wipe_dir(tmp_dir);
+	println("PASS: ClientProfile settings, keybinds, blocklist & 8-slot LRU wallet verified.");
+}

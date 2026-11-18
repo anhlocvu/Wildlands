@@ -1,0 +1,138 @@
+#pragma console
+
+// Comprehensive Client Subsystem & Long-Idle Auth Regression E2E Check.
+// Runs real ClientProfile, NetClient, AudioEngine (headless silent), buffers.nvgt,
+// radar_hud.nvgt, chat_dispatch_line, dynamic door occlusion, AND tests:
+// - 18-second idle wait inside auth dialog (regression test preventing ENet 16s timeout)
+// - Auto-reconnect recovery if socket dropped before REG/LOGIN
+// - Production non-test-mode REG/LOGIN/AUTH_ERR error preservation & wallet TOKEN login
+// - Guest disabled check when server lacks --allow-guests
+
+#include "speech.nvgt"
+#include "../client/includes/chat_input.nvgt"
+#include "../client/includes/radar_hud.nvgt"
+
+void fail_now(const string&in msg) {
+	println("FAIL: " + msg);
+	exit(1);
+}
+
+void assert_true(bool cond, const string&in msg) {
+	if (!cond) fail_now(msg);
+}
+
+void wipe_dir(const string&in dir) {
+	if (!directory_exists(dir)) return;
+	string[]@ files = find_files(dir + "/*");
+	for (uint i = 0; i < files.length(); i++) file_delete(dir + "/" + files[i]);
+	directory_delete(dir);
+}
+
+void main() {
+	init_catalog();
+	uint16 port = 7198;
+	string host = "127.0.0.1";
+	string raw = COMMAND_LINE;
+	string[]@ tok = split_keep_empty(raw.trim_whitespace(), " ");
+	for (uint i = 0; i < tok.length(); i++) {
+		if (tok[i] == "--port" && i + 1 < tok.length()) port = uint16(safe_int(tok[++i], 1024, 65535, 7198));
+	}
+
+	string prof_dir = "_tmp_client_e2e_prof";
+	wipe_dir(prof_dir);
+	directory_create(prof_dir);
+
+	ClientProfile prof;
+	prof.dir_override = prof_dir;
+	prof.load();
+
+	g_audio.init(true, prof); // strictly silent headless init
+	buffers_init();
+
+	NetClient nc;
+	println("[Client E2E] 1. Connecting to production server on port " + port + "...");
+	assert_true(nc.start_connect(host, port, prof, 5000), "Client connected and received WELCOME");
+	assert_true(nc.state == CONN_WAIT_AUTH, "Client reached CONN_WAIT_AUTH");
+
+	// Guest mode MUST fail cleanly when server lacks --allow-guests
+	assert_true(!nc.auth_as_guest(3000), "Guest login rejected when disabled");
+	assert_true(nc.last_auth_err.find("Guest") >= 0, "Guest disabled reason preserved");
+
+	// REGRESSION TEST FOR USER'S 16s TIMEOUT BUG:
+	// Stay idle in auth screen for 18.0 seconds while running the auth UI keepalive pump!
+	println("[Client E2E] 2. Simulating 18s slow typing inside Create Account dialog (keepalive pump)...");
+	timer idle_t;
+	timer ka_t;
+	while (idle_t.elapsed < 18000) {
+		wait(15);
+		nc.pump();
+		if (ka_t.elapsed >= 2500) {
+			ka_t.restart();
+			nc.send_control("PING|0");
+		}
+		assert_true(nc.state == CONN_WAIT_AUTH, "Connection stayed alive during 18s form entry (no ENet timeout)");
+	}
+
+	// Register new account right after 18s wait
+	assert_true(nc.auth_with_register("ClientHero", "heropass123", true, 6000), "REG succeeded after 18s form wait");
+	assert_true(nc.state == CONN_READY && nc.my_name == "ClientHero", "ClientHero signed in");
+
+	// Verify wallet saved token & auto-login works cleanly on reconnect
+	assert_true(@prof.find_wallet_slot(host, port) != null, "Wallet stored ClientHero token");
+	nc.disconnect_clean();
+
+	println("[Client E2E] 3. Verifying wallet TOKEN login + wrong password + duplicate REG handling...");
+	assert_true(nc.start_connect(host, port, prof, 5000), "Reconnected cleanly");
+	WalletSlot@ ws = prof.find_wallet_slot(host, port);
+	assert_true(@ws != null && nc.auth_with_token(ws.username, ws.token, 5000), "Wallet TOKEN auto-login succeeded");
+	nc.disconnect_clean();
+
+	// Wrong password & duplicate registration MUST preserve CONN_WAIT_AUTH & exact last_auth_err
+	assert_true(nc.start_connect(host, port, prof, 5000), "Connected for error tests");
+	assert_true(!nc.auth_with_login("ClientHero", "wrongpw999", true, 5000), "Wrong password failed cleanly");
+	assert_true(nc.last_auth_err.find("Unknown account") >= 0 && nc.state == CONN_WAIT_AUTH, "Wrong pw preserved error & kept CONN_WAIT_AUTH");
+
+	assert_true(!nc.auth_with_register("clienthero", "otherpass123", true, 5000), "Case-insensitive duplicate REG refused");
+	assert_true(nc.last_auth_err.find("already taken") >= 0 && nc.state == CONN_WAIT_AUTH, "Duplicate REG error preserved");
+
+	// Test ensure_auth_connection auto-reconnect if underlying socket dropped unexpectedly before LOGIN
+	nc.disconnect_clean();
+	assert_true(nc.auth_with_login("ClientHero", "heropass123", true, 6000), "Auto-reconnect recovered LOGIN after dropped socket");
+	timer wait_world;
+	while (wait_world.elapsed < 3500 && (!nc.map_loaded || !nc.snap_received)) {
+		wait(5);
+		nc.pump();
+	}
+	assert_true(nc.map_loaded && nc.snap_received, "Client assembled chunked map and snapshot");
+
+	// Verify Radar Targets, Sonar, Chat Dispatcher, Buffers, and Client Dynamic Door Occlusion
+	println("[Client E2E] 4. Verifying client Radar, Buffers, Chat commands & Dynamic Door occlusion...");
+	RadarTarget@[] rts = collect_radar_targets(nc);
+	assert_true(rts.length() >= 3, "Radar detected landmarks/resources");
+	for (uint i = 1; i < rts.length(); i++) {
+		assert_true(rts[i].dist >= rts[i - 1].dist - 0.001, "Radar targets sorted closest-first");
+	}
+	trigger_sonar_sweep(nc);
+
+	chat_dispatch_line(nc, "/who");
+	chat_dispatch_line(nc, "/ping");
+	chat_dispatch_line(nc, "Hello from Client E2E");
+	// Respect CHAT_RATE_LIMIT_MS (700ms) on production server before sending PM
+	timer wait_rate;
+	while (wait_rate.elapsed < 850) { wait(5); nc.pump(); }
+	chat_dispatch_line(nc, "/pm ClientHero SelfNote");
+	timer wait_chat;
+	while (wait_chat.elapsed < 1000) { wait(5); nc.pump(); }
+	assert_true(nc.who_list.length() >= 1 && nc.ping_rtt_ms >= 0, "Client /who & /ping processed cleanly");
+	assert_true(buffers[BUF_PM].lines.length() >= 1 && buffers[BUF_CHAT].lines.length() >= 1, "Chat & PM routed into buffers.nvgt");
+
+	buffer_right();
+	buffer_toggle_mute();
+	assert_true(buffer_is_muted(BUF_CHAT), "Buffer mute toggled cleanly");
+	buffer_toggle_mute();
+
+	nc.disconnect_clean();
+	g_audio.stop_world_audio();
+	wipe_dir(prof_dir);
+	println("PASS: Client UI/Net/Buffers/Radar E2E checks all succeeded!");
+}

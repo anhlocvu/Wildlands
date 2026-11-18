@@ -1,0 +1,739 @@
+#pragma console
+
+// Comprehensive Multi-Client End-to-End Gameplay Test Suite against live dedicated server.
+// Covers: Handshake/Auth/Duplicate Kick, Sprint/Stamina/Jump/Ramp Z/Wall Clamp,
+// Survival Gathering/Water/Crafting/Campfire Cooking/Consumables,
+// Wildlife Hunting (Melee & Ranged Bow)/Loot Drops, Safe Zone vs Duel/Blocking/Respawn,
+// Dual Builder (Door Lock/Open Occlusion, Repair, Chest Put/Take, Demolish Auth, Map Builder Reload),
+// Scoped Chat (Local Earshot, Team, Emote, PM+/r), Friends/Presence/Block/Unblock/Profile/Leaderboard,
+// Ranked Moderation (Kick, Mute, Ban, Unban, Hierarchy), and Server Restart Persistence.
+
+#include "../common/map.nvgt"
+#include "../common/items.nvgt"
+
+timer g_global_timer;
+
+void fail_now(const string&in msg) {
+	println("FAIL: " + msg);
+	exit(1);
+}
+
+void assert_true(bool cond, const string&in msg) {
+	if (!cond) fail_now(msg);
+}
+
+class NetEventRec {
+	uint ch;
+	string msg;
+}
+
+class BotEnt {
+	string id;
+	string kind;
+	string name;
+	double x = 0.0, y = 0.0, z = 0.0;
+}
+
+class TestBot {
+	string label;
+	network@ net;
+	uint64 peer = 0;
+	bool connected = false;
+	bool authed = false;
+	string name = "";
+	int rank = 0;
+	string token = "";
+	double x = 0.0, y = 0.0, z = 0.0;
+	int facing = 0;
+	int hp = 100, hunger = 100, thirst = 100, stamina = 100, warmth = 100;
+	bool snap_ok = false;
+
+	WorldMap map;
+	uint expected_chunks = 0;
+	string[] chunks;
+	bool map_ok = false;
+
+	string[] inv_lines;
+	string[] chest_lines;
+	uint obj_count = 0;
+	string last_obj_id = "";
+	string last_obj_type = "";
+	bool last_obj_locked = false;
+	bool last_obj_open = false;
+
+	BotEnt@[] snap_ents;
+	NetEventRec@[] log;
+
+	TestBot(const string&in lbl) {
+		label = lbl;
+		@net = network();
+		net.receive_timeout_event = true;
+		assert_true(net.setup_client(MAX_CHANNELS, 2), label + " setup_client");
+	}
+
+	bool connect_and_hello(const string&in host, uint16 port, uint proto_ver = PROTO_VERSION, bool expect_welcome = true) {
+		peer = net.connect(host, port);
+		assert_true(peer != 0, label + " connect start");
+		timer t;
+		while (t.elapsed < 3000) {
+			if (g_global_timer.elapsed > 45000) fail_now("Global integration timeout");
+			wait(5);
+			const network_event@ ev = net.request(0);
+			if (@ev == null || ev.type == event_none) continue;
+			if (ev.type == event_connect) {
+				connected = true;
+				net.send(peer, pkt_3("HELLO", "" + proto_ver, GAME_VERSION), CH_CONTROL, true);
+				net.flush();
+				break;
+			}
+		}
+		if (!connected) fail_now(label + " failed ENet connect");
+		if (expect_welcome) return wait_for_op(CH_CONTROL, "WELCOME", 3000) != "";
+		return true;
+	}
+
+	void close() {
+		if (@net != null) {
+			if (peer != 0) { net.disconnect_peer_softly(peer); net.flush(); }
+			net.destroy(true);
+			@net = null;
+		}
+		connected = false;
+		peer = 0;
+	}
+
+	void send_ctrl(const string&in s) { net.send(peer, s, CH_CONTROL, true); net.flush(); }
+	void send_chat(const string&in s) { net.send(peer, s, CH_CHAT, true); net.flush(); }
+	void send_input(uint mask, int fac) { net.send(peer, "INPUT|" + mask + "|" + fac, CH_INPUT, false); }
+
+	int inv_slot_of(const string&in iid) {
+		for (uint i = 0; i < inv_lines.length(); i++) {
+			if (inv_lines[i].starts_with(iid + ":")) return int(i);
+		}
+		return -1;
+	}
+
+	int inv_qty_of(const string&in iid) {
+		int q = 0;
+		for (uint i = 0; i < inv_lines.length(); i++) {
+			if (inv_lines[i].starts_with(iid + ":")) {
+				string[]@ kv = split_keep_empty(inv_lines[i], ":");
+				q += safe_int(field(kv, 1, "0"), 0, 9999, 0);
+			}
+		}
+		return q;
+	}
+
+	BotEnt@ find_ent_prefix(const string&in id_prefix) {
+		for (uint i = 0; i < snap_ents.length(); i++) {
+			if (snap_ents[i].id.starts_with(id_prefix)) return snap_ents[i];
+		}
+		return null;
+	}
+
+	void pump_once() {
+		if (@net == null) return;
+		while (true) {
+			const network_event@ ev = net.request(0);
+			if (@ev == null || ev.type == event_none) break;
+			if (ev.type == event_disconnect || ev.type == event_disconnect_timeout) {
+				connected = false;
+				NetEventRec r; r.ch = 99; r.msg = "DISCONNECT";
+				log.insert_last(r);
+				continue;
+			}
+			if (ev.type == event_receive) {
+				NetEventRec r; r.ch = ev.channel; r.msg = ev.message;
+				log.insert_last(r);
+				process_msg(ev.channel, ev.message);
+			}
+		}
+	}
+
+	void process_msg(uint ch, const string&in raw) {
+		string[]@ p = pkt_parse(raw);
+		string op = pkt_op(p);
+		if (ch == CH_CONTROL && op == "AUTH_OK") {
+			authed = true;
+			name = field(p, 1, "");
+			rank = safe_int(field(p, 2, "0"), 0, 10, 0);
+			token = field(p, 3, "-");
+		} else if (ch == CH_CONTROL && op == "MAP_HDR") {
+			expected_chunks = uint(safe_int(field(p, 6, "1"), 1, 256, 1));
+			chunks.resize(expected_chunks);
+			for (uint i = 0; i < expected_chunks; i++) chunks[i] = "";
+			map_ok = false;
+		} else if (ch == CH_CONTROL && op == "MAP_CHK") {
+			uint idx = uint(safe_int(field(p, 1, "0"), 0, 255, 0));
+			if (idx < chunks.length()) {
+				chunks[idx] = field(p, 2, "");
+				bool ok = true;
+				for (uint i = 0; i < chunks.length(); i++) {
+					if (chunks[i].length() == 0) { ok = false; break; }
+				}
+				if (ok) {
+					string joined = "";
+					for (uint i = 0; i < chunks.length(); i++) joined += chunks[i];
+					string merr;
+					map_ok = map.load_from_string(wire_unescape(joined), merr);
+				}
+			}
+		} else if (ch == CH_CONTROL && op == "INV") {
+			string raw_i = field(p, 2, "-");
+			inv_lines.resize(0);
+			if (raw_i != "-") inv_lines = split_keep_empty(raw_i, ";");
+		} else if (ch == CH_CONTROL && op == "CHEST_DATA") {
+			string raw_c = field(p, 2, "-");
+			chest_lines.resize(0);
+			if (raw_c != "-") chest_lines = split_keep_empty(raw_c, ";");
+		} else if (ch == CH_CONTROL && op == "MAP_OBJ") {
+			obj_count++;
+			last_obj_id = field(p, 2, "");
+			last_obj_type = field(p, 3, "");
+			last_obj_locked = field(p, 10, "0") == "1";
+			last_obj_open = field(p, 11, "0") == "1";
+		} else if (ch == CH_SNAPSHOT && op == "SNAP") {
+			x = safe_double(field(p, 2, "0"), 0.0, 5000.0, 0.0);
+			y = safe_double(field(p, 3, "0"), 0.0, 5000.0, 0.0);
+			z = safe_double(field(p, 4, "0"), -100.0, 500.0, 0.0);
+			facing = safe_int(field(p, 5, "0"), 0, 359, 0);
+			hp = safe_int(field(p, 6, "100"), 0, 100, 100);
+			hunger = safe_int(field(p, 7, "100"), 0, 100, 100);
+			thirst = safe_int(field(p, 8, "100"), 0, 100, 100);
+			stamina = safe_int(field(p, 9, "100"), 0, 100, 100);
+			warmth = safe_int(field(p, 10, "100"), 0, 100, 100);
+			snap_ents.resize(0);
+			string raw_e = field(p, 14, "-");
+			if (raw_e != "-" && raw_e.length() > 0) {
+				string[]@ rows = split_keep_empty(raw_e, ";");
+				for (uint i = 0; i < rows.length(); i++) {
+					string[]@ c = split_keep_empty(rows[i], ",");
+					BotEnt be;
+					be.id = field(c, 0, "");
+					be.kind = field(c, 1, "");
+					be.name = wire_unescape(field(c, 2, ""));
+					be.x = safe_double(field(c, 3, "0"), 0.0, 5000.0, 0.0);
+					be.y = safe_double(field(c, 4, "0"), 0.0, 5000.0, 0.0);
+					be.z = safe_double(field(c, 5, "0"), -100.0, 500.0, 0.0);
+					if (be.id.length() > 0) snap_ents.insert_last(be);
+				}
+			}
+			snap_ok = true;
+		}
+	}
+
+	string wait_for_op(uint ch, const string&in prefix, uint timeout_ms = 3000) {
+		timer t;
+		while (t.elapsed < timeout_ms) {
+			if (g_global_timer.elapsed > 45000) fail_now("Global integration timeout");
+			pump_once();
+			for (uint i = 0; i < log.length(); i++) {
+				if (log[i].ch == ch && log[i].msg.starts_with(prefix)) {
+					string found = log[i].msg;
+					log.remove_at(i);
+					return found;
+				}
+			}
+			wait(5);
+		}
+		return "";
+	}
+
+	void drain(uint ms = 120) {
+		timer t;
+		while (t.elapsed < ms) { pump_once(); wait(5); }
+	}
+}
+
+void pump_pair(TestBot@ a, TestBot@ b, TestBot@ c = null, uint ms = 120) {
+	timer t;
+	while (t.elapsed < ms) {
+		if (@a != null) a.pump_once();
+		if (@b != null) b.pump_once();
+		if (@c != null) c.pump_once();
+		wait(5);
+	}
+}
+
+bool has_msg_containing(TestBot@ b, const string&in substr) {
+	for (uint i = 0; i < b.log.length(); i++) {
+		if (b.log[i].msg.find(substr) >= 0) return true;
+	}
+	return false;
+}
+
+void run_phase_1(const string&in host, uint16 port) {
+	println("[Phase 1] Testing Auth, Movement Physics, Survival, Wildlife Combat, Dual Builder, Social & Moderation...");
+
+	// 1. Protocol mismatch + Guest check + Dev auto-promote + Duplicate Login Kick
+	TestBot@ bad = TestBot("BadVer");
+	bad.connect_and_hello(host, port, 999, false);
+	assert_true(bad.wait_for_op(CH_CONTROL, "REFUSE|ver_mismatch|", 2500) != "", "Protocol mismatch refused");
+	bad.close();
+
+	TestBot@ dev = TestBot("Dev");
+	assert_true(dev.connect_and_hello(host, port), "Dev WELCOME");
+	dev.send_ctrl("REG|TestDev|devpass123");
+	assert_true(dev.wait_for_op(CH_CONTROL, "AUTH_OK|TestDev|", 3000) != "", "Dev AUTH_OK");
+	assert_true(dev.rank == RANK_DEV, "devs.txt promoted TestDev to RANK_DEV");
+	assert_true(dev.wait_for_op(CH_CONTROL, "MAP_HDR|", 3000) != "", "Dev MAP_HDR");
+	dev.drain(300);
+	assert_true(dev.map_ok && dev.snap_ok, "Dev assembled map & snapshot");
+
+	TestBot@ alice = TestBot("Alice");
+	assert_true(alice.connect_and_hello(host, port), "Alice WELCOME");
+	alice.send_ctrl("REG|Alice|alicepass123");
+	assert_true(alice.wait_for_op(CH_CONTROL, "AUTH_OK|Alice|", 3000) != "", "Alice REG OK");
+	alice.drain(300);
+
+	TestBot@ alice2 = TestBot("Alice2");
+	assert_true(alice2.connect_and_hello(host, port), "Alice2 WELCOME");
+	alice2.send_ctrl("LOGIN|Alice|alicepass123");
+	assert_true(alice2.wait_for_op(CH_CONTROL, "AUTH_OK|Alice|", 3000) != "", "Alice2 login rotated token");
+	assert_true(alice.wait_for_op(CH_CONTROL, "REFUSE|duplicate_login|", 2500) != "", "Duplicate login kicked old session");
+	alice.close();
+	@alice = @alice2;
+	string alice_token = alice.token;
+	alice.drain(250);
+
+	TestBot@ bob = TestBot("Bob");
+	assert_true(bob.connect_and_hello(host, port), "Bob WELCOME");
+	bob.send_ctrl("REG|Bob|bobpass123");
+	assert_true(bob.wait_for_op(CH_CONTROL, "AUTH_OK|Bob|", 3000) != "", "Bob REG OK");
+	bob.drain(250);
+
+	// 2. Movement Physics: Walk, Sprint + Stamina Drain/Regen, Jump Z, Watchtower Ramp Z, Wall Clamping
+	double x0 = alice.x;
+	timer mt;
+	while (mt.elapsed < 500) { alice.send_input(IN_FWD | IN_SPRINT, 90); pump_pair(alice, dev, bob, 25); }
+	alice.send_input(0, 90);
+	alice.drain(120);
+	assert_true(alice.x > x0 + 1.5 && alice.stamina < 100, "Sprint moved East faster and consumed stamina");
+
+	// Jump Z check
+	alice.log.resize(0);
+	alice.send_input(IN_JUMP, 90);
+	pump_pair(alice, dev, null, 110);
+	double peak_z = alice.z;
+	alice.send_input(0, 90);
+	pump_pair(alice, dev, null, 200);
+	assert_true(peak_z > 0.25, "Jump lifted player Z cleanly above ground");
+
+	// Watchtower Ramp Z (Watchtower Stairs at x=42..46, y=48..54 rising North -> Deck at y=54..62 Z=3.0)
+	dev.send_ctrl("DEV|tp|TestDev|44|48|0");
+	dev.drain(200);
+	timer wt_t;
+	while (wt_t.elapsed < 1900) { dev.send_input(IN_FWD, 0); dev.pump_once(); wait(25); }
+	dev.send_input(0, 0);
+	dev.drain(150);
+	assert_true(dev.z >= 2.4, "Walking Watchtower ramp elevated Z to watchtower height (z=" + fmt2(dev.z) + ")");
+
+	// Solid wall clamping (Lodge North Wall at x=52..62, y=56..57)
+	dev.send_ctrl("DEV|tp|TestDev|57|54|0");
+	dev.drain(150);
+	dev.log.resize(0);
+	timer wall_t;
+	while (wall_t.elapsed < 550) { dev.send_input(IN_FWD, 0); dev.pump_once(); wait(25); }
+	dev.send_input(0, 0);
+	dev.drain(120);
+	assert_true(dev.y < 56.1, "Solid wall prevented walking through Lodge North Wall");
+
+	// 3. Survival: Gather Tree, Berry Bush, Water Drink, Craft + Campfire-Gate + Cook + Consume
+	assert_true(alice.map.resources.length() >= 3, "Starter map has resource spawners");
+	MapResourceSpawn@ tree_node = null, berry_node = null;
+	for (uint i = 0; i < alice.map.resources.length(); i++) {
+		if (alice.map.resources[i].type == "tree" && @tree_node == null) @tree_node = alice.map.resources[i];
+		if (alice.map.resources[i].type == "berry_bush" && @berry_node == null) @berry_node = alice.map.resources[i];
+	}
+	assert_true(@tree_node != null && @berry_node != null, "Found tree and berry bush on map");
+
+	dev.send_ctrl("DEV|tp|Alice|" + int(tree_node.x) + "|" + int(tree_node.y) + "|0");
+	pump_pair(alice, dev, null, 200);
+	int wood_before = alice.inv_qty_of("wood");
+	alice.send_ctrl("ACT|gather");
+	assert_true(alice.wait_for_op(CH_CONTROL, "INV|", 2500) != "", "Tree gather updated INV");
+	assert_true(alice.inv_qty_of("wood") > wood_before, "Tree gather yielded wood");
+
+	dev.send_ctrl("DEV|tp|Alice|" + int(berry_node.x) + "|" + int(berry_node.y) + "|0");
+	pump_pair(alice, dev, null, 200);
+	int b_before = alice.inv_qty_of("berries");
+	alice.send_ctrl("ACT|gather");
+	pump_pair(alice, dev, null, 250);
+	// Wait cooldown & ensure inventory gained berries (or handle gather rate 650ms)
+	if (alice.inv_qty_of("berries") == b_before) {
+		pump_pair(alice, dev, null, 700);
+		alice.send_ctrl("ACT|gather");
+		assert_true(alice.wait_for_op(CH_CONTROL, "INV|", 2500) != "", "Berry gather updated INV");
+	}
+	assert_true(alice.inv_qty_of("berries") > b_before, "Berry bush gather yielded berries");
+
+	// Drink stream water at Silver Creek South (x=82..92, y=20..45)
+	dev.send_ctrl("DEV|tp|Alice|87|30|0");
+	pump_pair(alice, dev, null, 750);
+	alice.log.resize(0);
+	alice.send_ctrl("ACT|gather");
+	assert_true(alice.wait_for_op(CH_SPEECH, "SPEAK|", 2500).find("stream water") >= 0, "Drank fresh stream water at creek");
+
+	// Move Alice to open Wilderness spot (82, 82) for Crafting & Cooking & Duel tests
+	dev.send_ctrl("DEV|tp|Alice|82|82|0");
+	dev.send_ctrl("DEV|spawn_item|Alice|raw_meat|1");
+	dev.send_ctrl("DEV|spawn_item|Alice|wood|10");
+	dev.send_ctrl("DEV|spawn_item|Alice|stone|6");
+	pump_pair(alice, dev, null, 250);
+
+	// Cooking far from campfire MUST fail
+	alice.log.resize(0);
+	alice.send_ctrl("ACT|craft|r_cook_meat");
+	alice.drain(150);
+	assert_true(has_msg_containing(alice, "lit campfire"), "Fire-required recipe refused far from campfire");
+
+	// Craft campfire_kit, build campfire, then cook raw_meat -> cooked_meat!
+	alice.drain(100);
+	alice.log.resize(0);
+	alice.send_ctrl("ACT|craft|r_campfire");
+	assert_true(alice.wait_for_op(CH_CONTROL, "INV|", 2500) != "", "Crafted campfire_kit");
+	assert_true(alice.inv_qty_of("campfire_kit") >= 1, "campfire_kit added to pack");
+	alice.send_ctrl("ACT|build|campfire");
+	assert_true(alice.wait_for_op(CH_CONTROL, "MAP_OBJ|add|", 2500) != "", "Built campfire in wilderness");
+	alice.drain(120);
+	alice.log.resize(0);
+	alice.send_ctrl("ACT|craft|r_cook_meat");
+	assert_true(alice.wait_for_op(CH_CONTROL, "INV|", 2500) != "", "Cooked meat near campfire");
+	assert_true(alice.inv_qty_of("cooked_meat") >= 1, "cooked_meat created near fire");
+
+	// Consume cooked_meat on belt
+	int cm_slot = alice.inv_slot_of("cooked_meat");
+	assert_true(cm_slot >= 0 && cm_slot < BELT_SLOTS, "cooked_meat in belt slot");
+	alice.send_ctrl("ACT|equip|" + cm_slot);
+	alice.send_ctrl("ACT|use_belt");
+	pump_pair(alice, dev, null, 250);
+	assert_true(alice.inv_qty_of("cooked_meat") == 0, "Eating cooked_meat consumed stack");
+
+	// 4. Wildlife Hunting (Melee + Bow & Arrow + Loot Drop) & Safe Zone vs Duel + Guard Block
+	dev.send_ctrl("DEV|set_wildlife|10");
+	dev.send_ctrl("DEV|spawn_item|TestDev|stone_axe|1");
+	dev.send_ctrl("DEV|spawn_item|TestDev|wooden_bow|1");
+	dev.send_ctrl("DEV|spawn_item|TestDev|arrow|5");
+	// Search live mob in Dev's earshot or roam northern woods (55, 85) where rabbits/deer/wolves spawn
+	dev.send_ctrl("DEV|tp|TestDev|55|88|0");
+	dev.drain(400);
+	BotEnt@ mob = dev.find_ent_prefix("m");
+	if (@mob == null) { dev.send_ctrl("DEV|tp|TestDev|35|88|0"); dev.drain(400); @mob = dev.find_ent_prefix("m"); }
+	if (@mob != null) {
+		// Teleport directly behind mob within melee range and strike until killed!
+		dev.send_ctrl("DEV|tp|TestDev|" + fmt2(mob.x) + "|" + fmt2(mob.y - 1.0) + "|0");
+		dev.send_input(0, 0); // Facing North (+Y) toward mob
+		dev.drain(150);
+		int bow_slot = dev.inv_slot_of("wooden_bow");
+		if (bow_slot >= 0) {
+			dev.send_ctrl("ACT|equip|" + bow_slot);
+			dev.drain(80);
+			int arr_before = dev.inv_qty_of("arrow");
+			dev.send_ctrl("ACT|attack");
+			dev.drain(250);
+			assert_true(dev.inv_qty_of("arrow") == arr_before - 1, "Firing wooden_bow consumed 1 arrow");
+		}
+		int axe_slot = dev.inv_slot_of("stone_axe");
+		if (axe_slot >= 0) dev.send_ctrl("ACT|equip|" + axe_slot);
+		for (int k = 0; k < 10; k++) {
+			BotEnt@ cur_m = dev.find_ent_prefix("m");
+			if (@cur_m == null) break;
+			dev.send_ctrl("DEV|tp|TestDev|" + fmt2(cur_m.x) + "|" + fmt2(cur_m.y - 0.9) + "|0");
+			dev.send_input(0, 0);
+			dev.drain(100);
+			dev.send_ctrl("ACT|attack");
+			dev.drain(700);
+			if (has_msg_containing(dev, "You defeated")) break;
+		}
+		assert_true(has_msg_containing(dev, "You defeated"), "Melee + Bow hunt defeated wildlife mob");
+		BotEnt@ drop = dev.find_ent_prefix("d");
+		if (@drop != null) {
+			dev.send_ctrl("DEV|tp|TestDev|" + fmt2(drop.x) + "|" + fmt2(drop.y) + "|0");
+			dev.drain(150);
+			dev.log.resize(0);
+			dev.send_ctrl("ACT|gather");
+			dev.drain(200);
+			assert_true(has_msg_containing(dev, "Picked up"), "Picked up LootDrop from slain wildlife");
+		}
+	}
+
+	// Verify Safe Zone blocks PvP, while outside Safe Zone Duel + Blocking + Respawn work!
+	dev.send_ctrl("DEV|tp|TestDev|50|46|0");
+	dev.send_ctrl("DEV|tp|Bob|50|47|0");
+	pump_pair(dev, bob, alice, 200);
+	dev.send_ctrl("ACT|equip|0");
+	dev.send_input(0, 0);
+	dev.drain(80);
+	dev.send_ctrl("ACT|attack");
+	pump_pair(dev, bob, null, 200);
+	assert_true(bob.hp == 100, "Oakwood Settlement Safe Zone prevented unsolicited PvP damage");
+
+	// Move Dev and Bob outside safe zone (88, 88) for Duel + Blocking test
+	dev.send_ctrl("DEV|tp|TestDev|88|88|0");
+	dev.send_ctrl("DEV|tp|Bob|88|89|0");
+	pump_pair(dev, bob, null, 200);
+	dev.send_ctrl("SOCIAL|duel_ask|Bob");
+	pump_pair(dev, bob, null, 150);
+	bob.log.resize(0);
+	bob.send_ctrl("SOCIAL|duel_acc|TestDev");
+	pump_pair(dev, bob, null, 250);
+	assert_true(has_msg_containing(bob, "Duel begun"), "Duel started cleanly");
+
+	bob.log.resize(0);
+	bob.send_input(IN_BLOCK, 180);
+	pump_pair(dev, bob, null, 150);
+	dev.send_input(0, 0);
+	dev.send_ctrl("ACT|attack");
+	pump_pair(dev, bob, null, 250);
+	assert_true(has_msg_containing(bob, "Blocked TestDev"), "Guard Block reduced incoming duel damage");
+	assert_true(bob.hp > 85 && bob.hp < 100, "Blocked hit dealt ~1/3 damage");
+
+	// Finish duel without block -> Bob respawns back at safe spawn with 100 HP!
+	bob.send_input(0, 180);
+	for (int s = 0; s < 12 && !has_msg_containing(bob, "Respawned"); s++) {
+		pump_pair(dev, bob, null, 700);
+		dev.send_ctrl("ACT|attack");
+		pump_pair(dev, bob, null, 150);
+	}
+	assert_true(has_msg_containing(bob, "Respawned") && bob.hp == 100, "Defeated player respawned safely at 100 HP");
+
+	// 5. Dual Builder Mechanics (Locked Door Rejects Unauthorized Bob, Repair, Chest Put/Take, Demolish Auth, Map Builder)
+	dev.send_ctrl("DEV|tp|Alice|75|75|0");
+	dev.send_ctrl("DEV|tp|Bob|76|75|0");
+	dev.send_ctrl("DEV|spawn_item|Alice|wood_door_kit|1");
+	dev.send_ctrl("DEV|spawn_item|Alice|chest_kit|1");
+	dev.send_ctrl("DEV|spawn_item|Alice|wood_wall_kit|1");
+	dev.send_ctrl("DEV|spawn_item|Alice|wood|8");
+	pump_pair(alice, bob, dev, 300);
+
+	alice.send_input(0, 90);
+	alice.drain(100);
+	alice.log.resize(0);
+	alice.send_ctrl("ACT|build|wood_door");
+	assert_true(alice.wait_for_op(CH_CONTROL, "MAP_OBJ|add|", 2500) != "", "Alice built wood_door");
+	alice.log.resize(0);
+	alice.send_ctrl("ACT|lock");
+	assert_true(alice.wait_for_op(CH_CONTROL, "MAP_OBJ|upd|", 2500) != "", "Alice locked wood_door");
+
+	// Bob tries to interact with Alice's locked door -> DENIED!
+	bob.log.resize(0);
+	bob.send_ctrl("ACT|interact");
+	pump_pair(alice, bob, null, 200);
+	assert_true(has_msg_containing(bob, "locked by Alice"), "Unauthorized Bob refused by Alice's locked door");
+
+	// Test temporary wall place -> repair -> unauthorized demolish fail -> owner demolish pass
+	dev.send_ctrl("DEV|tp|Alice|72|75|0");
+	pump_pair(alice, bob, dev, 200);
+	alice.log.resize(0);
+	alice.send_ctrl("ACT|build|wood_wall");
+	assert_true(alice.wait_for_op(CH_CONTROL, "MAP_OBJ|add|", 2500) != "", "Alice built wood_wall");
+	dev.send_ctrl("DEV|tp|Bob|73|75|0");
+	pump_pair(alice, bob, dev, 200);
+	bob.log.resize(0);
+	bob.send_ctrl("ACT|demolish");
+	pump_pair(alice, bob, null, 200);
+	assert_true(has_msg_containing(bob, "own structures"), "Bob cannot demolish Alice's wood_wall");
+	alice.log.resize(0);
+	alice.send_ctrl("ACT|repair");
+	alice.send_ctrl("ACT|demolish");
+	assert_true(alice.wait_for_op(CH_CONTROL, "MAP_OBJ|del|", 2500) != "", "Alice demolished owned wood_wall");
+
+	// Place Alice's persistent Chest slightly West cleanly away from Door
+	dev.send_ctrl("DEV|tp|Alice|70|75|0");
+	pump_pair(alice, dev, null, 200);
+	alice.send_input(0, 270);
+	alice.drain(100);
+	alice.log.resize(0);
+	alice.send_ctrl("ACT|build|chest");
+	assert_true(alice.wait_for_op(CH_CONTROL, "MAP_OBJ|add|", 2500) != "", "Alice placed persistent Chest");
+	string chest_id = alice.last_obj_id;
+	alice.drain(80);
+	alice.log.resize(0);
+	alice.send_ctrl("ACT|interact");
+	assert_true(alice.wait_for_op(CH_CONTROL, "CHEST_DATA|", 2500) != "", "Opened chest");
+	int w_slot = alice.inv_slot_of("wood");
+	assert_true(w_slot >= 0, "Alice holds wood");
+	alice.log.resize(0);
+	alice.send_ctrl("CHEST|put|" + chest_id + "|" + w_slot + "|2");
+	assert_true(alice.wait_for_op(CH_CONTROL, "CHEST_DATA|", 2500) != "", "Deposited wood into chest");
+	alice.log.resize(0);
+	alice.send_ctrl("CHEST|take|" + chest_id + "|0|1");
+	assert_true(alice.wait_for_op(CH_CONTROL, "CHEST_DATA|", 2500) != "", "Withdrew 1 wood from chest");
+	assert_true(alice.chest_lines.length() > 0 && alice.chest_lines[0].starts_with("wood:"), "Remaining wood persisted inside chest");
+
+	// Audio Map Builder + Non-Builder check
+	alice.log.resize(0);
+	alice.send_ctrl("BUILDMAP|toggle");
+	alice.drain(150);
+	assert_true(has_msg_containing(alice, "Builder rank"), "Rank 0 player denied Map Builder");
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|toggle");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BUILDER_POS|", 2500) != "", "Dev opened Map Builder");
+	alice.drain(80);
+	alice.log.resize(0);
+	dev.send_ctrl("BUILDMAP|emitter|CheckBeacon|builder/beacon_ping.ogg|18|0.7");
+	assert_true(alice.wait_for_op(CH_CONTROL, "MAP_HDR|", 2500) != "", "Live Map Builder edit reloaded map across clients");
+
+	// 6. Scoped Chat (Local Earshot Isolation, Team, Emote, PM+/r), Social Profile/Leaderboard, Friends & Unblock, Ranked Mod
+	dev.send_ctrl("DEV|tp|Alice|80|80|0");
+	dev.send_ctrl("DEV|tp|TestDev|81|80|0");
+	dev.send_ctrl("DEV|tp|Bob|10|10|0"); // > 95 tiles away!
+	pump_pair(alice, dev, bob, 250);
+
+	dev.log.resize(0);
+	bob.log.resize(0);
+	alice.send_chat("CHAT|local|-|Area check");
+	pump_pair(alice, dev, bob, 250);
+	assert_true(has_msg_containing(dev, "Area check"), "Nearby Dev received Local chat");
+	assert_true(!has_msg_containing(bob, "Area check"), "Far Bob out of earshot did NOT receive Local chat");
+
+	dev.send_chat("CHAT|pm|Alice|SecretHello");
+	assert_true(alice.wait_for_op(CH_CHAT, "CHAT_MSG|pm_in|TestDev|", 2500) != "", "PM received");
+	alice.send_chat("CHAT|pm|r|ReplyBack");
+	assert_true(dev.wait_for_op(CH_CHAT, "CHAT_MSG|pm_in|Alice|", 2500) != "", "PM /r reply routed cleanly");
+
+	// Block & Unblock toggle + Friends + Profile + Leaderboard
+	alice.send_ctrl("SOCIAL|block|Bob");
+	alice.drain(100);
+	alice.log.resize(0);
+	bob.send_chat("CHAT|global|-|BlockedMsg");
+	pump_pair(alice, bob, null, 200);
+	assert_true(!has_msg_containing(alice, "BlockedMsg"), "Blocked Bob message suppressed");
+	alice.send_ctrl("SOCIAL|unblock|Bob");
+	alice.drain(100);
+	alice.log.resize(0);
+	bob.send_chat("CHAT|global|-|UnblockedMsg");
+	pump_pair(alice, bob, null, 200);
+	assert_true(has_msg_containing(alice, "UnblockedMsg"), "Unblocked Bob message delivered again");
+
+	alice.send_ctrl("SOCIAL|friend_add|Bob");
+	alice.send_ctrl("SOCIAL|leaderboard");
+	alice.send_ctrl("SOCIAL|profile|Alice");
+	pump_pair(alice, dev, bob, 200);
+	assert_true(has_msg_containing(alice, "Top survivors") && has_msg_containing(alice, "gathers"), "Leaderboard & Profile stats returned");
+
+	// Ranked Moderation Hierarchy (Mod cannot kick sideways or upwards; Dev mutes & bans cleanly)
+	dev.send_ctrl("DEV|grant_rank|Alice|2");
+	dev.send_ctrl("DEV|grant_rank|Bob|2");
+	pump_pair(alice, dev, bob, 200);
+
+	alice.log.resize(0);
+	alice.send_ctrl("MOD|kick|Bob|sideways");
+	alice.drain(150);
+	assert_true(has_msg_containing(alice, "equal or higher rank"), "Sideways Mod->Mod refused");
+
+	alice.log.resize(0);
+	alice.send_ctrl("MOD|kick|TestDev|upwards");
+	alice.drain(150);
+	assert_true(has_msg_containing(alice, "equal or higher rank"), "Upward Mod->Dev refused");
+
+	dev.send_ctrl("MOD|mute|Bob|5|spamming");
+	pump_pair(dev, bob, null, 150);
+	bob.log.resize(0);
+	bob.send_chat("CHAT|global|-|ShouldFailMuted");
+	bob.drain(150);
+	assert_true(has_msg_containing(bob, "You are muted"), "Muted Bob refused from sending chat");
+
+	dev.send_ctrl("MOD|ban|Bob|30|testban");
+	assert_true(bob.wait_for_op(CH_CONTROL, "REFUSE|banned|", 2500) != "", "Banned Bob kicked with reason");
+
+	// Position Alice beside her chest at (70, 75) and flush cleanly before restart persistence phase
+	dev.send_ctrl("DEV|tp|Alice|70|75|0");
+	pump_pair(alice, dev, null, 200);
+	dev.send_ctrl("DEV|save_now");
+	dev.drain(250);
+
+	string tok_path = directory_exists("_tmp_net_test") ? "_tmp_net_test/phase1_token.txt" : "tools/_tmp_net_test/phase1_token.txt";
+	assert_true(file_put_contents(tok_path, alice_token, false), "Save Phase 1 token");
+
+	alice.close();
+	dev.close();
+	bob.close();
+	println("PASS: Phase 1 full gameplay integration checks succeeded!");
+}
+
+void run_phase_2(const string&in host, uint16 port) {
+	println("[Phase 2] Verifying restart persistence (structures, chest, ban/unban, WHO numeric rank, PING, LOGOUT)...");
+	string tok_path = directory_exists("_tmp_net_test") ? "_tmp_net_test/phase1_token.txt" : "tools/_tmp_net_test/phase1_token.txt";
+	string saved_tok = file_get_contents(tok_path).trim_whitespace();
+	assert_true(saved_tok.length() >= 32, "Loaded saved Alice token");
+
+	TestBot@ alice = TestBot("AliceRestart");
+	assert_true(alice.connect_and_hello(host, port), "AliceRestart WELCOME");
+	alice.send_ctrl("TOKEN|Alice|" + saved_tok);
+	assert_true(alice.wait_for_op(CH_CONTROL, "AUTH_OK|Alice|", 3000) != "", "Token auth succeeded after restart");
+	alice.drain(450);
+
+	bool saw_door = false, saw_chest = false;
+	for (uint i = 0; i < alice.log.length(); i++) {
+		if (alice.log[i].msg.starts_with("MAP_OBJ|add|")) {
+			if (alice.log[i].msg.find("|wood_door|") >= 0) saw_door = true;
+			if (alice.log[i].msg.find("|chest|") >= 0) saw_chest = true;
+		}
+	}
+	assert_true(saw_door && saw_chest, "Door & Chest structures persisted across restart");
+
+	// Interact with persisted chest (nearest at 70,75)
+	alice.chest_lines.resize(0);
+	alice.send_ctrl("ACT|interact");
+	assert_true(alice.wait_for_op(CH_CONTROL, "CHEST_DATA|", 2500) != "", "Persisted chest opened after restart");
+	assert_true(alice.chest_lines.length() > 0 && alice.chest_lines[0].starts_with("wood:"), "Chest wood persisted across restart");
+
+	// Banned Bob STILL refused across server restart, then Dev unbans Bob cleanly!
+	TestBot@ banned_bob = TestBot("BannedBob");
+	assert_true(banned_bob.connect_and_hello(host, port), "BannedBob WELCOME");
+	banned_bob.send_ctrl("LOGIN|Bob|bobpass123");
+	string ban_err = banned_bob.wait_for_op(CH_CONTROL, "AUTH_ERR|", 2500);
+	assert_true(ban_err.find("testban") >= 0, "Ban reason persisted across restart");
+	banned_bob.close();
+
+	TestBot@ dev = TestBot("Dev2");
+	assert_true(dev.connect_and_hello(host, port), "Dev2 WELCOME");
+	dev.send_ctrl("LOGIN|TestDev|devpass123");
+	assert_true(dev.wait_for_op(CH_CONTROL, "AUTH_OK|TestDev|", 3000) != "", "Dev2 logged back in");
+	dev.send_ctrl("MOD|unban|Bob");
+	dev.drain(150);
+
+	TestBot@ unbanned_bob = TestBot("UnbannedBob");
+	assert_true(unbanned_bob.connect_and_hello(host, port), "UnbannedBob WELCOME");
+	unbanned_bob.send_ctrl("LOGIN|Bob|bobpass123");
+	assert_true(unbanned_bob.wait_for_op(CH_CONTROL, "AUTH_OK|Bob|", 3000) != "", "Unbanned Bob logged in cleanly");
+	unbanned_bob.close();
+
+	// Verify WHO sends numeric rank cleanly (Alice=2, TestDev=4) and PING works
+	alice.send_ctrl("WHO");
+	string who_res = alice.wait_for_op(CH_CONTROL, "WHO_RES|", 2500);
+	assert_true(who_res.find("TestDev:") >= 0 && who_res.find(":4:") >= 0, "WHO_RES includes numeric Dev rank 4");
+	alice.send_ctrl("PING|98765");
+	assert_true(alice.wait_for_op(CH_CONTROL, "PONG|98765", 2500) != "", "PING/PONG echoed timestamp");
+
+	// LOGOUT revokes token
+	alice.send_ctrl("LOGOUT");
+	alice.drain(200);
+	alice.close();
+	dev.close();
+
+	TestBot@ revoked = TestBot("Revoked");
+	assert_true(revoked.connect_and_hello(host, port), "Revoked WELCOME");
+	revoked.send_ctrl("TOKEN|Alice|" + saved_tok);
+	assert_true(revoked.wait_for_op(CH_CONTROL, "AUTH_ERR|", 2500) != "", "LOGOUT invalidated Phase 1 token");
+	revoked.close();
+
+	println("PASS: Phase 2 persistence, ban/unban, WHO numeric rank & token revocation checks succeeded!");
+}
+
+void main() {
+	init_catalog();
+	string raw = COMMAND_LINE;
+	int phase = 1;
+	uint16 port = 7199;
+	string host = "127.0.0.1";
+	string[]@ tok = split_keep_empty(raw.trim_whitespace(), " ");
+	for (uint i = 0; i < tok.length(); i++) {
+		if (tok[i] == "--phase" && i + 1 < tok.length()) phase = safe_int(tok[++i], 1, 2, 1);
+		else if (tok[i] == "--port" && i + 1 < tok.length()) port = uint16(safe_int(tok[++i], 1024, 65535, 7199));
+	}
+
+	if (phase == 1) run_phase_1(host, port);
+	else run_phase_2(host, port);
+}

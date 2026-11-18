@@ -1,0 +1,471 @@
+// Server Dual Builder System:
+// 1. Survival Base Building (place, open/close doors, lock/unlock, chest storage, repair, demolish)
+// 2. Interactive Audio Map Builder (cursor step, zones, walls, platforms, water, resources, emitters, spawns, save & live reload)
+
+#include "chat_social.nvgt"
+
+WorldStructure@ builder_find_near(ServerCtx@ ctx, double x, double y, double z, double max_d = 2.6, const string&in filter_type = "") {
+	WorldStructure@ best = null;
+	double best_d = max_d;
+	for (uint i = 0; i < ctx.structures.length(); i++) {
+		WorldStructure@ st = ctx.structures[i];
+		if (st.map_name != ctx.map.name) continue;
+		if (filter_type.length() > 0 && st.type != filter_type) continue;
+		double d = get_3d_distance(x, y, z, st.x, st.y, st.z);
+		if (d <= best_d) { best_d = d; @best = @st; }
+	}
+	return best;
+}
+
+bool builder_can_access(ServerCtx@ ctx, PlayerSession@ ps, WorldStructure@ st) {
+	if (ps.rank >= RANK_ADMIN) return true;
+	if (st.owner.lower() == ps.name.lower()) return true;
+	AccountRecord@ owner_acc = ctx.accounts.find(st.owner);
+	if (@owner_acc != null && owner_acc.has_friend(ps.name.lower())) return true;
+	return false;
+}
+
+void builder_place_structure(ServerCtx@ ctx, PlayerSession@ ps, const string&in raw_stype) {
+	string stype = raw_stype;
+	if (stype.ends_with("_kit")) {
+		ItemDef@ kd = find_item(stype);
+		if (@kd != null && kd.build_type.length() > 0) stype = kd.build_type;
+	}
+	StructDef@ sdef = find_struct(stype);
+	if (@sdef == null) { ctx.send_speech(ps, MBUF_GAME, true, "Unknown structure type."); return; }
+	string kit_id = stype + "_kit";
+	if (ps.count_item(kit_id) < 1) {
+		ctx.send_sfx_to(ps, "self", "ui/error.ogg", ps.x, ps.y, ps.z, 0.7);
+		ctx.send_speech(ps, MBUF_GAME, true, "You need a " + sdef.name + " Kit in your inventory.");
+		return;
+	}
+
+	double tx = double(int(ps.x + bearing_x(ps.facing) * 1.6 + 0.5));
+	double ty = double(int(ps.y + bearing_y(ps.facing) * 1.6 + 0.5));
+	double tz = ctx.map.ground_z_at(tx, ty, ps.z);
+
+	if (tx < 2.0 || tx > double(ctx.map.width - 2) || ty < 2.0 || ty > double(ctx.map.height - 2)) {
+		ctx.send_speech(ps, MBUF_GAME, true, "Cannot build outside map boundaries.");
+		return;
+	}
+	string mat;
+	if (sdef.blocks_move && ctx.map.blocked_by_wall(tx, ty, tz, 0.4, mat)) {
+		ctx.send_sfx_to(ps, "self", "ui/error.ogg", ps.x, ps.y, ps.z, 0.7);
+		ctx.send_speech(ps, MBUF_GAME, true, "Space ahead is blocked.");
+		return;
+	}
+	if (@builder_find_near(ctx, tx, ty, tz, 0.9) != null) {
+		ctx.send_sfx_to(ps, "self", "ui/error.ogg", ps.x, ps.y, ps.z, 0.7);
+		ctx.send_speech(ps, MBUF_GAME, true, "Another structure is already there.");
+		return;
+	}
+
+	ps.remove_item(kit_id, 1);
+	WorldStructure st;
+	st.id = ctx.next_entity_id++;
+	st.map_name = ctx.map.name;
+	st.type = stype;
+	st.owner = ps.name;
+	st.x = tx; st.y = ty; st.z = tz;
+	st.facing = (ps.facing / 90) * 90;
+	st.hp = sdef.max_hp;
+	st.max_hp = sdef.max_hp;
+	st.fuel_sec = sdef.is_campfire ? 240 : 0;
+	ctx.structures.insert_last(st);
+
+	// Elevated floor/stairs also register as walkable platform if needed.
+	if (stype == "wood_floor" || stype == "wood_stairs") {
+		MapPlatform pl;
+		pl.label = st.owner + " " + sdef.name;
+		pl.min_x = tx - 1.5; pl.max_x = tx + 1.5;
+		pl.min_y = ty - 1.5; pl.max_y = ty + 1.5;
+		pl.z_level = tz + (stype == "wood_stairs" ? 2.0 : 0.2);
+		pl.surface = "wood";
+		pl.is_ramp = stype == "wood_stairs";
+		pl.ramp_axis = (st.facing == 90 || st.facing == 270) ? "x" : "y";
+		pl.ramp_dir = (st.facing == 0 || st.facing == 90) ? 1 : -1;
+		ctx.map.platforms.insert_last(pl);
+	}
+
+	ctx.sync_map_occluders();
+	ctx.objects_dirty = true;
+	if (@ps.account != null) { ps.account.built_count++; ctx.accounts.dirty = true; }
+	ctx.broadcast_obj("add", st);
+	string bsfx = sdef.is_campfire ? "survival/campfire_ignite.ogg" : "builder/build_place.ogg";
+	ctx.broadcast_sfx_3d("world", bsfx, st.x, st.y, st.z, 0.9, 25.0);
+	ctx.send_speech(ps, MBUF_GAME, false, "Built " + sdef.name + ".");
+	ctx.send_inv(ps);
+}
+
+void builder_interact(ServerCtx@ ctx, PlayerSession@ ps) {
+	WorldStructure@ st = builder_find_near(ctx, ps.x, ps.y, ps.z, 2.7);
+	if (@st == null) {
+		world_handle_gather(ctx, ps, 0); // Fallback when called via world_handle_gather? Handled cleanly in server.nvgt!
+		return;
+	}
+	StructDef@ sdef = find_struct(st.type);
+	if (@sdef == null) return;
+
+	if (sdef.is_door) {
+		if (st.locked && !builder_can_access(ctx, ps, st)) {
+			ctx.broadcast_sfx_3d("world", "builder/door_locked.ogg", st.x, st.y, st.z, 0.85, 18.0);
+			ctx.send_speech(ps, MBUF_GAME, true, "Door is locked by " + st.owner + ".");
+			return;
+		}
+		st.is_open = !st.is_open;
+		ctx.sync_map_occluders();
+		ctx.objects_dirty = true;
+		ctx.broadcast_obj("upd", st);
+		ctx.broadcast_sfx_3d("world", st.is_open ? "builder/door_open.ogg" : "builder/door_close.ogg", st.x, st.y, st.z, 0.9, 22.0);
+		ctx.send_speech(ps, MBUF_GAME, false, st.is_open ? "Door opened." : "Door closed.");
+		return;
+	}
+	if (sdef.is_chest) {
+		if (st.locked && !builder_can_access(ctx, ps, st)) {
+			ctx.broadcast_sfx_3d("world", "builder/door_locked.ogg", st.x, st.y, st.z, 0.85, 18.0);
+			ctx.send_speech(ps, MBUF_GAME, true, "Chest is locked by " + st.owner + ".");
+			return;
+		}
+		ctx.broadcast_sfx_3d("world", "builder/chest_open.ogg", st.x, st.y, st.z, 0.85, 16.0);
+		ctx.send_control(ps, pkt_3("CHEST_DATA", "" + st.id, encode_chest_items(st.chest_items)));
+		return;
+	}
+	if (sdef.is_campfire) {
+		if (st.fuel_sec <= 0 && ps.count_item("wood") > 0) {
+			ps.remove_item("wood", 1);
+			st.fuel_sec = 240;
+			ctx.objects_dirty = true;
+			ctx.broadcast_obj("upd", st);
+			ctx.broadcast_sfx_3d("world", "survival/campfire_ignite.ogg", st.x, st.y, st.z, 0.9, 22.0);
+			ctx.send_speech(ps, MBUF_GAME, false, "Relit campfire with 1 wood.");
+			ctx.send_inv(ps);
+		} else {
+			ctx.send_speech(ps, MBUF_GAME, false, st.fuel_sec > 0 ? ("Campfire burning, " + st.fuel_sec + " seconds fuel left.") : "Campfire is out. Need 1 wood to relight.");
+		}
+		return;
+	}
+	if (sdef.is_bench) {
+		ctx.send_speech(ps, MBUF_GAME, false, "Crafting bench owned by " + st.owner + ". Press C to craft advanced recipes.");
+		return;
+	}
+	ctx.send_speech(ps, MBUF_GAME, false, sdef.name + " owned by " + st.owner + ", " + st.hp + " of " + st.max_hp + " health.");
+}
+
+void builder_toggle_lock(ServerCtx@ ctx, PlayerSession@ ps) {
+	WorldStructure@ st = builder_find_near(ctx, ps.x, ps.y, ps.z, 2.8);
+	if (@st == null) { ctx.send_speech(ps, MBUF_GAME, false, "No structure nearby."); return; }
+	StructDef@ sdef = find_struct(st.type);
+	if (@sdef == null || !sdef.lockable) { ctx.send_speech(ps, MBUF_GAME, false, "That structure cannot be locked."); return; }
+	if (!builder_can_access(ctx, ps, st)) {
+		ctx.send_speech(ps, MBUF_GAME, true, "Only the owner can lock or unlock this.");
+		return;
+	}
+	st.locked = !st.locked;
+	ctx.objects_dirty = true;
+	ctx.broadcast_obj("upd", st);
+	ctx.broadcast_sfx_3d("world", "builder/door_locked.ogg", st.x, st.y, st.z, 0.8, 16.0);
+	ctx.send_speech(ps, MBUF_GAME, false, sdef.name + (st.locked ? " locked." : " unlocked."));
+}
+
+void builder_repair(ServerCtx@ ctx, PlayerSession@ ps) {
+	WorldStructure@ st = builder_find_near(ctx, ps.x, ps.y, ps.z, 2.8);
+	if (@st == null) { ctx.send_speech(ps, MBUF_GAME, false, "No structure nearby to repair."); return; }
+	if (st.hp >= st.max_hp) { ctx.send_speech(ps, MBUF_GAME, false, "Already at full durability."); return; }
+	if (ps.count_item("wood") < 1) { ctx.send_speech(ps, MBUF_GAME, true, "Need 1 wood to repair."); return; }
+	ps.remove_item("wood", 1);
+	st.hp = clampi(st.hp + 50, 1, st.max_hp);
+	ctx.objects_dirty = true;
+	ctx.broadcast_obj("upd", st);
+	ctx.broadcast_sfx_3d("world", "builder/build_repair.ogg", st.x, st.y, st.z, 0.85, 18.0);
+	ctx.send_speech(ps, MBUF_GAME, false, "Repaired to " + st.hp + " of " + st.max_hp + ".");
+	ctx.send_inv(ps);
+}
+
+void builder_demolish(ServerCtx@ ctx, PlayerSession@ ps) {
+	WorldStructure@ st = builder_find_near(ctx, ps.x, ps.y, ps.z, 2.8);
+	if (@st == null) { ctx.send_speech(ps, MBUF_GAME, false, "No structure nearby to demolish."); return; }
+	if (st.owner.lower() != ps.name.lower() && ps.rank < RANK_ADMIN) {
+		ctx.send_speech(ps, MBUF_GAME, true, "You can only demolish your own structures.");
+		return;
+	}
+	for (uint k = 0; k < ctx.structures.length(); k++) {
+		if (@ctx.structures[k] == @st) { ctx.structures.remove_at(k); break; }
+	}
+	ctx.sync_map_occluders();
+	ctx.objects_dirty = true;
+	ctx.broadcast_obj("del", st);
+	ctx.broadcast_sfx_3d("world", "builder/build_break.ogg", st.x, st.y, st.z, 0.9, 22.0);
+	ctx.send_speech(ps, MBUF_GAME, false, "Demolished structure.");
+}
+
+void builder_handle_chest_op(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
+	string op = field(p, 1, "");
+	uint64 oid = uint64(parse_int(field(p, 2, "0")));
+	int slot = safe_int(field(p, 3, "0"), 0, 50, 0);
+	int qty = safe_int(field(p, 4, "1"), 1, 99, 1);
+
+	WorldStructure@ st = null;
+	for (uint i = 0; i < ctx.structures.length(); i++) {
+		if (ctx.structures[i].id == oid) { @st = @ctx.structures[i]; break; }
+	}
+	if (@st == null || get_3d_distance(ps.x, ps.y, ps.z, st.x, st.y, st.z) > 3.5) {
+		ctx.send_speech(ps, MBUF_GAME, true, "Too far from chest.");
+		return;
+	}
+	StructDef@ cdef = find_struct(st.type);
+	if (@cdef == null || !cdef.is_chest) return;
+	if (st.locked && !builder_can_access(ctx, ps, st)) {
+		ctx.send_speech(ps, MBUF_GAME, true, "Chest is locked.");
+		return;
+	}
+	if (op == "put" && slot < int(ps.inv.length())) {
+		ItemStack@ it = ps.inv[uint(slot)];
+		int take_q = it.qty < qty ? it.qty : qty;
+		if (st.chest_items.length() >= uint(MAX_CHEST_SLOTS)) {
+			// Check stackable first
+			bool stacked = false;
+			for (uint i = 0; i < st.chest_items.length(); i++) {
+				if (st.chest_items[i].id == it.id) { st.chest_items[i].qty += take_q; stacked = true; break; }
+			}
+			if (!stacked) { ctx.send_speech(ps, MBUF_GAME, true, "Chest is full."); return; }
+		} else {
+			bool stacked = false;
+			for (uint i = 0; i < st.chest_items.length(); i++) {
+				if (st.chest_items[i].id == it.id) { st.chest_items[i].qty += take_q; stacked = true; break; }
+			}
+			if (!stacked) st.chest_items.insert_last(ItemStack(it.id, take_q));
+		}
+		ps.remove_item(it.id, take_q);
+		ctx.objects_dirty = true;
+		ctx.send_inv(ps);
+		ctx.send_control(ps, pkt_3("CHEST_DATA", "" + st.id, encode_chest_items(st.chest_items)));
+	} else if (op == "take" && slot < int(st.chest_items.length())) {
+		ItemStack@ cit = st.chest_items[uint(slot)];
+		int give_q = cit.qty < qty ? cit.qty : qty;
+		if (!ps.add_item(cit.id, give_q)) { ctx.send_speech(ps, MBUF_GAME, true, "Inventory full."); return; }
+		cit.qty -= give_q;
+		if (cit.qty <= 0) st.chest_items.remove_at(uint(slot));
+		ctx.objects_dirty = true;
+		ctx.send_inv(ps);
+		ctx.send_control(ps, pkt_3("CHEST_DATA", "" + st.id, encode_chest_items(st.chest_items)));
+	}
+}
+
+// ------------------------------------------------------------------ INTERACTIVE AUDIO MAP BUILDER
+
+void send_builder_pos(ServerCtx@ ctx, PlayerSession@ ps) {
+	string surf = ctx.map.surface_at(double(ps.builder_cx) + 0.5, double(ps.builder_cy) + 0.5, double(ps.builder_cz));
+	string zname = ctx.map.zone_name_at(double(ps.builder_cx) + 0.5, double(ps.builder_cy) + 0.5);
+	string mat;
+	bool has_wall = ctx.map.blocked_by_wall(double(ps.builder_cx) + 0.5, double(ps.builder_cy) + 0.5, double(ps.builder_cz), 0.25, mat);
+	ctx.send_control(ps, pkt_build("BUILDER_POS", {"" + ps.builder_cx, "" + ps.builder_cy, "" + ps.builder_cz, surf, wire_escape(zname), has_wall ? mat : "-"}));
+}
+
+void builder_reload_all_clients(ServerCtx@ ctx) {
+	ctx.sync_map_occluders();
+	world_init_nodes(ctx);
+	for (uint i = 0; i < ctx.sessions.length(); i++) {
+		PlayerSession@ p = ctx.sessions[i];
+		if (!p.authed || p.peer_id == 0) continue;
+		ctx.send_map_sync(p);
+		ctx.send_speech(p, MBUF_SYSTEM, true, "Map " + ctx.map.name + " reloaded by builder.");
+	}
+}
+
+void builder_handle_map_cmd(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
+	if (@ps == null || !ps.authed) return;
+	if (ps.rank < RANK_BUILDER) {
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Builder rank or higher is required for Map Builder.");
+		ctx.logger.log("REFUSED", "BUILDMAP denied for " + ps.name + " (rank " + ps.rank + ")");
+		return;
+	}
+	string cmd = field(p, 1, "");
+	if (cmd == "toggle") {
+		ps.builder_mode = !ps.builder_mode;
+		ps.builder_cx = clampi(int(ps.x), 1, ctx.map.width - 1);
+		ps.builder_cy = clampi(int(ps.y), 1, ctx.map.height - 1);
+		ps.builder_cz = clampi(int(ps.z), 0, ctx.map.max_z);
+		ps.builder_has_mark = false;
+		ctx.send_speech(ps, MBUF_GAME, true, ps.builder_mode ? "Entered Audio Map Builder mode." : "Exited Map Builder mode.");
+		if (ps.builder_mode) send_builder_pos(ctx, ps);
+		return;
+	}
+	if (cmd == "step") {
+		int dx = safe_int(field(p, 2, "0"), -10, 10, 0);
+		int dy = safe_int(field(p, 3, "0"), -10, 10, 0);
+		int dz = safe_int(field(p, 4, "0"), -5, 5, 0);
+		ps.builder_cx = clampi(ps.builder_cx + dx, 0, ctx.map.width - 1);
+		ps.builder_cy = clampi(ps.builder_cy + dy, 0, ctx.map.height - 1);
+		ps.builder_cz = clampi(ps.builder_cz + dz, 0, ctx.map.max_z);
+		send_builder_pos(ctx, ps);
+		return;
+	}
+	if (cmd == "mark") {
+		ps.builder_has_mark = true;
+		ps.builder_mx = ps.builder_cx;
+		ps.builder_my = ps.builder_cy;
+		ps.builder_mz = ps.builder_cz;
+		ctx.send_speech(ps, MBUF_GAME, true, "Corner 1 marked at " + ps.builder_mx + ", " + ps.builder_my + ", height " + ps.builder_mz + ".");
+		return;
+	}
+
+	double x1 = double(ps.builder_has_mark ? (ps.builder_mx < ps.builder_cx ? ps.builder_mx : ps.builder_cx) : ps.builder_cx);
+	double y1 = double(ps.builder_has_mark ? (ps.builder_my < ps.builder_cy ? ps.builder_my : ps.builder_cy) : ps.builder_cy);
+	double x2 = double(ps.builder_has_mark ? (ps.builder_mx > ps.builder_cx ? ps.builder_mx : ps.builder_cx) : ps.builder_cx) + 1.0;
+	double y2 = double(ps.builder_has_mark ? (ps.builder_my > ps.builder_cy ? ps.builder_my : ps.builder_cy) : ps.builder_cy) + 1.0;
+
+	if (cmd == "zone") {
+		MapZone z;
+		z.name = wire_unescape(field(p, 2, "Custom Zone"));
+		z.min_x = x1; z.min_y = y1; z.max_x = x2; z.max_y = y2;
+		z.surface = field(p, 3, "grass");
+		z.ambience_loop = field(p, 4, "ambience/forest_day.ogg");
+		z.is_safe_zone = safe_int(field(p, 5, "0"), 0, 1, 0) == 1;
+		ctx.map.zones.insert_last(z);
+		ps.builder_has_mark = false;
+		builder_reload_all_clients(ctx);
+		ctx.send_speech(ps, MBUF_GAME, true, "Zone " + z.name + " added.");
+		return;
+	}
+	if (cmd == "wall") {
+		MapWall w;
+		w.label = wire_unescape(field(p, 2, "Builder Wall"));
+		w.min_x = x1; w.min_y = y1; w.max_x = x2; w.max_y = y2;
+		w.min_z = double(ps.builder_cz);
+		w.max_z = double(ps.builder_cz + safe_int(field(p, 4, "4"), 1, 15, 4));
+		w.material = field(p, 3, "wood");
+		ctx.map.walls.insert_last(w);
+		ps.builder_has_mark = false;
+		builder_reload_all_clients(ctx);
+		ctx.send_speech(ps, MBUF_GAME, true, "Placed " + w.material + " wall.");
+		return;
+	}
+	if (cmd == "platform") {
+		MapPlatform pl;
+		pl.label = wire_unescape(field(p, 2, "Platform"));
+		pl.min_x = x1; pl.min_y = y1; pl.max_x = x2; pl.max_y = y2;
+		pl.z_level = double(ps.builder_cz > 0 ? ps.builder_cz : 2);
+		pl.surface = field(p, 3, "wood");
+		pl.is_ramp = safe_int(field(p, 4, "0"), 0, 1, 0) == 1;
+		pl.ramp_axis = field(p, 5, "y");
+		pl.ramp_dir = safe_int(field(p, 6, "1"), -1, 1, 1);
+		ctx.map.platforms.insert_last(pl);
+		ps.builder_has_mark = false;
+		builder_reload_all_clients(ctx);
+		ctx.send_speech(ps, MBUF_GAME, true, "Placed platform at height " + pl.z_level + ".");
+		return;
+	}
+	if (cmd == "water") {
+		MapWater l;
+		l.label = wire_unescape(field(p, 2, "Water"));
+		l.min_x = x1; l.min_y = y1; l.max_x = x2; l.max_y = y2;
+		l.z_level = double(ps.builder_cz);
+		l.depth = field(p, 3, "shallow");
+		l.sound_loop = "ambience/river_loop.ogg";
+		ctx.map.waters.insert_last(l);
+		ps.builder_has_mark = false;
+		builder_reload_all_clients(ctx);
+		ctx.send_speech(ps, MBUF_GAME, true, "Placed water body.");
+		return;
+	}
+	if (cmd == "resource") {
+		MapResourceSpawn r;
+		r.type = field(p, 2, "tree");
+		r.x = double(ps.builder_cx) + 0.5;
+		r.y = double(ps.builder_cy) + 0.5;
+		r.z = double(ps.builder_cz);
+		r.max_charges = safe_int(field(p, 3, "4"), 1, 20, 4);
+		r.respawn_sec = safe_int(field(p, 4, "45"), 5, 600, 45);
+		ctx.map.resources.insert_last(r);
+		builder_reload_all_clients(ctx);
+		ctx.send_speech(ps, MBUF_GAME, true, "Added " + r.type + " spawner.");
+		return;
+	}
+	if (cmd == "emitter") {
+		MapEmitter e;
+		e.label = wire_unescape(field(p, 2, "Sound Landmark"));
+		e.sound_file = field(p, 3, "builder/beacon_ping.ogg");
+		e.x = double(ps.builder_cx) + 0.5;
+		e.y = double(ps.builder_cy) + 0.5;
+		e.z = double(ps.builder_cz);
+		e.range = safe_int(field(p, 4, "24"), 4, 80, 24);
+		e.volume = safe_double(field(p, 5, "0.65"), 0.1, 1.0, 0.65);
+		ctx.map.emitters.insert_last(e);
+		builder_reload_all_clients(ctx);
+		ctx.send_speech(ps, MBUF_GAME, true, "Added audio landmark " + e.label + ".");
+		return;
+	}
+	if (cmd == "spawn") {
+		MapSpawn s;
+		s.label = wire_unescape(field(p, 2, "Custom Spawn"));
+		s.x = double(ps.builder_cx) + 0.5;
+		s.y = double(ps.builder_cy) + 0.5;
+		s.z = double(ps.builder_cz);
+		s.facing = 0;
+		ctx.map.spawns.insert_last(s);
+		builder_reload_all_clients(ctx);
+		ctx.send_speech(ps, MBUF_GAME, true, "Added spawn point " + s.label + ".");
+		return;
+	}
+	if (cmd == "erase") {
+		double cx = double(ps.builder_cx) + 0.5;
+		double cy = double(ps.builder_cy) + 0.5;
+		bool removed = false;
+		for (int i = int(ctx.map.walls.length()) - 1; i >= 0; i--) {
+			MapWall@ w = ctx.map.walls[uint(i)];
+			if (cx >= w.min_x && cx <= w.max_x && cy >= w.min_y && cy <= w.max_y) {
+				ctx.map.walls.remove_at(uint(i)); removed = true; break;
+			}
+		}
+		if (!removed) {
+			for (int i = int(ctx.map.resources.length()) - 1; i >= 0; i--) {
+				if (get_2d_distance(cx, cy, ctx.map.resources[uint(i)].x, ctx.map.resources[uint(i)].y) <= 1.5) {
+					ctx.map.resources.remove_at(uint(i)); removed = true; break;
+				}
+			}
+		}
+		if (!removed) {
+			for (int i = int(ctx.map.emitters.length()) - 1; i >= 0; i--) {
+				if (get_2d_distance(cx, cy, ctx.map.emitters[uint(i)].x, ctx.map.emitters[uint(i)].y) <= 1.5) {
+					ctx.map.emitters.remove_at(uint(i)); removed = true; break;
+				}
+			}
+		}
+		if (removed) {
+			builder_reload_all_clients(ctx);
+			ctx.send_speech(ps, MBUF_GAME, true, "Erased map object at cursor.");
+		} else {
+			ctx.send_speech(ps, MBUF_GAME, false, "Nothing erasable at cursor.");
+		}
+		return;
+	}
+	if (cmd == "save" || cmd == "reload") {
+		string[]@ errs = ctx.map.validate();
+		if (errs.length() > 0) {
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Map validation error: " + errs[0]);
+			return;
+		}
+		if (cmd == "save") {
+			if (!directory_exists("maps")) directory_create("maps");
+			string out_path = ctx.active_map_path;
+			string fn = sanitize_name(field(p, 2, ""));
+			if (fn.length() >= 3) out_path = "maps/" + fn + ".map";
+			if (!file_put_contents(out_path, ctx.map.serialize(), false)) {
+				ctx.send_speech(ps, MBUF_SYSTEM, true, "Failed saving map file " + out_path);
+				return;
+			}
+			ctx.logger.log("BUILDER", ps.name + " saved map to " + out_path);
+			ctx.send_speech(ps, MBUF_GAME, true, "Map saved and validated at " + out_path + ".");
+		} else {
+			string err;
+			WorldMap reloaded;
+			if (!reloaded.load_from_file(ctx.active_map_path, err)) {
+				ctx.send_speech(ps, MBUF_SYSTEM, true, "Reload failed: " + err);
+				return;
+			}
+			ctx.map = reloaded;
+			builder_reload_all_clients(ctx);
+			ctx.logger.log("BUILDER", ps.name + " reloaded map " + ctx.active_map_path);
+		}
+	}
+}

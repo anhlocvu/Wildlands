@@ -1,0 +1,514 @@
+// Wildlands Online — Dedicated Authoritative Server Entry Point.
+// Run: nvgt server/server.nvgt [-- --port 7100 --map maps/wildlands_valley.map --bots 2 --test-mode --allow-guests --headless]
+// Compile: nvgt -c server/server.nvgt
+
+#include "includes/admin_dev.nvgt"
+
+ServerCtx g_srv;
+
+void parse_cli_args(ServerCtx@ ctx) {
+	string raw = COMMAND_LINE;
+	string[]@ tok = split_keep_empty(raw.trim_whitespace(), " ");
+	for (uint i = 0; i < tok.length(); i++) {
+		string arg = tok[i].trim_whitespace();
+		if (arg.length() == 0) continue;
+		if (i == 0 && (arg.ends_with(".exe") || arg.ends_with(".nvgt"))) continue;
+		if (arg == "--") continue;
+		if (arg == "--headless") { ctx.headless = true; continue; }
+		if (arg == "--test-mode") { ctx.test_mode = true; ctx.allow_guests = true; continue; }
+		if (arg == "--allow-guests") { ctx.allow_guests = true; continue; }
+		if (arg == "--port" && i + 1 < tok.length()) {
+			ctx.port = uint16(safe_int(tok[++i], 1024, 65535, DEFAULT_PORT));
+			continue;
+		}
+		if (arg == "--map" && i + 1 < tok.length()) {
+			ctx.active_map_path = tok[++i];
+			continue;
+		}
+		if (arg == "--bots" && i + 1 < tok.length()) {
+			ctx.target_bots = safe_int(tok[++i], 0, 20, 0);
+			continue;
+		}
+		if (arg == "--wildlife" && i + 1 < tok.length()) {
+			ctx.target_wildlife = safe_int(tok[++i], 0, 40, 12);
+			continue;
+		}
+		if (arg == "--data-dir" && i + 1 < tok.length()) {
+			ctx.data_dir = tok[++i];
+			continue;
+		}
+		ctx.logger.log("WARN", "Unrecognized command line argument ignored: " + arg);
+	}
+}
+
+void complete_login(ServerCtx@ ctx, PlayerSession@ ps, AccountRecord@ acc, const string&in issued_token, uint64 now_ms) {
+	// Kick any duplicate active session on same account.
+	for (uint i = 0; i < ctx.sessions.length(); i++) {
+		PlayerSession@ old = ctx.sessions[i];
+		if (@old != @ps && old.authed && old.name.lower() == acc.name_lower) {
+			if (old.peer_id != 0) {
+				ctx.send_control(old, pkt_3("REFUSE", "duplicate_login", wire_escape("You signed in from another location.")));
+				ctx.net.flush();
+				ctx.net.disconnect_peer_softly(old.peer_id);
+			}
+			ctx.sessions.remove_at(i);
+			break;
+		}
+	}
+
+	ps.authed = true;
+	ps.is_guest = false;
+	@ps.account = @acc;
+	ps.name = acc.name;
+	ps.rank = ctx.accounts.effective_rank(acc);
+	ps.x = clampd(acc.last_x, 2.0, double(ctx.map.width - 2));
+	ps.y = clampd(acc.last_y, 2.0, double(ctx.map.height - 2));
+	ps.z = ctx.map.ground_z_at(ps.x, ps.y, acc.last_z);
+	ps.join_ms = now_ms;
+	ps.last_playtime_ms = now_ms;
+	ps.init_starter_inv();
+
+	ctx.send_control(ps, pkt_4("AUTH_OK", ps.name, "" + ps.rank, issued_token.length() > 0 ? issued_token : "-"));
+	ctx.send_news(ps);
+	ctx.send_map_sync(ps);
+	ctx.send_inv(ps);
+	ctx.net.flush();
+
+	ctx.logger.log("AUTH", "Signed in " + ps.name + " (" + rank_label(ps.rank) + ") from " + ps.ip);
+	ctx.broadcast_sfx_3d("world", "multi/player_join.ogg", ps.x, ps.y, ps.z, 0.75, 45.0);
+	ctx.broadcast_speech(MBUF_SOCIAL, false, ps.name + " joined the wilderness.");
+	social_notify_friends_presence(ctx, ps, true);
+}
+
+void handle_control_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 now_ms, int64 now_sec) {
+	string op = pkt_op(p);
+	if (op == "HELLO") {
+		uint ver = uint(safe_int(field(p, 1, "0"), 0, 999999, 0));
+		ps.client_is_source = safe_int(field(p, 3, "0"), 0, 1, 0) == 1;
+		if (ver != PROTO_VERSION) {
+			string side = ver < PROTO_VERSION ? "Your client is out of date." : "The server is running an older protocol version.";
+			ctx.logger.log("REFUSE", "Protocol mismatch from " + ps.ip + " (client=" + ver + " server=" + PROTO_VERSION + ")");
+			ctx.send_control(ps, pkt_3("REFUSE", "ver_mismatch", wire_escape(side + " Update required.")));
+			ctx.net.flush();
+			ctx.net.disconnect_peer_softly(ps.peer_id);
+			return;
+		}
+		ps.handshake_ok = true;
+		ctx.send_control(ps, pkt_5("WELCOME", "" + PROTO_VERSION, wire_escape(ctx.server_name), wire_escape(ctx.motd), ctx.allow_guests ? "1" : "0"));
+		return;
+	}
+	if (!ps.handshake_ok) {
+		ctx.send_control(ps, pkt_3("REFUSE", "no_hello", wire_escape("Protocol handshake missing.")));
+		return;
+	}
+	if (op == "PING") {
+		ctx.send_control(ps, pkt_2("PONG", field(p, 1, "0")));
+		return;
+	}
+	if (op == "NEWS") {
+		ctx.send_news(ps);
+		return;
+	}
+	if (op == "REG") {
+		if (ctx.accounts.is_rate_limited(ps.ip, now_ms, ctx.test_mode)) {
+			ctx.send_control(ps, pkt_2("AUTH_ERR", wire_escape("Too many attempts. Please wait a minute.")));
+			return;
+		}
+		string uname = field(p, 1, "");
+		string pw = wire_unescape(field(p, 2, ""));
+		MapSpawn@ sp = ctx.map.spawns[0];
+		AccountRecord@ created = null;
+		string err, tok;
+		if (!ctx.accounts.register_account(uname, pw, sp.x, sp.y, sp.z, created, err, tok)) {
+			ctx.accounts.record_auth_fail(ps.ip, now_ms);
+			ctx.logger.log("AUTH_FAIL", "REG refused for " + uname + " from " + ps.ip + ": " + err);
+			ctx.send_control(ps, pkt_2("AUTH_ERR", wire_escape(err)));
+			return;
+		}
+		ctx.accounts.clear_auth_fail(ps.ip);
+		string serr;
+		ctx.accounts.save(serr);
+		ctx.logger.log("AUTH_REG", "Registered new account " + created.name + " from " + ps.ip);
+		complete_login(ctx, ps, created, tok, now_ms);
+		return;
+	}
+	if (op == "LOGIN") {
+		if (ctx.accounts.is_rate_limited(ps.ip, now_ms, ctx.test_mode)) {
+			ctx.send_control(ps, pkt_2("AUTH_ERR", wire_escape("Too many attempts. Please wait a minute.")));
+			return;
+		}
+		string uname = field(p, 1, "");
+		string pw = wire_unescape(field(p, 2, ""));
+		AccountRecord@ acc = null;
+		string err, tok;
+		if (!ctx.accounts.authenticate_password(uname, pw, now_sec, acc, err, tok)) {
+			ctx.accounts.record_auth_fail(ps.ip, now_ms);
+			ctx.logger.log("AUTH_FAIL", "LOGIN refused for " + uname + " from " + ps.ip + ": " + err);
+			ctx.send_control(ps, pkt_2("AUTH_ERR", wire_escape(err)));
+			return;
+		}
+		ctx.accounts.clear_auth_fail(ps.ip);
+		complete_login(ctx, ps, acc, tok, now_ms);
+		return;
+	}
+	if (op == "TOKEN") {
+		string uname = field(p, 1, "");
+		string tok = field(p, 2, "");
+		// Also check if an active disconnect grace session exists to restore seamlessly!
+		AccountRecord@ acc = null;
+		string err;
+		if (!ctx.accounts.authenticate_token(uname, tok, now_sec, acc, err)) {
+			ctx.logger.log("AUTH_FAIL", "TOKEN refused for " + uname + " from " + ps.ip);
+			ctx.send_control(ps, pkt_2("AUTH_ERR", wire_escape(err)));
+			return;
+		}
+		// Check grace session restore
+		for (uint i = 0; i < ctx.sessions.length(); i++) {
+			PlayerSession@ g = ctx.sessions[i];
+			if (@g != @ps && g.peer_id == 0 && g.authed && g.name.lower() == acc.name_lower && now_ms < g.grace_until_ms) {
+				g.peer_id = ps.peer_id;
+				g.ip = ps.ip;
+				g.disconnected_at_ms = 0;
+				g.grace_until_ms = 0;
+				for (uint k = 0; k < ctx.sessions.length(); k++) {
+					if (@ctx.sessions[k] == @ps) { ctx.sessions.remove_at(k); break; }
+				}
+				ctx.send_control(g, pkt_4("AUTH_OK", g.name, "" + g.rank, "-"));
+				ctx.send_news(g);
+				ctx.send_map_sync(g);
+				ctx.send_inv(g);
+				ctx.send_speech(g, MBUF_SYSTEM, true, "Reconnected to your active session.");
+				ctx.logger.log("AUTH", "Restored grace session for " + g.name);
+				return;
+			}
+		}
+		complete_login(ctx, ps, acc, "", now_ms);
+		return;
+	}
+	if (op == "GUEST") {
+		if (!ctx.allow_guests) {
+			ctx.send_control(ps, pkt_2("AUTH_ERR", wire_escape("Guest mode is disabled on this server. Please register an account.")));
+			return;
+		}
+		string desired = sanitize_name(field(p, 1, "Guest"));
+		if (desired.length() < 2) desired = "Guest";
+		ps.authed = true;
+		ps.is_guest = true;
+		ps.name = "Guest_" + ctx.guest_seq++;
+		ps.rank = RANK_PLAYER;
+		MapSpawn@ sp = ctx.map.spawns[0];
+		ps.x = sp.x; ps.y = sp.y; ps.z = sp.z;
+		ps.join_ms = now_ms;
+		ps.init_starter_inv();
+		ctx.send_control(ps, pkt_4("AUTH_OK", ps.name, "0", "-"));
+		ctx.send_news(ps);
+		ctx.send_map_sync(ps);
+		ctx.send_inv(ps);
+		ctx.send_speech(ps, MBUF_SYSTEM, false, "Signed in as guest " + ps.name + ". Guest stats do not persist.");
+		ctx.logger.log("AUTH", "Guest login " + ps.name + " from " + ps.ip);
+		return;
+	}
+
+	if (!ps.authed) return;
+
+	if (op == "LOGOUT") {
+		if (@ps.account != null) {
+			ps.account.token_hash = "";
+			ps.account.last_x = ps.x; ps.account.last_y = ps.y; ps.account.last_z = ps.z;
+			ctx.accounts.dirty = true;
+		}
+		ps.authed = false;
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Signed out.");
+		return;
+	}
+	if (op == "WHO") { social_send_who(ctx, ps); return; }
+	if (op == "SOCIAL") { social_handle_packet(ctx, ps, p, now_ms); return; }
+	if (op == "CHEST") { builder_handle_chest_op(ctx, ps, p); return; }
+	if (op == "BUILDMAP") { builder_handle_map_cmd(ctx, ps, p); return; }
+	if (op == "DEV") { admin_handle_dev(ctx, ps, p); return; }
+	if (op == "MOD") { admin_handle_mod(ctx, ps, p, now_sec); return; }
+	if (op == "ACT") {
+		string act = field(p, 1, "");
+		string arg1 = field(p, 2, "");
+		if (act == "gather") world_handle_gather(ctx, ps, now_ms);
+		else if (act == "attack") combat_handle_attack(ctx, ps, now_ms);
+		else if (act == "use_belt") world_handle_use_item(ctx, ps);
+		else if (act == "equip") {
+			int sl = safe_int(arg1, 0, BELT_SLOTS - 1, 0);
+			ps.belt_slot = sl;
+			ItemStack@ cur = ps.active_item();
+			if (@cur != null) {
+				ItemDef@ idf = find_item(cur.id);
+				ctx.send_speech(ps, MBUF_GAME, true, "Slot " + (sl + 1) + ": " + (@idf != null ? idf.name : cur.id) + " x" + cur.qty);
+			} else {
+				ctx.send_speech(ps, MBUF_GAME, true, "Slot " + (sl + 1) + " empty.");
+			}
+			ctx.send_inv(ps);
+		}
+		else if (act == "craft") world_handle_craft(ctx, ps, arg1);
+		else if (act == "build") builder_place_structure(ctx, ps, arg1);
+		else if (act == "interact") {
+			WorldStructure@ near = builder_find_near(ctx, ps.x, ps.y, ps.z, 2.7);
+			if (@near != null) builder_interact(ctx, ps);
+			else world_handle_gather(ctx, ps, now_ms);
+		}
+		else if (act == "lock") builder_toggle_lock(ctx, ps);
+		else if (act == "repair") builder_repair(ctx, ps);
+		else if (act == "demolish") builder_demolish(ctx, ps);
+	}
+}
+
+string build_ent_token(const string&in id_str, const string&in kind, const string&in name, double x, double y, double z, int fac, uint st) {
+	return id_str + "," + kind + "," + wire_escape(name) + "," + fmt2(x) + "," + fmt2(y) + "," + fmt2(z) + "," + fac + "," + st;
+}
+
+void send_scoped_snapshots(ServerCtx@ ctx) {
+	for (uint i = 0; i < ctx.sessions.length(); i++) {
+		PlayerSession@ ps = ctx.sessions[i];
+		if (!ps.authed || ps.peer_id == 0) continue;
+
+		string zname = ctx.map.zone_name_at(ps.x, ps.y);
+		string header = "SNAP|" + ctx.tick_count + "|" + fmt2(ps.x) + "|" + fmt2(ps.y) + "|" + fmt2(ps.z) + "|"
+			+ ps.facing + "|" + ps.hp + "|" + ps.hunger + "|" + ps.thirst + "|" + ps.stamina + "|" + ps.warmth + "|"
+			+ (ctx.is_night ? "1" : "0") + "|" + (ctx.is_raining ? "1" : "0") + "|" + wire_escape(zname) + "|";
+
+		string ents = "";
+		for (uint j = 0; j < ctx.sessions.length(); j++) {
+			PlayerSession@ other = ctx.sessions[j];
+			if (@other == @ps || !other.authed || other.peer_id == 0) continue;
+			if (get_3d_distance(ps.x, ps.y, ps.z, other.x, other.y, other.z) > EARSHOT_RADIUS) continue;
+			string tok = build_ent_token("p" + other.peer_id, "player", other.name, other.x, other.y, other.z, other.facing, other.blocking ? 1 : 0);
+			if (header.length() + ents.length() + tok.length() + 2 <= uint(MAX_UDP_PAYLOAD)) {
+				if (ents.length() > 0) ents += ";";
+				ents += tok;
+			}
+		}
+		for (uint m = 0; m < ctx.mobs.length(); m++) {
+			WildlifeMob@ mob = ctx.mobs[m];
+			if (get_3d_distance(ps.x, ps.y, ps.z, mob.x, mob.y, mob.z) > EARSHOT_RADIUS) continue;
+			string tok = build_ent_token("m" + mob.id, mob.kind, mob.name, mob.x, mob.y, mob.z, mob.facing, mob.ai_state);
+			if (header.length() + ents.length() + tok.length() + 2 <= uint(MAX_UDP_PAYLOAD)) {
+				if (ents.length() > 0) ents += ";";
+				ents += tok;
+			}
+		}
+		for (uint d = 0; d < ctx.drops.length(); d++) {
+			LootDrop@ ld = ctx.drops[d];
+			if (get_3d_distance(ps.x, ps.y, ps.z, ld.x, ld.y, ld.z) > EARSHOT_RADIUS) continue;
+			ItemDef@ idf = find_item(ld.item_id);
+			string tok = build_ent_token("d" + ld.id, "drop", (@idf != null ? idf.name : ld.item_id), ld.x, ld.y, ld.z, 0, uint(ld.qty));
+			if (header.length() + ents.length() + tok.length() + 2 <= uint(MAX_UDP_PAYLOAD)) {
+				if (ents.length() > 0) ents += ";";
+				ents += tok;
+			}
+		}
+		if (ents.length() == 0) ents = "-";
+		ctx.send_ch(ps.peer_id, CH_SNAPSHOT, header + ents, false);
+	}
+}
+
+void main() {
+	init_catalog();
+	parse_cli_args(g_srv);
+
+	// Resolve paths smoothly whether run from server/ (.exe default), repo root, or with --data-dir
+	if (!file_exists(g_srv.active_map_path)) {
+		if (file_exists("server/" + g_srv.active_map_path)) g_srv.active_map_path = "server/" + g_srv.active_map_path;
+		else if (file_exists("../" + g_srv.active_map_path)) g_srv.active_map_path = "../" + g_srv.active_map_path;
+	}
+	if (g_srv.data_dir == "data" && !directory_exists("data") && directory_exists("server/data")) {
+		g_srv.data_dir = "server/data";
+	} else if (g_srv.data_dir != "data" && !directory_exists(g_srv.data_dir) && directory_exists("../" + g_srv.data_dir)) {
+		g_srv.data_dir = "../" + g_srv.data_dir;
+	}
+	if (!directory_exists(g_srv.data_dir)) directory_create(g_srv.data_dir);
+	if (g_srv.test_mode) g_srv.logger.log_path = g_srv.data_dir + "/server.log";
+	g_srv.logger.init(g_srv.port, g_srv.headless);
+
+	g_srv.accounts.db_path = g_srv.data_dir + "/accounts.dat";
+	g_srv.accounts.devs_path = g_srv.data_dir + "/devs.txt";
+	g_srv.objects_db_path = g_srv.data_dir + "/world_objects.dat";
+
+	// 1. Fatal map validation before opening port
+	string err;
+	if (!g_srv.map.load_from_file(g_srv.active_map_path, err)) {
+		g_srv.logger.fatal("Fatal Map Error", err);
+		exit(1);
+	}
+	world_init_nodes(g_srv);
+	g_srv.logger.log("INFO", "Loaded map '" + g_srv.map.name + "' (" + g_srv.map.width + "x" + g_srv.map.height + "), " + g_srv.nodes.length() + " resource nodes.");
+
+	// 2. Verify serialized map chunk size stays under MAX_UDP_PAYLOAD
+	string esc_map = wire_escape(g_srv.map.serialize());
+	if (pkt_3("MAP_CHK", "0", esc_map.substr(0, esc_map.length() < uint(MAP_CHUNK_BYTES) ? esc_map.length() : uint(MAP_CHUNK_BYTES))).length() > uint(MAX_UDP_PAYLOAD)) {
+		g_srv.logger.fatal("Fatal Packet Bounds Error", "Map chunk payload exceeds MAX_UDP_PAYLOAD.");
+		exit(1);
+	}
+
+	// 3. Fatal account store & world objects load
+	if (!g_srv.accounts.load(err)) {
+		g_srv.logger.fatal("Fatal Account Store Error", err);
+		exit(1);
+	}
+	if (!world_load_objects(g_srv, err)) {
+		g_srv.logger.fatal("Fatal World Objects Error", err);
+		exit(1);
+	}
+	g_srv.load_soft_data();
+
+	// 4. Spawn wildlife/bots and open ENet port
+	wildlife_set_target_count(g_srv, g_srv.target_wildlife, false);
+	wildlife_set_target_count(g_srv, g_srv.target_bots, true);
+
+	@g_srv.net = network();
+	g_srv.net.receive_timeout_event = true;
+	if (!g_srv.net.setup_server(g_srv.port, MAX_CHANNELS, MAX_PEERS)) {
+		g_srv.logger.fatal("Fatal Network Error", "Failed to bind ENet UDP port " + g_srv.port + ". Is another server already running?");
+		exit(1);
+	}
+	if (g_srv.test_mode) g_srv.logger.log("WARN", "TEST MODE ACTIVE: rate limits relaxed and guests allowed.");
+	if (g_srv.allow_guests && !g_srv.test_mode) g_srv.logger.log("WARN", "Guest connections enabled via --allow-guests.");
+	g_srv.logger.log("READY", "Server listening on port " + g_srv.port + " (proto=" + PROTO_VERSION + ", accounts=" + g_srv.accounts.accounts.length() + ", objects=" + g_srv.structures.length() + ").");
+
+	timer clock;
+	timer summary_timer;
+	uint64 worst_tick_ms = 0;
+
+	while (true) {
+		uint64 tick_start = clock.elapsed;
+		int64 now_sec = int64(TIME_STAMP);
+
+		// 1. Drain network
+		while (true) {
+			const network_event@ ev = g_srv.net.request(0);
+			if (ev.type == event_none) break;
+			if (ev.type == event_connect) {
+				PlayerSession ps;
+				ps.peer_id = ev.peer_id;
+				ps.ip = g_srv.net.get_peer_address(ev.peer_id);
+				g_srv.sessions.insert_last(ps);
+				g_srv.logger.log("NET", "Peer " + ev.peer_id + " connected from " + ps.ip);
+			} else if (ev.type == event_disconnect || ev.type == event_disconnect_timeout) {
+				PlayerSession@ ps = g_srv.find_session_by_peer(ev.peer_id);
+				if (@ps != null) {
+					g_srv.logger.log("NET", "Peer " + ev.peer_id + " (" + ps.name + ") disconnected (" + (ev.type == event_disconnect_timeout ? "timeout" : "closed") + ")");
+					if (ps.authed && !ps.is_guest && ev.type == event_disconnect_timeout) {
+						// Hold grace window for 15s on transient packet drop
+						ps.peer_id = 0;
+						ps.input_mask = 0;
+						ps.disconnected_at_ms = tick_start;
+						ps.grace_until_ms = tick_start + GRACE_DISCONNECT_MS;
+					} else {
+						if (ps.authed && @ps.account != null) {
+							ps.account.last_x = ps.x; ps.account.last_y = ps.y; ps.account.last_z = ps.z;
+							ctx_save_playtime(ps, tick_start);
+							g_srv.accounts.dirty = true;
+							social_notify_friends_presence(g_srv, ps, false);
+						}
+						for (uint k = 0; k < g_srv.sessions.length(); k++) {
+							if (@g_srv.sessions[k] == @ps) { g_srv.sessions.remove_at(k); break; }
+						}
+					}
+				}
+			} else if (ev.type == event_receive) {
+				PlayerSession@ ps = g_srv.find_session_by_peer(ev.peer_id);
+				if (@ps == null) continue;
+				string[]@ p = pkt_parse(ev.message);
+				if (ev.channel == CH_INPUT && pkt_op(p) == "INPUT") {
+					uint m_idx = (p.length() >= 4) ? 2 : 1;
+					ps.input_mask = uint(safe_int(field(p, m_idx, "0"), 0, 255, 0));
+					ps.facing = wrap_deg(safe_int(field(p, m_idx + 1, "0"), 0, 359, ps.facing));
+					if ((ps.input_mask & IN_BLOCK) != 0) {
+						ps.blocking = true;
+						ps.block_until_ms = tick_start + 350;
+					}
+				} else if (ev.channel == CH_CHAT && pkt_op(p) == "CHAT") {
+					chat_handle_packet(g_srv, ps, p, tick_start, now_sec);
+				} else if (ev.channel == CH_CONTROL) {
+					handle_control_packet(g_srv, ps, p, tick_start, now_sec);
+				}
+			}
+		}
+
+		// Expire timed-out grace sessions
+		for (int i = int(g_srv.sessions.length()) - 1; i >= 0; i--) {
+			PlayerSession@ ps = g_srv.sessions[uint(i)];
+			if (ps.peer_id == 0 && tick_start >= ps.grace_until_ms) {
+				if (@ps.account != null) {
+					ps.account.last_x = ps.x; ps.account.last_y = ps.y; ps.account.last_z = ps.z;
+					ctx_save_playtime(ps, tick_start);
+					g_srv.accounts.dirty = true;
+					social_notify_friends_presence(g_srv, ps, false);
+				}
+				g_srv.sessions.remove_at(uint(i));
+			}
+		}
+
+		// 2. Step simulation
+		double dt = 1.0 / double(TICK_HZ);
+		for (uint i = 0; i < g_srv.sessions.length(); i++) {
+			world_step_player_move(g_srv, g_srv.sessions[i], dt, tick_start);
+		}
+		combat_step_arrows(g_srv, dt, tick_start);
+		wildlife_step_all(g_srv, dt, tick_start);
+		world_step_vitals_and_env(g_srv, tick_start);
+
+		// 3. Broadcast 15 Hz earshot-scoped snapshots
+		g_srv.tick_count++;
+		if (g_srv.tick_count % uint64(SNAPSHOT_EVERY_TICKS) == 0) {
+			send_scoped_snapshots(g_srv);
+		}
+
+		// 4. Periodic save & summary log
+		if (tick_start >= g_srv.next_autosave_ms) {
+			g_srv.next_autosave_ms = tick_start + (g_srv.test_mode ? 500 : 10000);
+			for (uint i = 0; i < g_srv.sessions.length(); i++) {
+				PlayerSession@ ps = g_srv.sessions[i];
+				if (ps.authed && @ps.account != null) {
+					ps.account.last_x = ps.x; ps.account.last_y = ps.y; ps.account.last_z = ps.z;
+					ctx_save_playtime(ps, tick_start);
+					g_srv.accounts.dirty = true;
+				}
+			}
+			string serr;
+			if (g_srv.accounts.dirty) g_srv.accounts.save(serr);
+			if (g_srv.objects_dirty) world_save_objects(g_srv, serr);
+		}
+
+		uint64 tick_dur = clock.elapsed - tick_start;
+		if (tick_dur > worst_tick_ms) worst_tick_ms = tick_dur;
+
+		if (summary_timer.elapsed >= 15000) {
+			summary_timer.restart();
+			int active_p = 0;
+			for (uint i = 0; i < g_srv.sessions.length(); i++) if (g_srv.sessions[i].authed && g_srv.sessions[i].peer_id != 0) active_p++;
+			string sum = "Online: " + active_p + " | Mobs: " + g_srv.mobs.length() + " | Objects: " + g_srv.structures.length() + " | Worst tick: " + worst_tick_ms + "ms";
+			g_srv.logger.set_status(sum);
+			if (active_p > 0) g_srv.logger.log("STAT", sum);
+			worst_tick_ms = 0;
+		}
+
+		g_srv.logger.pump_ui("Online players: " + g_srv.sessions.length() + ", map " + g_srv.map.name + ", port " + g_srv.port);
+		if (g_srv.logger.quit_requested) break;
+
+		uint64 spent = clock.elapsed - tick_start;
+		int sleep_ms = TICK_MS - int(spent);
+		if (sleep_ms < 5) sleep_ms = 5;
+		wait(sleep_ms);
+	}
+
+	string serr;
+	g_srv.accounts.save(serr);
+	world_save_objects(g_srv, serr);
+	g_srv.net.destroy(true);
+	g_srv.logger.log("INFO", "Server shut down cleanly.");
+}
+
+void ctx_save_playtime(PlayerSession@ ps, uint64 now_ms) {
+	if (@ps == null || @ps.account == null || ps.last_playtime_ms == 0) return;
+	uint64 sec = (now_ms - ps.last_playtime_ms) / 1000;
+	if (sec > 0) {
+		ps.account.playtime_sec += sec;
+		ps.last_playtime_ms = now_ms;
+	}
+}

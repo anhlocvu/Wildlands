@@ -1,0 +1,173 @@
+// Server wildlife & practice bot AI simulation.
+// Supports idempotent target counts (set_wildlife_count / set_bot_count).
+
+#include "combat.nvgt"
+
+string pick_wildlife_kind(double&out sx, double&out sy) {
+	int roll = random(1, 100);
+	if (roll <= 32) {
+		sx = random(18, 98); sy = random(68, 108);
+		return "rabbit";
+	} else if (roll <= 58) {
+		sx = random(20, 105); sy = random(70, 110);
+		return "deer";
+	} else if (roll <= 82) {
+		sx = random(15, 108); sy = random(72, 112);
+		return "wolf";
+	} else if (roll <= 94) {
+		sx = random(12, 32); sy = random(10, 58);
+		return "bear";
+	}
+	sx = random(40, 105); sy = random(8, 30);
+	return "bandit";
+}
+
+void spawn_mob(ServerCtx@ ctx, const string&in kind, double sx, double sy, bool is_bot) {
+	SpeciesDef@ sp = find_species(kind);
+	if (@sp == null) return;
+	WildlifeMob mob;
+	mob.id = ctx.next_entity_id++;
+	mob.kind = kind;
+	mob.name = is_bot ? ("Bot_" + mob.id) : sp.name;
+	mob.is_bot = is_bot;
+	mob.x = clampd(sx, 2.0, double(ctx.map.width - 2));
+	mob.y = clampd(sy, 2.0, double(ctx.map.height - 2));
+	mob.z = ctx.map.ground_z_at(mob.x, mob.y, 0.0);
+	mob.home_x = mob.x; mob.home_y = mob.y; mob.home_z = mob.z;
+	mob.facing = random(0, 7) * 45;
+	mob.hp = sp.max_hp;
+	mob.max_hp = sp.max_hp;
+	mob.ai_state = AI_ROAM;
+	ctx.mobs.insert_last(mob);
+}
+
+int count_mobs_by_type(ServerCtx@ ctx, bool is_bot) {
+	int c = 0;
+	for (uint i = 0; i < ctx.mobs.length(); i++) {
+		if (ctx.mobs[i].is_bot == is_bot) c++;
+	}
+	return c;
+}
+
+void wildlife_set_target_count(ServerCtx@ ctx, int count, bool bots) {
+	count = clampi(count, 0, 50);
+	if (bots) ctx.target_bots = count;
+	else ctx.target_wildlife = count;
+
+	int cur = count_mobs_by_type(ctx, bots);
+	while (cur < count) {
+		double sx = 50.0, sy = 75.0;
+		string kind = "bot_survivor";
+		if (bots) {
+			sx = random(42, 58);
+			sy = random(38, 60);
+		} else {
+			kind = pick_wildlife_kind(sx, sy);
+		}
+		spawn_mob(ctx, kind, sx, sy, bots);
+		cur++;
+	}
+	for (int i = int(ctx.mobs.length()) - 1; i >= 0 && cur > count; i--) {
+		if (ctx.mobs[uint(i)].is_bot == bots) {
+			ctx.mobs.remove_at(uint(i));
+			cur--;
+		}
+	}
+}
+
+void wildlife_step_all(ServerCtx@ ctx, double dt, uint64 now_ms) {
+	// Maintain target populations smoothly when creatures die.
+	if (ctx.tick_count % uint64(TICK_HZ * 5) == 0) {
+		wildlife_set_target_count(ctx, ctx.target_wildlife, false);
+		wildlife_set_target_count(ctx, ctx.target_bots, true);
+	}
+
+	for (uint i = 0; i < ctx.mobs.length(); i++) {
+		WildlifeMob@ mob = ctx.mobs[i];
+		SpeciesDef@ sp = find_species(mob.kind);
+		if (@sp == null) continue;
+
+		// Periodic ambient vocalizations for 3D hunting by ear.
+		if (now_ms >= mob.next_sound_ms) {
+			mob.next_sound_ms = now_ms + uint64(random(5500, 12000));
+			if (sp.snd_idle.length() > 0) {
+				ctx.broadcast_sfx_3d("wildlife", sp.snd_idle, mob.x, mob.y, mob.z, 0.72, 26.0);
+			}
+		}
+
+		// Target lookup for aggro / flee.
+		PlayerSession@ target = null;
+		double best_d = sp.aggro_range;
+		for (uint p = 0; p < ctx.sessions.length(); p++) {
+			PlayerSession@ ps = ctx.sessions[p];
+			if (!ps.authed || ps.peer_id == 0 || ctx.map.is_safe_at(ps.x, ps.y)) continue;
+			double d = get_2d_distance(mob.x, mob.y, ps.x, ps.y);
+			if (mob.aggro_peer == ps.peer_id && d <= sp.aggro_range * 1.5) {
+				@target = @ps;
+				best_d = d;
+				break;
+			}
+			if ((sp.hostile || !sp.hostile) && d <= best_d) {
+				best_d = d;
+				@target = @ps;
+			}
+		}
+
+		if (mob.ai_state == AI_WINDUP) {
+			mob.vx = 0.0; mob.vy = 0.0;
+			if (now_ms >= mob.windup_end_ms) {
+				if (@target != null && get_2d_distance(mob.x, mob.y, target.x, target.y) <= sp.attack_range + 0.6 && !ctx.map.is_safe_at(target.x, target.y)) {
+					combat_damage_player(ctx, target, sp.damage, mob.name, false, mob.x, mob.y, mob.z, now_ms);
+				}
+				mob.ai_state = AI_STALK;
+				mob.next_attack_ms = now_ms + sp.cooldown_ms;
+			}
+			continue;
+		}
+
+		if (@target != null && !sp.hostile && !mob.is_bot && best_d <= 8.0) {
+			// Passive rabbits/deer flee opposite to player.
+			mob.ai_state = AI_FLEE;
+			mob.facing = wrap_deg(int(bearing_to(target.x, target.y, mob.x, mob.y) + 0.5));
+		} else if (@target != null && (sp.hostile || mob.aggro_peer == target.peer_id)) {
+			mob.ai_state = AI_STALK;
+			mob.aggro_peer = target.peer_id;
+			mob.facing = wrap_deg(int(bearing_to(mob.x, mob.y, target.x, target.y) + 0.5));
+			if (best_d <= sp.attack_range && now_ms >= mob.next_attack_ms) {
+				mob.ai_state = AI_WINDUP;
+				mob.windup_end_ms = now_ms + sp.windup_ms;
+				if (sp.snd_attack.length() > 0) {
+					ctx.broadcast_sfx_3d("threat", sp.snd_attack, mob.x, mob.y, mob.z, 0.95, 24.0);
+				}
+				continue;
+			}
+		} else {
+			mob.ai_state = AI_ROAM;
+			mob.aggro_peer = 0;
+			if (now_ms >= mob.next_think_ms) {
+				mob.next_think_ms = now_ms + uint64(random(2000, 4500));
+				if (get_2d_distance(mob.x, mob.y, mob.home_x, mob.home_y) > 14.0) {
+					mob.facing = wrap_deg(int(bearing_to(mob.x, mob.y, mob.home_x, mob.home_y) + 0.5));
+				} else {
+					mob.facing = random(0, 7) * 45;
+				}
+			}
+		}
+
+		double spd = mob.ai_state == AI_ROAM ? sp.speed * 0.45 : sp.speed;
+		mob.vx = bearing_x(mob.facing) * spd;
+		mob.vy = bearing_y(mob.facing) * spd;
+		double nx = mob.x + mob.vx * dt;
+		double ny = mob.y + mob.vy * dt;
+		string mat;
+		bool blocked = ctx.map.blocked_by_wall(nx, ny, mob.z, 0.35, mat);
+		if (!blocked && !mob.is_bot && ctx.map.is_safe_at(nx, ny)) blocked = true; // Wildlife stays outside safe settlement!
+		if (!blocked) {
+			mob.x = nx; mob.y = ny;
+			mob.z = ctx.map.ground_z_at(mob.x, mob.y, mob.z);
+		} else {
+			mob.facing = wrap_deg(mob.facing + 135);
+			mob.vx = 0.0; mob.vy = 0.0;
+		}
+	}
+}

@@ -1,0 +1,97 @@
+// Server windowed & rotating-file logger.
+// Default mode opens an accessible audio_form window for blind or sighted operators.
+// --headless disables the SDL window and writes cleanly to stdout + logs/server.log.
+
+#include "form.nvgt"
+#include "../../common/constants.nvgt"
+
+const uint64 LOG_ROTATE_BYTES = 2 * 1024 * 1024;
+const uint LOG_UI_MAX_LINES = 250;
+
+class ServerLogger {
+	bool headless = false;
+	string log_path = "logs/server.log";
+	audio_form@ ui = null;
+	int f_log_list = -1;
+	int f_status = -1;
+	int f_quit = -1;
+	string[] recent_lines;
+	bool quit_requested = false;
+
+	string two_d(int v) { return v < 10 ? "0" + v : "" + v; }
+
+	string timestamp_now() {
+		return DATE_YEAR + "-" + two_d(DATE_MONTH) + "-" + two_d(DATE_DAY) + " "
+			+ two_d(TIME_HOUR) + ":" + two_d(TIME_MINUTE) + ":" + two_d(TIME_SECOND);
+	}
+
+	void init(uint16 port, bool is_headless) {
+		headless = is_headless;
+		if (!directory_exists("logs")) directory_create("logs");
+		if (!headless) {
+			@ui = audio_form();
+			ui.create_window(GAME_NAME + " Dedicated Server - Port " + port, true, false, false);
+			f_log_list = ui.create_list("Server Log", int(LOG_UI_MAX_LINES));
+			f_status = ui.create_status_bar("Server Status", "Starting...");
+			f_quit = ui.create_button("Shutdown Server", false, true);
+			ui.focus_silently(f_log_list);
+		}
+	}
+
+	void log(const string&in level, const string&in msg) {
+		string line = timestamp_now() + " [" + level + "] " + msg;
+		if (headless || is_console_available()) {
+			println(line);
+		}
+		// Rotate if oversized.
+		if (file_exists(log_path) && uint64(file_get_size(log_path)) > LOG_ROTATE_BYTES) {
+			string bak = log_path + ".bak";
+			if (file_exists(bak)) file_delete(bak);
+			file_copy(log_path, bak, true);
+			file_delete(log_path);
+		}
+		file_put_contents(log_path, line + "\r\n", true);
+		recent_lines.insert_last(line);
+		while (recent_lines.length() > LOG_UI_MAX_LINES) recent_lines.remove_at(0);
+
+		if (!headless && @ui != null && f_log_list >= 0) {
+			if (ui.get_list_count(f_log_list) >= int(LOG_UI_MAX_LINES)) {
+				ui.delete_list_item(f_log_list, 0, false, false);
+			}
+			ui.add_list_item(f_log_list, line, "", -1, false, false);
+		}
+	}
+
+	void set_status(const string&in status_text) {
+		if (!headless && @ui != null && f_status >= 0) {
+			ui.set_text(f_status, status_text);
+		}
+	}
+
+	void pump_ui(const string&in summary_line) {
+		if (headless || @ui == null) return;
+		ui.monitor();
+		if (ui.is_pressed(f_quit)) {
+			quit_requested = true;
+			return;
+		}
+		if (key_pressed(KEY_L)) {
+			string out_msg = "";
+			uint n = recent_lines.length();
+			uint start = n > 3 ? n - 3 : 0;
+			for (uint i = start; i < n; i++) out_msg += recent_lines[i] + ". ";
+			speak(out_msg.length() > 0 ? out_msg : "No logs yet.", true);
+		} else if (key_pressed(KEY_S)) {
+			speak(summary_line, true);
+		} else if (key_pressed(KEY_F1)) {
+			speak("Server operator keys. Up and Down browse log list. L reads last 3 logs. S reads status summary. Escape or Shutdown button stops server safely.", true);
+		}
+	}
+
+	void fatal(const string&in title, const string&in err) {
+		log("FATAL", title + ": " + err);
+		if (!headless) {
+			alert(title, err);
+		}
+	}
+}

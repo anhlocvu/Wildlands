@@ -1,0 +1,174 @@
+// Modal slash-triggered chat bar supporting Global, Local, PM, Reply, Team, Emote, and slash commands.
+
+#include "net_client.nvgt"
+
+void chat_dispatch_line(NetClient@ nc, const string&in raw) {
+	string line = strip_control_chars(raw, MAX_CHAT_LEN);
+	if (line.length() == 0) {
+		say("Chat cancelled.", true);
+		return;
+	}
+
+	if (!line.starts_with("/")) {
+		nc.send_chat_pkt(pkt_4("CHAT", "global", "-", wire_escape(line)));
+		g_audio.play_ui_cue("ui/chat_send.ogg", 0.75f);
+		return;
+	}
+
+	string rest = line.substr(1).trim_whitespace();
+	if (rest.length() == 0) return;
+
+	int sp = rest.find(" ");
+	string cmd = (sp < 0 ? rest : rest.substr(0, uint(sp))).lower();
+	string body = (sp < 0 ? "" : rest.substr(uint(sp) + 1)).trim_whitespace();
+
+	if (cmd == "help" || cmd == "?") {
+		say("Chat commands: message for global, slash pm name message, slash r message to reply, slash local message, slash team message, slash emote action, slash who, slash ping.", true);
+		return;
+	}
+	if (cmd == "who") { nc.request_who(true); return; }
+	if (cmd == "ping") { nc.request_ping(true); return; }
+
+	if (cmd == "r" || cmd == "reply") {
+		if (nc.last_pm_sender.length() == 0) {
+			g_audio.play_ui_cue("error.ogg", 0.8f);
+			say("Nobody has whispered you yet.", true);
+			return;
+		}
+		if (body.length() == 0) {
+			g_audio.play_ui_cue("error.ogg", 0.8f);
+			say("Type a message after slash r.", true);
+			return;
+		}
+		nc.send_chat_pkt(pkt_4("CHAT", "pm", nc.last_pm_sender, wire_escape(body)));
+		g_audio.play_ui_cue("ui/chat_send.ogg", 0.75f);
+		return;
+	}
+
+	if (cmd == "pm" || cmd == "w" || cmd == "msg" || cmd == "tell") {
+		int sp2 = body.find(" ");
+		if (sp2 <= 0) {
+			g_audio.play_ui_cue("error.ogg", 0.8f);
+			say("Usage: slash pm playername message.", true);
+			return;
+		}
+		string target = sanitize_name(body.substr(0, uint(sp2)));
+		string msg = body.substr(uint(sp2) + 1).trim_whitespace();
+		if (target.length() == 0 || msg.length() == 0) {
+			g_audio.play_ui_cue("error.ogg", 0.8f);
+			say("Usage: slash pm playername message.", true);
+			return;
+		}
+		nc.send_chat_pkt(pkt_4("CHAT", "pm", target, wire_escape(msg)));
+		g_audio.play_ui_cue("ui/chat_send.ogg", 0.75f);
+		return;
+	}
+
+	if (cmd == "local" || cmd == "say") {
+		if (body.length() == 0) return;
+		nc.send_chat_pkt(pkt_4("CHAT", "local", "-", wire_escape(body)));
+		g_audio.play_ui_cue("ui/chat_send.ogg", 0.75f);
+		return;
+	}
+
+	if (cmd == "global" || cmd == "g") {
+		if (body.length() == 0) return;
+		nc.send_chat_pkt(pkt_4("CHAT", "global", "-", wire_escape(body)));
+		g_audio.play_ui_cue("ui/chat_send.ogg", 0.75f);
+		return;
+	}
+
+	if (cmd == "team" || cmd == "t") {
+		if (body.length() == 0) return;
+		nc.send_chat_pkt(pkt_4("CHAT", "team", "-", wire_escape(body)));
+		g_audio.play_ui_cue("ui/chat_send.ogg", 0.75f);
+		return;
+	}
+
+	if (cmd == "emote" || cmd == "me") {
+		if (body.length() == 0) return;
+		nc.send_chat_pkt(pkt_4("CHAT", "emote", "-", wire_escape(body)));
+		g_audio.play_ui_cue("ui/chat_send.ogg", 0.75f);
+		return;
+	}
+
+	g_audio.play_ui_cue("error.ogg", 0.8f);
+	say("Unknown chat command: " + cmd + ". Type slash help.", true);
+}
+
+void run_modal_chat_input(NetClient@ nc, const string&in prefill = "") {
+	g_audio.play_ui_cue("ui/chat_open.ogg", 0.75f);
+	string buf = prefill;
+	if (prefill.length() > 0) say("Chat: " + prefill, true);
+	else say("Chat. Type a message or slash command.", true);
+
+	// Drain key character generated on the opening keypress
+	get_characters();
+
+	while (true) {
+		wait(5);
+		nc.pump();
+		if (nc.state == CONN_DISCONNECTED || nc.state == CONN_IDLE) return;
+
+		if (key_pressed(KEY_ESCAPE)) {
+			g_audio.play_ui_cue("ui/chat_close.ogg", 0.75f);
+			say("Chat cancelled.", true);
+			return;
+		}
+
+		if (key_pressed(KEY_RETURN)) {
+			chat_dispatch_line(nc, buf);
+			return;
+		}
+
+		bool ctrl = key_down(KEY_LCTRL) || key_down(KEY_RCTRL);
+		if (ctrl && key_pressed(KEY_V)) {
+			string pasted = strip_control_chars(clipboard_get_text(), MAX_CHAT_LEN);
+			if (pasted.length() > 0) {
+				buf += pasted;
+				if (buf.length() > MAX_CHAT_LEN) buf = buf.substr(0, MAX_CHAT_LEN);
+				g_audio.play_ui_cue("ui/key_click.ogg", 0.6f);
+				say("Pasted. " + buf, true);
+			}
+			get_characters();
+			continue;
+		}
+
+		if (ctrl && key_pressed(KEY_U)) {
+			buf = "";
+			g_audio.play_ui_cue("ui/key_backspace.ogg", 0.7f);
+			say("Cleared.", true);
+			continue;
+		}
+
+		if (key_pressed(KEY_BACK)) {
+			if (buf.length() > 0) {
+				string removed = buf.substr(buf.length() - 1, 1);
+				buf = buf.substr(0, buf.length() - 1);
+				g_audio.play_ui_cue("ui/key_backspace.ogg", 0.6f);
+				say(removed, true);
+			} else {
+				g_audio.play_ui_cue("error.ogg", 0.45f);
+			}
+			continue;
+		}
+
+		if (key_pressed(KEY_UP) || key_pressed(KEY_DOWN)) {
+			say(buf.length() > 0 ? buf : "Empty", true);
+			continue;
+		}
+
+		string typed = get_characters();
+		if (typed.length() > 0) {
+			for (uint i = 0; i < typed.length(); i++) {
+				string ch = typed.substr(i, 1);
+				uint8 b = character_to_ascii(ch);
+				if (b < 32 || b == 127) continue;
+				if (buf.length() < MAX_CHAT_LEN) {
+					buf += ch;
+					g_audio.play_ui_cue("ui/key_click.ogg", 0.45f);
+				}
+			}
+		}
+	}
+}
