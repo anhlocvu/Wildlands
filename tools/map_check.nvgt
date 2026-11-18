@@ -137,6 +137,38 @@ void main() {
 		check("template " + tmpls[ti] + " valid & silent", ok && tm.ambience_default == "none" && tm.collect_sound_refs().length() == 0, terr);
 	}
 
+	// Regression checks: 1x1 staircase/deck & steep 1-tile-wide directional ramp on base ground
+	string cell_raw =
+		make_m_line("Cell Stairs & Ramp", 60, 60, 0, 40, "grass", "none") + "\n"
+		+ make_s_line("Origin", 20, 20, 0, 0) + "\n"
+		+ make_p_line("Base Ground", 0, 0, 60, 60, 0, 0, "grass", "floor", false) + "\n"
+		+ make_p_line("Stair 1x1", 5, 5, 5, 5, 0, 20, "stone", "stairs", false) + "\n"
+		+ make_p_line("Deck 1x1", 10, 5, 10, 5, 20, 20, "stone", "floor", false) + "\n"
+		+ make_p_line("Steep Ramp", 5, 10, 5, 15, 0, 20, "wood", "ramp", false, "y", 1) + "\n";
+	WorldMap cm;
+	string cerr;
+	check("1x1 stair/ramp test map loads", cm.load_from_string(cell_raw, cerr), cerr);
+	check("1x1 stair found at (5.2, 5.15, 0)", @cm.find_stair_at(5.2, 5.15, 0.0) != null);
+	check("1x1 stair NOT falsely matched at neighbor (4, 5, 0)", @cm.find_stair_at(4.0, 5.0, 0.0) == null);
+	check("1x1 deck supports at (10.2, 5.1, 20)", cm.find_support_at(10.2, 5.1, 20.0, sz, ss, dw, ur) && abs(sz - 20.0) < 0.01);
+	// Walking North along steep 1-tile-wide ramp (x=5, y=10..15, z=0..20 => slope=4 per tile)
+	double rz = 0.0;
+	for (int step_y = 11; step_y <= 15; step_y++) {
+		bool ok_r = cm.find_support_at(5.2, double(step_y), rz, sz, ss, dw, ur);
+		if (ok_r) rz = sz;
+	}
+	check("steep 1-tile-wide ramp elevates Z to 20 when walking South->North", abs(rz - 20.0) < 0.01, "rz=" + fmt2(rz));
+	// Lower floor below elevated ramp must NOT snap player at z=0 up to floating ramp
+	string fly_raw =
+		make_m_line("Floating Ramp", 40, 40, 0, 30, "grass", "none") + "\n"
+		+ make_s_line("Start", 10, 10, 0, 0) + "\n"
+		+ make_p_line("Ground", 0, 0, 40, 40, 0, 0, "grass", "floor", false) + "\n"
+		+ make_p_line("Sky Ramp", 10, 10, 12, 15, 10, 15, "wood", "ramp", false, "y", 1) + "\n";
+	WorldMap fm;
+	check("floating ramp map loads", fm.load_from_string(fly_raw, cerr), cerr);
+	bool ok_g = fm.find_support_at(11.0, 11.0, 0.0, sz, ss, dw, ur);
+	check("ground below sky ramp stays at z=0", ok_g && abs(sz) < 0.01, "sz=" + fmt2(sz));
+
 	println(fails == 0 ? "PASS" : (fails + " failure(s)"));
 	exit(fails == 0 ? 0 : 1);
 }

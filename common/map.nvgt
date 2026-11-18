@@ -892,7 +892,7 @@ class WorldMap {
 		for (int i = int(platforms.length()) - 1; i >= 0; i--) {
 			MapPlatform@ pl = platforms[uint(i)];
 			if (pl.kind != "stairs") continue;
-			if (x >= pl.min_x && x <= pl.max_x && y >= pl.min_y && y <= pl.max_y && z >= pl.min_z - 0.5 && z <= pl.max_z + 0.5) {
+			if (x >= pl.min_x - TILE_CELL_PAD && x <= pl.max_x + TILE_CELL_PAD && y >= pl.min_y - TILE_CELL_PAD && y <= pl.max_y + TILE_CELL_PAD && z >= pl.min_z - 0.5 && z <= pl.max_z + 0.5) {
 				return pl;
 			}
 		}
@@ -902,7 +902,7 @@ class WorldMap {
 	MapPortal@ find_portal_at(double x, double y, double z) {
 		for (int i = int(portals.length()) - 1; i >= 0; i--) {
 			MapPortal@ pt = portals[uint(i)];
-			if (x >= pt.min_x && x <= pt.max_x && y >= pt.min_y && y <= pt.max_y && z >= pt.min_z - 0.8 && z <= pt.max_z + 0.8) {
+			if (x >= pt.min_x - TILE_CELL_PAD && x <= pt.max_x + TILE_CELL_PAD && y >= pt.min_y - TILE_CELL_PAD && y <= pt.max_y + TILE_CELL_PAD && z >= pt.min_z - 0.8 && z <= pt.max_z + 0.8) {
 				return pt;
 			}
 		}
@@ -912,23 +912,25 @@ class WorldMap {
 	MapHazard@ find_hazard_at(double x, double y, double z) {
 		for (int i = int(hazards.length()) - 1; i >= 0; i--) {
 			MapHazard@ hz = hazards[uint(i)];
-			if (x >= hz.min_x && x <= hz.max_x && y >= hz.min_y && y <= hz.max_y && z >= hz.min_z - 0.5 && z <= hz.max_z + 0.5) {
+			if (x >= hz.min_x - TILE_CELL_PAD && x <= hz.max_x + TILE_CELL_PAD && y >= hz.min_y - TILE_CELL_PAD && y <= hz.max_y + TILE_CELL_PAD && z >= hz.min_z - 0.5 && z <= hz.max_z + 0.5) {
 				return hz;
 			}
 		}
 		return null;
 	}
 
-	bool find_support_at(double x, double y, double z, double&out support_z, string&out support_surf, bool&out is_deep_water, bool&out is_under_roof) {
+	bool find_support_ex(double x, double y, double z, double&out support_z, string&out support_surf, bool&out is_deep_water, bool&out is_under_roof, bool&out on_ramp, double&out ramp_slope) {
 		bool found = false;
 		support_z = double(min_z - 10);
 		support_surf = default_surface;
 		is_deep_water = false;
 		is_under_roof = false;
+		on_ramp = false;
+		ramp_slope = 0.0;
 
 		for (uint i = 0; i < platforms.length(); i++) {
 			MapPlatform@ pl = platforms[i];
-			if (x < pl.min_x || x > pl.max_x || y < pl.min_y || y > pl.max_y) continue;
+			if (x < pl.min_x - TILE_CELL_PAD || x > pl.max_x + TILE_CELL_PAD || y < pl.min_y - TILE_CELL_PAD || y > pl.max_y + TILE_CELL_PAD) continue;
 			if (pl.is_roof && pl.min_z >= z + 1.4) {
 				is_under_roof = true;
 			}
@@ -939,38 +941,62 @@ class WorldMap {
 					support_z = pl.min_z;
 					support_surf = pl.surface;
 					is_deep_water = false;
+					on_ramp = false;
+					ramp_slope = 0.0;
+				} else if (pl.max_z > pl.min_z && abs(z - pl.max_z) <= 0.65 && (!found || pl.max_z > support_z)) {
+					found = true;
+					support_z = pl.max_z;
+					support_surf = pl.surface;
+					is_deep_water = false;
+					on_ramp = false;
+					ramp_slope = 0.0;
 				}
 				continue;
 			}
 			double pz = pl.max_z;
+			double this_slope = 0.0;
+			double step_tol = 0.85;
 			if (pl.kind == "ramp") {
 				double t = 0.0;
+				double span = 0.0;
 				if (pl.ramp_axis == "x") {
-					double span = pl.max_x - pl.min_x;
-					t = span > 0.01 ? clampd((x - pl.min_x) / span, 0.0, 1.0) : 0.0;
+					span = pl.max_x - pl.min_x;
+					if (span > 0.01) t = clampd((x - pl.min_x) / span, 0.0, 1.0);
+					else t = clampd(x - (pl.min_x - 0.5), 0.0, 1.0);
 				} else {
-					double span = pl.max_y - pl.min_y;
-					t = span > 0.01 ? clampd((y - pl.min_y) / span, 0.0, 1.0) : 0.0;
+					span = pl.max_y - pl.min_y;
+					if (span > 0.01) t = clampd((y - pl.min_y) / span, 0.0, 1.0);
+					else t = clampd(y - (pl.min_y - 0.5), 0.0, 1.0);
 				}
 				if (pl.ramp_dir < 0) t = 1.0 - t;
 				pz = pl.min_z + (pl.max_z - pl.min_z) * t;
+				double eff_span = span > 1.0 ? span : 1.0;
+				this_slope = (pl.max_z - pl.min_z) / eff_span;
+				if (z >= pl.min_z - 1.05) {
+					step_tol = clampd(1.05 + this_slope * 1.15, 1.05, 12.0);
+				}
 			}
-			if (pz <= z + 0.85 && (!found || pz > support_z)) {
+			bool beats = !found || pz > support_z || (pl.kind == "ramp" && pz >= support_z - 0.01);
+			if (pz <= z + step_tol && beats) {
 				found = true;
 				support_z = pz;
 				support_surf = pl.surface;
 				is_deep_water = false;
+				on_ramp = (pl.kind == "ramp");
+				ramp_slope = this_slope;
 			}
 		}
 
 		for (uint i = 0; i < waters.length(); i++) {
 			MapWater@ l = waters[i];
-			if (x >= l.min_x && x <= l.max_x && y >= l.min_y && y <= l.max_y && l.max_z <= z + 0.85) {
+			if (x >= l.min_x - TILE_CELL_PAD && x <= l.max_x + TILE_CELL_PAD && y >= l.min_y - TILE_CELL_PAD && y <= l.max_y + TILE_CELL_PAD && l.max_z <= z + 0.85) {
 				if (!found || l.max_z >= support_z) {
 					found = true;
 					support_z = l.max_z;
 					support_surf = "water";
 					is_deep_water = (l.depth == "deep");
+					on_ramp = false;
+					ramp_slope = 0.0;
 				}
 			}
 		}
@@ -985,11 +1011,19 @@ class WorldMap {
 					support_z = fz;
 					support_surf = d.material;
 					is_deep_water = false;
+					on_ramp = false;
+					ramp_slope = 0.0;
 				}
 			}
 		}
 
 		return found;
+	}
+
+	bool find_support_at(double x, double y, double z, double&out support_z, string&out support_surf, bool&out is_deep_water, bool&out is_under_roof) {
+		bool on_ramp;
+		double ramp_slope;
+		return find_support_ex(x, y, z, support_z, support_surf, is_deep_water, is_under_roof, on_ramp, ramp_slope);
 	}
 
 	double ground_z_at(double x, double y, double current_z) {

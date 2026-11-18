@@ -33,6 +33,9 @@ const uint64 GRACE_DISCONNECT_MS = 15000;
 // Movement & world bounds.
 const double WALK_SPEED_PER_SEC = 4.5;
 const double SPRINT_SPEED_PER_SEC = 7.2;
+const uint64 WALK_STEP_MS = 220;
+const uint64 SPRINT_STEP_MS = 140;
+const double TILE_CELL_PAD = 0.45;
 const double PLAYER_RADIUS = 0.35;
 const double GRAVITY_PER_SEC = 22.0;
 const double JUMP_VEL = 7.5;

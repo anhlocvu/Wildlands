@@ -165,10 +165,11 @@ void world_respawn_player(ServerCtx@ ctx, PlayerSession@ ps) {
 		ps.current_map = mi.slug;
 		ctx.send_map_sync(ps);
 	}
-	ps.x = @sp != null ? sp.x : 50.0;
-	ps.y = @sp != null ? sp.y : 46.0;
+	ps.x = double(round_coord(@sp != null ? sp.x : 50.0));
+	ps.y = double(round_coord(@sp != null ? sp.y : 46.0));
 	ps.z = @sp != null ? sp.z : 0.0;
 	ps.vx = 0.0; ps.vy = 0.0; ps.vz = 0.0;
+	ps.step_rem_x = 0.0; ps.step_rem_y = 0.0; ps.was_moving = false;
 	ps.on_ground = true;
 	ps.fall_start_z = ps.z;
 	ps.fall_air_sfx_sent = false;
@@ -204,11 +205,12 @@ bool world_transfer_player_map(ServerCtx@ ctx, PlayerSession@ ps, MapInstance@ d
 		ctx.broadcast_sfx_3d(old_map, "world", travel_sfx, ps.x, ps.y, ps.z, 0.7, 18.0);
 	}
 	ps.current_map = dest.slug;
-	ps.x = clampd(dx, 1.5, double(dest.map.width - 1.5));
-	ps.y = clampd(dy, 1.5, double(dest.map.height - 1.5));
+	ps.x = double(round_coord(clampd(dx, 1.0, double(dest.map.width - 1))));
+	ps.y = double(round_coord(clampd(dy, 1.0, double(dest.map.height - 1))));
 	ps.z = clampd(dz, double(dest.map.min_z), double(dest.map.max_z));
 	ps.facing = wrap_deg(dfac);
 	ps.vx = 0.0; ps.vy = 0.0; ps.vz = 0.0;
+	ps.step_rem_x = 0.0; ps.step_rem_y = 0.0; ps.was_moving = false;
 	ps.on_ground = true;
 	ps.fall_start_z = ps.z;
 	ps.fall_air_sfx_sent = false;
@@ -334,11 +336,11 @@ void world_apply_fall_landing(ServerCtx@ ctx, MapInstance@ mi, PlayerSession@ ps
 
 void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64 now_ms) {
 	if (!ps.authed || ps.peer_id == 0) {
-		ps.vx = 0.0; ps.vy = 0.0;
+		ps.vx = 0.0; ps.vy = 0.0; ps.was_moving = false;
 		return;
 	}
 	if (ps.builder_mode && !ps.builder_noclip) {
-		ps.vx = 0.0; ps.vy = 0.0;
+		ps.vx = 0.0; ps.vy = 0.0; ps.was_moving = false;
 		return;
 	}
 	MapInstance@ mi = ctx.player_map(ps);
@@ -356,59 +358,108 @@ void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64
 	if ((ps.input_mask & IN_LEFT) != 0) { move_x -= right_x; move_y -= right_y; }
 
 	double mag = sqrt(move_x * move_x + move_y * move_y);
-	if (mag > 0.001) {
-		move_x /= mag;
-		move_y /= mag;
-	}
-
 	bool fractured = ps.is_fractured(now_ms);
 	bool want_sprint = !fractured && (ps.input_mask & IN_SPRINT) != 0 && mag > 0.01 && ps.stamina > 5;
 	string surf = mi.map.surface_at(ps.x, ps.y, ps.z);
-	double speed = want_sprint ? SPRINT_SPEED_PER_SEC : WALK_SPEED_PER_SEC;
-	if (ps.builder_noclip) speed = SPRINT_SPEED_PER_SEC * 1.6;
-	else {
-		if (surf == "water") speed *= 0.65;
-		if (ps.blocking) speed *= 0.45;
-		if (fractured) speed *= 0.65;
-	}
+	bool stepped_horizontally = false;
 
-	ps.vx = move_x * speed;
-	ps.vy = move_y * speed;
+	if (mag > 0.001) {
+		move_x /= mag;
+		move_y /= mag;
+		// Chebyshev normalization so cardinal and 45-degree diagonals step exact +-1 integer tiles.
+		double ax = abs(move_x);
+		double ay = abs(move_y);
+		double max_c = ax > ay ? ax : ay;
+		if (max_c > 0.001) {
+			move_x /= max_c;
+			move_y /= max_c;
+		}
 
-	if (ps.builder_noclip) {
-		ps.x = clampd(ps.x + ps.vx * dt, 0.5, double(mi.map.width - 0.5));
-		ps.y = clampd(ps.y + ps.vy * dt, 0.5, double(mi.map.height - 0.5));
-		if ((ps.input_mask & IN_CLIMB_UP) != 0) ps.z = clampd(ps.z + 10.0 * dt, double(mi.map.min_z), double(mi.map.max_z));
-		if ((ps.input_mask & IN_CLIMB_DOWN) != 0) ps.z = clampd(ps.z - 10.0 * dt, double(mi.map.min_z), double(mi.map.max_z));
-		ps.vz = 0.0; ps.on_ground = true;
-		return;
-	}
+		uint64 step_iv = want_sprint ? SPRINT_STEP_MS : WALK_STEP_MS;
+		if (ps.builder_noclip) {
+			step_iv = 75;
+		} else {
+			if (surf == "water") step_iv = uint64(double(step_iv) / 0.65);
+			if (ps.blocking) step_iv = uint64(double(step_iv) / 0.45);
+			if (fractured) step_iv = uint64(double(step_iv) / 0.65);
+		}
 
-	// Axis-separated wall sliding so blind players can follow walls smoothly.
-	string hit_mat_x, hit_mat_y;
-	bool bumped = false;
-	string bump_mat = "wood";
-	double nx = ps.x + ps.vx * dt;
-	if (!mi.map.blocked_by_wall(nx, ps.y, ps.z, PLAYER_RADIUS, hit_mat_x)) {
-		ps.x = nx;
+		bool first_tap = !ps.was_moving && (now_ms - ps.last_move_ms >= 90);
+		bool ready_step = first_tap || (now_ms - ps.last_move_ms >= step_iv);
+		ps.was_moving = true;
+		ps.vx = move_x;
+		ps.vy = move_y;
+
+		if (ready_step) {
+			ps.last_move_ms = now_ms;
+			int cur_ix = round_coord(ps.x);
+			int cur_iy = round_coord(ps.y);
+			double tx = double(cur_ix) + move_x + ps.step_rem_x;
+			double ty = double(cur_iy) + move_y + ps.step_rem_y;
+			int target_ix = round_coord(tx);
+			int target_iy = round_coord(ty);
+			ps.step_rem_x = tx - double(target_ix);
+			ps.step_rem_y = ty - double(target_iy);
+
+			if (ps.builder_noclip) {
+				ps.x = clampd(double(target_ix), 1.0, double(mi.map.width - 1));
+				ps.y = clampd(double(target_iy), 1.0, double(mi.map.height - 1));
+			} else {
+				// Axis-separated wall sliding on integer grid cells.
+				int next_ix = cur_ix;
+				int next_iy = cur_iy;
+				string hit_mat_x, hit_mat_y;
+				bool bumped = false;
+				string bump_mat = "wood";
+				if (target_ix != cur_ix) {
+					if (!mi.map.blocked_by_wall(double(target_ix), double(cur_iy), ps.z, PLAYER_RADIUS, hit_mat_x)) {
+						next_ix = target_ix;
+					} else {
+						bumped = true;
+						bump_mat = hit_mat_x;
+					}
+				}
+				if (target_iy != cur_iy) {
+					if (!mi.map.blocked_by_wall(double(next_ix), double(target_iy), ps.z, PLAYER_RADIUS, hit_mat_y)) {
+						next_iy = target_iy;
+					} else {
+						bumped = true;
+						bump_mat = hit_mat_y;
+					}
+				}
+				ps.x = double(next_ix);
+				ps.y = double(next_iy);
+				stepped_horizontally = (next_ix != cur_ix || next_iy != cur_iy);
+				if (!stepped_horizontally) {
+					ps.vx = 0.0;
+					ps.vy = 0.0;
+				}
+				if (bumped && now_ms - ps.last_wall_bump_ms >= 350) {
+					ps.last_wall_bump_ms = now_ms;
+					string wsfx = bump_mat == "stone" ? "steps/wall_bump_stone.ogg" : "steps/wall_bump_wood.ogg";
+					ctx.send_sfx_to(ps, "self", wsfx, ps.x, ps.y, ps.z, 0.75);
+				}
+			}
+		}
 	} else {
 		ps.vx = 0.0;
-		bumped = true;
-		bump_mat = hit_mat_x;
-	}
-	double ny = ps.y + ps.vy * dt;
-	if (!mi.map.blocked_by_wall(ps.x, ny, ps.z, PLAYER_RADIUS, hit_mat_y)) {
-		ps.y = ny;
-	} else {
 		ps.vy = 0.0;
-		bumped = true;
-		bump_mat = hit_mat_y;
+		ps.was_moving = false;
+		ps.step_rem_x = 0.0;
+		ps.step_rem_y = 0.0;
 	}
 
-	if (bumped && mag > 0.01 && now_ms - ps.last_wall_bump_ms >= 420) {
-		ps.last_wall_bump_ms = now_ms;
-		string wsfx = bump_mat == "stone" ? "steps/wall_bump_stone.ogg" : "steps/wall_bump_wood.ogg";
-		ctx.send_sfx_to(ps, "self", wsfx, ps.x, ps.y, ps.z, 0.75);
+	if (ps.builder_noclip) {
+		if ((ps.input_mask & IN_CLIMB_UP) != 0 && now_ms - ps.last_climb_ms >= 100) {
+			ps.last_climb_ms = now_ms;
+			ps.z = clampd(ps.z + 1.0, double(mi.map.min_z), double(mi.map.max_z));
+		}
+		if ((ps.input_mask & IN_CLIMB_DOWN) != 0 && now_ms - ps.last_climb_ms >= 100) {
+			ps.last_climb_ms = now_ms;
+			ps.z = clampd(ps.z - 1.0, double(mi.map.min_z), double(mi.map.max_z));
+		}
+		ps.vz = 0.0; ps.on_ground = true;
+		return;
 	}
 
 	// Staircase climbing (PageUp / PageDown) & mid-stair suspension
@@ -423,9 +474,9 @@ void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64
 		ps.fall_start_z = ps.z;
 		ps.fall_air_sfx_sent = false;
 	} else {
-		// True Air/Void Law & Z Gravity
-		double sup_z; string sup_surf; bool deep_w; bool under_roof;
-		bool has_sup = mi.map.find_support_at(ps.x, ps.y, ps.z, sup_z, sup_surf, deep_w, under_roof);
+		// True Air/Void Law, Directional Ramp Adhesion & Z Gravity
+		double sup_z; string sup_surf; bool deep_w; bool under_roof; bool on_ramp; double ramp_slope;
+		bool has_sup = mi.map.find_support_ex(ps.x, ps.y, ps.z, sup_z, sup_surf, deep_w, under_roof, on_ramp, ramp_slope);
 
 		if (ps.on_ground && has_sup && !fractured && (ps.input_mask & IN_JUMP) != 0 && ps.stamina >= 8) {
 			ps.on_ground = false;
@@ -436,7 +487,8 @@ void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64
 			ctx.broadcast_sfx_3d(mi.slug, "actors", "steps/jump.ogg", ps.x, ps.y, ps.z, 0.75, 18.0);
 		}
 
-		if (!ps.on_ground || !has_sup || ps.z > sup_z + 0.05) {
+		double max_ramp_drop = on_ramp ? clampd(1.05 + ramp_slope * 1.15, 1.05, 12.0) : 0.05;
+		if (!ps.on_ground || !has_sup || ps.z > sup_z + max_ramp_drop) {
 			if (ps.on_ground) {
 				ps.on_ground = false;
 				ps.fall_start_z = ps.z;
@@ -457,6 +509,8 @@ void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64
 			}
 		} else {
 			ps.z = sup_z;
+			ps.vz = 0.0;
+			ps.fall_start_z = ps.z;
 		}
 	}
 
@@ -492,19 +546,16 @@ void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64
 			ctx.send_speech(ps, MBUF_GAME, false, "Entered " + zname + "." + safe_note);
 		}
 	}
-	double moved_spd = sqrt(ps.vx * ps.vx + ps.vy * ps.vy);
-	if (moved_spd > 0.5 && ps.on_ground && @on_stair == null) {
-		uint64 step_iv = want_sprint ? 270 : (fractured ? 560 : 420);
-		if (now_ms - ps.last_step_sfx_ms >= step_iv) {
-			ps.last_step_sfx_ms = now_ms;
-			string sfx = "steps/" + surf + "_" + random(1, 3) + ".ogg";
-			string pkt = pkt_build("SFX", {"actors", sfx, fmt2(ps.x), fmt2(ps.y), fmt2(ps.z), "0.70", "1"});
-			for (uint i = 0; i < ctx.sessions.length(); i++) {
-				PlayerSession@ other = ctx.sessions[i];
-				if (@other == @ps || !other.authed || other.peer_id == 0 || other.current_map != mi.slug) continue;
-				if (get_3d_distance(other.x, other.y, other.z, ps.x, ps.y, ps.z) <= 22.0) {
-					ctx.send_ch(other.peer_id, CH_AUDIO, pkt, true);
-				}
+	if (stepped_horizontally && ps.on_ground && @on_stair == null) {
+		ps.last_step_sfx_ms = now_ms;
+		string step_surf = mi.map.surface_at(ps.x, ps.y, ps.z);
+		string sfx = "steps/" + step_surf + "_" + random(1, 3) + ".ogg";
+		string pkt = pkt_build("SFX", {"actors", sfx, fmt2(ps.x), fmt2(ps.y), fmt2(ps.z), "0.70", "1"});
+		for (uint i = 0; i < ctx.sessions.length(); i++) {
+			PlayerSession@ other = ctx.sessions[i];
+			if (@other == @ps || !other.authed || other.peer_id == 0 || other.current_map != mi.slug) continue;
+			if (get_3d_distance(other.x, other.y, other.z, ps.x, ps.y, ps.z) <= 22.0) {
+				ctx.send_ch(other.peer_id, CH_AUDIO, pkt, true);
 			}
 		}
 	}

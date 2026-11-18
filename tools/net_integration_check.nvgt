@@ -594,6 +594,8 @@ void run_phase_1(const string&in host, uint16 port) {
 	alice.log.resize(0);
 	dev.send_ctrl("BUILDMAP|emitter|CheckBeacon|builder/beacon_ping.ogg|18|0.7");
 	assert_true(alice.wait_for_op(CH_CONTROL, "MAP_HDR|", 2500) != "", "Live Map Builder edit reloaded map across clients");
+	dev.send_ctrl("BUILDMAP|toggle");
+	dev.drain(80);
 
 	// 5B. v2 Verticality (Stairs with Builder-Selected Surface, Air Fall Trauma & Splint Cure),
 	// Multi-Map Portal Transfer, STW F8 Hub (create_map, 6-axis add_box, Line Manager, undo, validate, save),
@@ -768,9 +770,51 @@ void run_phase_1(const string&in host, uint16 port) {
 	dev.send_ctrl("MAPS|list");
 	assert_true(dev.wait_for_op(CH_CONTROL, "MAPS_LIST|", 2500).find("e2e_clone~") >= 0, "Cloned map appears in MAPS_LIST");
 
-	// Also verify carpet stairs box, Line Manager, undo, validate, save on e2e_arena
+	// Also verify integer-step movement, 1x1 stairs box, 1-tile-wide steep directional ramp, Line Manager, undo, validate, save on e2e_arena
 	dev.send_ctrl("BUILDMAP|select_map|e2e_arena");
 	dev.drain(100);
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|add_box|stairs|One Tile Stairs|5|5|5|5|0|20|stone|0|y|1");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Added 1x1 stone stairs box (5..5, 5..5, 0..20)");
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|add_box|ramp|Narrow Steep Ramp|10|10|10|15|0|20|wood|0|y|1");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Added 1-tile-wide steep South->North ramp (10..10, 10..15, 0..20)");
+
+	// Integer-step check: (20, 20, 0) + 1 step East -> exact (21, 20, 0)
+	dev.send_ctrl("DEV|tp|TestDev|20|20|0");
+	dev.drain(150);
+	dev.send_input(IN_RIGHT, 0);
+	dev.drain(90);
+	dev.send_input(0, 0);
+	dev.drain(120);
+	assert_true(abs(dev.x - 21.0) < 0.01 && abs(dev.y - 20.0) < 0.01, "Single sidestep moved exact integer 20->21 (got " + fmt2(dev.x) + "," + fmt2(dev.y) + ")");
+
+	// 1x1 Staircase at (5..5, 5..5, 0..20): PageUp climbs cleanly with stone footsteps
+	dev.send_ctrl("DEV|tp|TestDev|5|5|0");
+	dev.drain(150);
+	dev.log.resize(0);
+	for (int cs = 0; cs < 3; cs++) {
+		dev.send_ctrl("ACT|climb|up");
+		dev.drain(120);
+	}
+	assert_true(dev.z >= 2.5, "Climbed 1x1 staircase at (5,5) via PageUp (z=" + fmt2(dev.z) + ")");
+	assert_true(has_msg_containing(dev, "steps/stone_"), "1x1 staircase played builder-selected stone surface");
+
+	// 1-tile-wide steep South->North ramp (10..10, 10..15, 0..20): walking North ascends Z to 20, walking South descends safely
+	dev.send_ctrl("STAFF|act|heal|TestDev");
+	dev.send_ctrl("DEV|tp|TestDev|10|10|0");
+	dev.drain(150);
+	timer r_up;
+	while (r_up.elapsed < 1350 && dev.y < 15.0) { dev.send_input(IN_FWD, 0); dev.drain(30); }
+	dev.send_input(0, 0);
+	dev.drain(150);
+	assert_true(abs(dev.x - 10.0) < 0.01 && dev.y >= 14.5 && dev.z >= 18.0, "Walked up narrow steep South->North ramp cleanly (pos=" + fmt2(dev.x) + "," + fmt2(dev.y) + "," + fmt2(dev.z) + ")");
+	timer r_dn;
+	while (r_dn.elapsed < 1350 && dev.y > 10.0) { dev.send_input(IN_FWD, 180); dev.drain(30); }
+	dev.send_input(0, 180);
+	dev.drain(150);
+	assert_true(dev.y <= 10.5 && dev.z <= 0.1 && dev.hp == 100, "Walked down narrow steep ramp safely without fall damage (z=" + fmt2(dev.z) + ", hp=" + dev.hp + ")");
+
 	dev.log.resize(0);
 	dev.send_ctrl("BUILDMAP|add_box|stairs|Carpet Steps|20|24|20|24|0|8|carpet|0|y|1");
 	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Added 6-axis carpet stairs box");

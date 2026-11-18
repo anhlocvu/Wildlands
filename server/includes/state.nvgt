@@ -44,6 +44,10 @@ class PlayerSession {
 	uint input_mask = 0;
 	bool blocking = false;
 	uint64 block_until_ms = 0;
+	uint64 last_move_ms = 0;
+	bool was_moving = false;
+	double step_rem_x = 0.0;
+	double step_rem_y = 0.0;
 	uint64 last_step_sfx_ms = 0;
 	uint64 last_wall_bump_ms = 0;
 	uint64 last_attack_ms = 0;

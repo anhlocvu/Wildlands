@@ -445,3 +445,45 @@
 2026-11-18 23:14:25 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
 2026-11-18 23:14:31 [NET] Peer 1 (anhloc) disconnected (closed)
 2026-11-18 23:14:35 [INFO] Server shut down cleanly.
+2026-11-18 23:47:34 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-18 23:47:34 [READY] Server listening on port 7198 (proto=3, maps=3, accounts=0).
+2026-11-18 23:47:37 [NET] Peer 1 connected from 127.0.0.1:53952
+2026-11-18 23:47:55 [AUTH_REG] Registered new account ClientHero from 127.0.0.1:53952
+2026-11-18 23:47:55 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:53952
+2026-11-18 23:47:55 [NET] Peer 1 (ClientHero) disconnected (closed)
+2026-11-18 23:47:55 [NET] Peer 2 connected from 127.0.0.1:57143
+2026-11-18 23:47:55 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:57143
+2026-11-18 23:47:55 [NET] Peer 2 (ClientHero) disconnected (closed)
+2026-11-18 23:47:55 [NET] Peer 3 connected from 127.0.0.1:57144
+2026-11-18 23:47:55 [AUTH_FAIL] LOGIN refused for ClientHero from 127.0.0.1:57144: Unknown account name or incorrect password.
+2026-11-18 23:47:55 [AUTH_FAIL] REG refused for clienthero from 127.0.0.1:57144: That account name is already taken.
+2026-11-18 23:47:55 [NET] Peer 3 () disconnected (closed)
+2026-11-18 23:47:55 [NET] Peer 4 connected from 127.0.0.1:57145
+2026-11-18 23:47:55 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:57145
+2026-11-18 23:47:55 [CHAT] ClientHero: Hello from Client E2E
+2026-11-18 23:47:56 [PM] ClientHero -> ClientHero (len=8)
+2026-11-18 23:47:57 [NET] Peer 4 (ClientHero) disconnected (closed)
+2026-11-18 23:58:33 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-18 23:58:33 [READY] Server listening on port 7100 (proto=3, maps=3, accounts=1).
+2026-11-18 23:58:41 [NET] Peer 1 connected from 127.0.0.1:50138
+2026-11-18 23:58:41 [AUTH] Signed in anhloc (Developer) on anhloc from 127.0.0.1:50138
+2026-11-18 23:58:48 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 23:59:03 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-18 23:59:18 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:59:33 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 23:59:48 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-19 00:00:03 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 8ms
+2026-11-19 00:00:18 [BUILDER] anhloc added stairs to anhloc
+2026-11-19 00:00:18 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-19 00:00:33 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-19 00:00:48 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 14ms
+2026-11-19 00:01:03 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-19 00:01:18 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-19 00:01:20 [BUILDER] anhloc added ramp to anhloc
+2026-11-19 00:01:33 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-19 00:01:48 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-19 00:02:03 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 8ms
+2026-11-19 00:02:18 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-19 00:02:29 [LIFECYCLE] anhloc scheduled shutdown in 10s: fuck
+2026-11-19 00:02:34 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-19 00:02:39 [INFO] Server shut down cleanly.

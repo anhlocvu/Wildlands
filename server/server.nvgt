@@ -144,16 +144,21 @@ void complete_login(ServerCtx@ ctx, PlayerSession@ ps, AccountRecord@ acc, const
 	ps.current_map = mi.slug;
 	ps.builder_edit_map = mi.slug;
 
-	ps.x = clampd(acc.last_x, 2.0, double(mi.map.width - 2));
-	ps.y = clampd(acc.last_y, 2.0, double(mi.map.height - 2));
+	ps.x = double(round_coord(clampd(acc.last_x, 2.0, double(mi.map.width - 2))));
+	ps.y = double(round_coord(clampd(acc.last_y, 2.0, double(mi.map.height - 2))));
 	double sz; string ss; bool dw, ur;
 	if (mi.map.find_support_at(ps.x, ps.y, acc.last_z + 1.0, sz, ss, dw, ur)) {
 		ps.z = sz;
 	} else if (mi.map.spawns.length() > 0) {
-		ps.x = mi.map.spawns[0].x; ps.y = mi.map.spawns[0].y; ps.z = mi.map.spawns[0].z;
+		ps.x = double(round_coord(mi.map.spawns[0].x));
+		ps.y = double(round_coord(mi.map.spawns[0].y));
+		ps.z = mi.map.spawns[0].z;
 	} else {
 		ps.z = 0.0;
 	}
+	ps.step_rem_x = 0.0;
+	ps.step_rem_y = 0.0;
+	ps.was_moving = false;
 	ps.fall_start_z = ps.z;
 	ps.join_ms = now_ms;
 	ps.last_playtime_ms = now_ms;
@@ -304,7 +309,8 @@ void handle_control_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint6
 		ps.current_map = defm.slug;
 		ps.builder_edit_map = defm.slug;
 		MapSpawn@ sp = defm.map.spawns[0];
-		ps.x = sp.x; ps.y = sp.y; ps.z = sp.z;
+		ps.x = double(round_coord(sp.x)); ps.y = double(round_coord(sp.y)); ps.z = sp.z;
+		ps.step_rem_x = 0.0; ps.step_rem_y = 0.0; ps.was_moving = false;
 		ps.fall_start_z = ps.z;
 		ps.join_ms = now_ms;
 		ps.init_starter_inv();

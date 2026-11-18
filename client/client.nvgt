@@ -147,6 +147,7 @@ void run_world_session() {
 	timer frame_timer;
 	uint last_sent_mask = 999;
 	int last_sent_facing = -1;
+	bool was_moving = false;
 
 	while (g_net.state == CONN_READY) {
 		wait(5);
@@ -358,13 +359,18 @@ void run_world_session() {
 			double sz; string ss; bool dw, ur;
 			bool supported = g_net.map.find_support_at(g_net.my_x, g_net.my_y, g_net.my_z, sz, ss, dw, ur);
 			bool on_stair = (@g_net.map.find_stair_at(g_net.my_x, g_net.my_y, g_net.my_z) != null);
-			if ((supported && g_net.my_z <= sz + 0.20) || on_stair) {
-				uint64 iv = (shift && !g_net.my_fractured) ? 270 : (g_net.my_fractured ? 520 : 420);
-				if (local_step_timer.elapsed >= iv) {
+			if ((supported && g_net.my_z <= sz + 0.25) || on_stair) {
+				uint64 iv = (shift && !g_net.my_fractured) ? SPRINT_STEP_MS : WALK_STEP_MS;
+				if (g_net.my_fractured) iv = uint64(double(iv) / 0.65);
+				bool tap_step = !was_moving && local_step_timer.elapsed >= 90;
+				if (tap_step || local_step_timer.elapsed >= iv) {
 					local_step_timer.restart();
 					g_audio.play_local_footstep(g_net.map.surface_at(g_net.my_x, g_net.my_y, g_net.my_z));
 				}
 			}
+			was_moving = true;
+		} else {
+			was_moving = false;
 		}
 	}
 }

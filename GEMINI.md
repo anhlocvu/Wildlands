@@ -118,3 +118,21 @@ luôn luôn tuân thủ quy trình specify trong mọi trường hợp phát tri
 - Cập nhật [BUILDER_GUIDE.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/BUILDER_GUIDE.md), [STAFF_GUIDE.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/STAFF_GUIDE.md), [CONTROLS.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/CONTROLS.md), [PROTOCOL.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/PROTOCOL.md).
 - Biên dịch `server/server.exe` và `client/client.exe` bằng `nvgt -c` và xác nhận **`=== ALL CHECKS PASSED ===`** qua `tools/run_checks.ps1` (exit code 0 across `common_check`, `map_check` v3/E/reverb/templates, `auth_check`, `asset_check`, `client_profile_check`, E2E Phase 1/2 gồm Approach A 1200ms spawn & respawn, `/maps` RBAC & teleport, `select_map` edit-only, `allow_build=0`, `time_mode=night`, `clone_map`, same-map portal, `client.exe --smoke-test`, và `client_ui_e2e_check.nvgt`).
 
+---
+
+## Nhật ký kỹ thuật — Di chuyển Tọa độ Số Nguyên, Cầu thang 1x1 & Con dốc (2026-11-18)
+
+### 1. Sửa lỗi Cầu thang & Con dốc (`common/constants.nvgt`, `common/protocol.nvgt`, `common/map.nvgt`)
+- Bổ sung `round_coord(double)` trong `common/protocol.nvgt`, hằng số nhịp bước `WALK_STEP_MS = 220`, `SPRINT_STEP_MS = 140` và đệm ô lưới `TILE_CELL_PAD = 0.45` trong `common/constants.nvgt`.
+- Cập nhật `find_stair_at`, `find_portal_at`, `find_hazard_at`, và `find_support_ex` / `find_support_at` trong `common/map.nvgt` dùng đệm `TILE_CELL_PAD` để mọi phần tử 1x1 (`min == max`, như `5..5, 5..5`) khớp chính xác với tọa độ ô nguyên.
+- Sửa logic `ramp` trong `find_support_ex`: xử lý cả dốc `span <= 0.01`, tính ngưỡng bước lên dốc động `step_tol = clampd(1.05 + this_slope * 1.15, 1.05, 12.0)` khi nhân vật đứng trong tầm chân dốc (`z >= pl.min_z - 1.05`) để không hút người từ tầng dưới lên dốc tầng cao nhưng vẫn leo mượt cả dốc gắt, đồng thời trả về `on_ramp` và `ramp_slope`.
+
+### 2. Chuyển Di chuyển Nhân vật sang Bước Số Nguyên & Bám Dốc (`server/includes/state.nvgt`, `server/includes/world.nvgt`, `server/server.nvgt`, `client/client.nvgt`)
+- Thêm `last_move_ms`, `was_moving`, `step_rem_x`, `step_rem_y` vào `PlayerSession`; chuẩn hóa tọa độ X/Y thành số nguyên khi login, respawn, teleport và mỗi bước di chuyển (`5 -> 6`).
+- Sử dụng chuẩn hóa Chebyshev + tích lũy phần dư Bresenham trong `world_step_player_move` để 8 hướng la bàn tiến thẳng `±1` ô nguyên và góc xoay mượt vẫn đi đúng hướng trên lưới số nguyên, tách trục va chạm tường và giữ nhân vật bám mượt mặt dốc khi đi xuống (`max_ramp_drop`) không bị rơi ảo.
+- Cập nhật `client/client.nvgt` phát tiếng bước chân cục bộ ngay khi tap 1 bước và lặp đồng bộ theo `WALK_STEP_MS` / `SPRINT_STEP_MS`.
+
+### 3. Kiểm thử & Biên dịch (`tools/map_check.nvgt`, `tools/net_integration_check.nvgt`, `tools/run_checks.ps1`)
+- Bổ sung regression test cho cầu thang 1x1 (`5..5, 5..5, 0..20`), sàn 1x1, dốc gắt hẹp 1 ô Nam->Bắc (`Z 0..20`), dốc lơ lửng, bước đi số nguyên `20 -> 21`, leo cầu thang đá qua `ACT|climb|up` và đi lên/xuống dốc gắt không mất máu.
+- Biên dịch `server/server.exe` và `client/client.exe` bằng `nvgt -c`, chạy toàn bộ `tools/run_checks.ps1` đạt **`=== ALL CHECKS PASSED ===`** (exit code 0).
+
