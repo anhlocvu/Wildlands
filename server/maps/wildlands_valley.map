@@ -1,4 +1,4 @@
-M|Wildlands Valley|120|120|-20|30|grass|ambience/forest_day.ogg|1
+M|Wildlands Valley|120|120|-20|30|grass|ambience/forest_day.ogg|1|1|1|auto
 S|Settlement Hearth|50.00|46.00|0.00|0
 S|North Gate|50.00|64.00|0.00|0
 Z|Southern Meadow|0.00|0.00|120.00|35.00|-20.00|30.00|grass|ambience/forest_day.ogg|0
@@ -51,3 +51,9 @@ A|Watchtower Beacon|builder/beacon_ping.ogg|42.00|58.00|3.00|26|0.55
 A|Citadel Gate Hum|world/portal_travel.ogg|61.50|61.50|1.00|18|0.50
 A|Silver Creek Rapids|ambience/river_loop.ogg|87.00|42.00|0.00|28|0.70
 A|Quarry Wind Pass|ambience/wind_gust.ogg|18.00|30.00|1.00|24|0.60
+E|Southern Meadow Grazers|42.00|8.00|75.00|30.00|0.00|4.00|5000|4|rabbit,deer|1|always
+E|Southern Outpost Raiders|94.00|8.00|112.00|28.00|0.00|4.00|10000|2|bandit|1|always
+E|Quarry Ridge Predators|12.00|44.00|32.00|62.00|0.00|5.00|12000|2|bear,wolf|1|always
+E|Whispering Woods Grazers|44.00|72.00|104.00|92.00|0.00|4.00|5000|5|rabbit,deer|1|always
+E|Whispering Woods Pack|18.00|98.00|104.00|114.00|0.00|4.00|7000|4|wolf|1|always
+E|Riverside Wildlife|69.00|36.00|108.00|60.00|0.00|4.00|6000|3|deer,rabbit,wolf|1|always

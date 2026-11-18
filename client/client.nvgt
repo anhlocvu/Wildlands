@@ -162,6 +162,12 @@ void run_world_session() {
 			run_chest_menu(g_net);
 			continue;
 		}
+		if (g_net.maps_menu_pending && g_net.maps_dir_ready) {
+			g_net.maps_menu_pending = false;
+			g_net.send_input(0, g_net.my_facing);
+			run_server_maps_menu(g_net, true);
+			continue;
+		}
 
 		// Global hotkeys
 		if (key_pressed(KEY_F1)) { speak_context_help(); continue; }
@@ -205,7 +211,18 @@ void run_world_session() {
 			if (key_pressed(KEY_RIGHT)) g_net.send_control("BUILDMAP|step|1|0|0");
 			if (key_pressed(KEY_PAGEUP)) g_net.send_control("BUILDMAP|step|0|0|1");
 			if (key_pressed(KEY_PAGEDOWN)) g_net.send_control("BUILDMAP|step|0|0|-1");
-			if (key_pressed(KEY_M)) g_net.send_control("BUILDMAP|mark");
+			if (shift && key_pressed(KEY_M)) {
+				g_net.clip_has_c2 = true;
+				g_net.clip_map_slug = g_net.bm_active_slug.length() > 0 ? g_net.bm_active_slug : g_net.current_map_slug;
+				g_net.clip_x2 = double(g_net.b_cx); g_net.clip_y2 = double(g_net.b_cy); g_net.clip_z2 = double(g_net.b_cz);
+				g_audio.play_ui_cue("ui/confirm.ogg", 0.7f);
+				say("Corner 2 marked at " + g_net.b_cx + ", " + g_net.b_cy + ", height " + g_net.b_cz + ".", true);
+			} else if (key_pressed(KEY_M)) {
+				g_net.clip_has_c1 = true;
+				g_net.clip_map_slug = g_net.bm_active_slug.length() > 0 ? g_net.bm_active_slug : g_net.current_map_slug;
+				g_net.clip_x1 = double(g_net.b_cx); g_net.clip_y1 = double(g_net.b_cy); g_net.clip_z1 = double(g_net.b_cz);
+				g_net.send_control("BUILDMAP|mark");
+			}
 			if (key_pressed(KEY_RETURN) || g_profile.key_pressed_bind("build")) run_map_builder_palette(g_net);
 		}
 

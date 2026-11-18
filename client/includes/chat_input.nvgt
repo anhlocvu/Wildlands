@@ -23,11 +23,22 @@ void chat_dispatch_line(NetClient@ nc, const string&in raw) {
 	string body = (sp < 0 ? "" : rest.substr(uint(sp) + 1)).trim_whitespace();
 
 	if (cmd == "help" || cmd == "?") {
-		say("Chat commands: message for global, slash pm name message, slash r message to reply, slash local message, slash team message, slash emote action, slash report message, slash sc staff message, slash who, slash ping.", true);
+		say("Chat commands: message for global, slash pm name message, slash r message to reply, slash local message, slash team message, slash emote action, slash report message, slash sc staff message, slash maps for builders and staff, slash who, slash ping.", true);
 		return;
 	}
 	if (cmd == "who") { nc.request_who(true); return; }
 	if (cmd == "ping") { nc.request_ping(true); return; }
+	if (cmd == "maps" || cmd == "map") {
+		if (nc.my_rank < RANK_BUILDER) {
+			g_audio.play_ui_cue("error.ogg", 0.8f);
+			say("Builder rank or higher is required for /maps.", true);
+			return;
+		}
+		nc.maps_dir_ready = false;
+		nc.maps_menu_pending = true;
+		nc.send_control(pkt_2("MAPS", "list"));
+		return;
+	}
 
 	if (cmd == "r" || cmd == "reply") {
 		if (nc.last_pm_sender.length() == 0) {

@@ -146,12 +146,8 @@ void admin_handle_dev(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
 
 	if (cmd == "set_bots") {
 		int cnt = safe_int(arg1, 0, 20, 0);
-		wildlife_set_target_count(ctx, cnt, true);
+		wildlife_set_bot_count(ctx, cnt);
 		ctx.broadcast_speech(MBUF_SYSTEM, false, "Developer set practice bots to " + cnt + ".");
-	} else if (cmd == "set_wildlife") {
-		int cnt = safe_int(arg1, 0, 40, 12);
-		wildlife_set_target_count(ctx, cnt, false);
-		ctx.broadcast_speech(MBUF_SYSTEM, false, "Developer set wildlife population to " + cnt + ".");
 	} else if (cmd == "weather") {
 		ctx.is_raining = (arg1 == "rain");
 		ctx.broadcast_speech(MBUF_GAME, false, ctx.is_raining ? "Developer summoned rain." : "Developer cleared the weather.");
@@ -341,6 +337,44 @@ void admin_handle_mod(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, int64 now_
 	}
 }
 
+void admin_handle_maps_nav(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
+	if (@ps == null || !ps.authed) return;
+	if (ps.rank < RANK_BUILDER) {
+		ctx.logger.log("REFUSED", "MAPS command denied for " + ps.name + " (rank " + ps.rank + ")");
+		ctx.send_speech(ps, MBUF_SYSTEM, true, "Builder rank or higher is required for /maps.");
+		return;
+	}
+	string op = field(p, 1, "list");
+	if (op == "list") {
+		string rows = "";
+		for (uint i = 0; i < ctx.maps.length(); i++) {
+			MapInstance@ m = ctx.maps[i];
+			if (rows.length() > 0) rows += ";";
+			rows += wire_escape(m.slug) + "~" + wire_escape(m.map.name) + "~" + m.map.width + "~" + m.map.height
+				+ "~" + m.map.min_z + "~" + m.map.max_z + "~" + ctx.count_players_on_map(m.slug) + "~" + m.map.raw_lines.length();
+		}
+		if (rows.length() == 0) rows = "-";
+		ctx.send_control(ps, pkt_build("MAPS_LIST", {rows}));
+		return;
+	}
+	if (op == "tp") {
+		string slug = field(p, 2, "");
+		MapInstance@ dest = ctx.find_map(slug);
+		if (@dest == null) {
+			ctx.send_speech(ps, MBUF_SYSTEM, true, "Map not found: " + slug);
+			return;
+		}
+		double tx = dest.map.spawns.length() > 0 ? dest.map.spawns[0].x : double(dest.map.width) * 0.5;
+		double ty = dest.map.spawns.length() > 0 ? dest.map.spawns[0].y : double(dest.map.height) * 0.5;
+		double tz = dest.map.spawns.length() > 0 ? dest.map.spawns[0].z : 0.0;
+		int tfac = dest.map.spawns.length() > 0 ? dest.map.spawns[0].facing : 0;
+		ps.builder_edit_map = dest.slug;
+		world_transfer_player_map(ctx, ps, dest, tx, ty, tz, tfac);
+		ctx.logger.log("STAFF", ps.name + " warped via /maps to " + dest.slug);
+		return;
+	}
+}
+
 void admin_handle_staff(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 now_ms, int64 now_sec) {
 	if (@ps == null || !ps.authed) return;
 	if (ps.rank < RANK_MOD) {
@@ -513,14 +547,13 @@ void admin_handle_staff(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 n
 			ctx.logger.log("STAFF", ps.name + " cleared " + cleared + " drops");
 			return;
 		}
-		if (ps.rank < RANK_DEV && (op == "bots" || op == "wildlife" || op == "reload")) {
+		if (ps.rank < RANK_DEV && (op == "bots" || op == "reload")) {
 			ctx.send_speech(ps, MBUF_SYSTEM, true, "Developer rank required for this operation.");
 			return;
 		}
 		if (op == "weather") { ctx.is_raining = (a1 == "rain"); ctx.broadcast_speech(MBUF_GAME, false, ctx.is_raining ? "Staff summoned rain." : "Staff cleared the weather."); return; }
 		if (op == "time") { ctx.is_night = (a1 == "night"); ctx.cycle_sec = ctx.is_night ? 800 : 300; ctx.broadcast_speech(MBUF_GAME, false, ctx.is_night ? "Staff set time to night." : "Staff set time to day."); return; }
-		if (op == "bots") { int c = safe_int(a1, 0, 20, 0); wildlife_set_target_count(ctx, c, true); ctx.broadcast_speech(MBUF_SYSTEM, false, "Set practice bots to " + c + "."); return; }
-		if (op == "wildlife") { int c = safe_int(a1, 0, 40, 12); wildlife_set_target_count(ctx, c, false); ctx.broadcast_speech(MBUF_SYSTEM, false, "Set wildlife count to " + c + "."); return; }
+		if (op == "bots") { int c = safe_int(a1, 0, 20, 0); wildlife_set_bot_count(ctx, c); ctx.broadcast_speech(MBUF_SYSTEM, false, "Set practice bots to " + c + "."); return; }
 		if (op == "announce") {
 			string msg = strip_control_chars(wire_unescape(a1), 200);
 			if (msg.length() > 0) ctx.broadcast_speech(MBUF_SYSTEM, true, "Server Announcement: " + msg);
@@ -538,21 +571,6 @@ void admin_handle_staff(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 n
 			admin_handle_dev(ctx, ps, dp);
 			return;
 		}
-	}
-
-	if (cmd == "spawn_mob") {
-		if (ps.rank < RANK_ADMIN) { ctx.send_speech(ps, MBUF_SYSTEM, true, "Admin rank required."); return; }
-		string kind = field(p, 2, "wolf");
-		string mslug = field(p, 3, ps.current_map);
-		MapInstance@ mi = ctx.find_map(mslug);
-		if (@mi == null) @mi = ctx.player_map(ps);
-		double sx = safe_double(field(p, 4, "" + ps.x), 2.0, double(mi.map.width - 2), ps.x);
-		double sy = safe_double(field(p, 5, "" + ps.y), 2.0, double(mi.map.height - 2), ps.y);
-		double sz = safe_double(field(p, 6, "" + ps.z), double(mi.map.min_z), double(mi.map.max_z), ps.z);
-		spawn_mob(ctx, mi, kind, sx, sy, sz, kind == "bot_survivor");
-		ctx.send_speech(ps, MBUF_SYSTEM, true, "Spawned " + kind + " on " + mi.map.name + ".");
-		ctx.logger.log("STAFF", ps.name + " spawned " + kind + " on " + mi.slug);
-		return;
 	}
 
 	if (cmd == "tp_loc") {

@@ -38,7 +38,8 @@ void parse_cli_args(ServerCtx@ ctx) {
 			continue;
 		}
 		if (arg == "--wildlife" && i + 1 < tok.length()) {
-			ctx.target_wildlife = safe_int(tok[++i], 0, 40, 12);
+			int ignored_w = safe_int(tok[++i], 0, 40, 0);
+			if (ignored_w > 0) ctx.logger.log("INFO", "Legacy --wildlife flag ignored; wildlife spawns from per-map E zones.");
 			continue;
 		}
 		if (arg == "--data-dir" && i + 1 < tok.length()) {
@@ -50,7 +51,7 @@ void parse_cli_args(ServerCtx@ ctx) {
 }
 
 string build_restart_cmdline(ServerCtx@ ctx) {
-	string args = "--port " + ctx.port + " --bind-delay-ms 1000 --wildlife " + ctx.target_wildlife + " --bots " + ctx.target_bots;
+	string args = "--port " + ctx.port + " --bind-delay-ms 1000 --bots " + ctx.target_bots;
 	args += " --data-dir " + ctx.data_dir + " --maps-dir " + ctx.maps_dir + " --map " + ctx.active_map_path;
 	if (ctx.headless) args += " --headless";
 	if (ctx.test_mode) args += " --test-mode";
@@ -335,6 +336,7 @@ void handle_control_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint6
 	if (op == "REPORT") { social_handle_report(ctx, ps, p, now_sec); return; }
 	if (op == "CHEST") { builder_handle_chest_op(ctx, ps, p); return; }
 	if (op == "BUILDMAP") { builder_handle_map_cmd(ctx, ps, p); return; }
+	if (op == "MAPS") { admin_handle_maps_nav(ctx, ps, p); return; }
 	if (op == "DEV") { admin_handle_dev(ctx, ps, p); return; }
 	if (op == "MOD") { admin_handle_mod(ctx, ps, p, now_sec); return; }
 	if (op == "STAFF") { admin_handle_staff(ctx, ps, p, now_ms, now_sec); return; }
@@ -388,7 +390,7 @@ void send_scoped_snapshots(ServerCtx@ ctx, uint64 now_ms) {
 		string zname = mi.map.zone_name_at(ps.x, ps.y, ps.z);
 		string header = "SNAP|" + ctx.tick_count + "|" + fmt2(ps.x) + "|" + fmt2(ps.y) + "|" + fmt2(ps.z) + "|"
 			+ ps.facing + "|" + ps.hp + "|" + ps.hunger + "|" + ps.thirst + "|" + ps.stamina + "|" + ps.warmth + "|"
-			+ (ctx.is_night ? "1" : "0") + "|" + (ctx.is_raining ? "1" : "0") + "|" + wire_escape(zname) + "|"
+			+ (ctx.is_map_night(mi) ? "1" : "0") + "|" + (ctx.is_map_raining(mi) ? "1" : "0") + "|" + wire_escape(zname) + "|"
 			+ (ps.is_fractured(now_ms) ? "1" : "0") + "|";
 
 		string ents = "";
@@ -481,9 +483,11 @@ void main() {
 	}
 	g_srv.load_soft_data();
 
-	// 3. Spawn wildlife/bots across maps and open ENet port
-	wildlife_set_target_count(g_srv, g_srv.target_wildlife, false);
-	wildlife_set_target_count(g_srv, g_srv.target_bots, true);
+	// 3. Synchronize per-map animal spawn zones & bots, then open ENet port
+	for (uint mi_i = 0; mi_i < g_srv.maps.length(); mi_i++) {
+		wildlife_sync_map_spawns(g_srv, g_srv.maps[mi_i]);
+	}
+	if (g_srv.target_bots > 0) wildlife_set_bot_count(g_srv, g_srv.target_bots);
 
 	@g_srv.net = network();
 	g_srv.net.receive_timeout_event = true;

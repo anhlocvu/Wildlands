@@ -28,6 +28,11 @@ bool builder_can_access(ServerCtx@ ctx, PlayerSession@ ps, WorldStructure@ st) {
 void builder_place_structure(ServerCtx@ ctx, PlayerSession@ ps, const string&in raw_stype) {
 	MapInstance@ mi = ctx.player_map(ps);
 	if (@mi == null) return;
+	if (!mi.map.allow_build && ps.rank < RANK_ADMIN) {
+		ctx.send_sfx_to(ps, "self", "ui/error.ogg", ps.x, ps.y, ps.z, 0.7);
+		ctx.send_speech(ps, MBUF_GAME, true, "Building is disabled on " + mi.map.name + ".");
+		return;
+	}
 	string stype = raw_stype;
 	if (stype.ends_with("_kit")) {
 		ItemDef@ kd = find_item(stype);
@@ -260,13 +265,23 @@ MapInstance@ builder_target_map(ServerCtx@ ctx, PlayerSession@ ps) {
 
 void builder_send_hub_sync(ServerCtx@ ctx, PlayerSession@ ps) {
 	MapInstance@ ed = builder_target_map(ctx, ps);
+	string sp_rows = "";
+	for (uint i = 0; i < g_species.length(); i++) {
+		SpeciesDef@ sp = g_species[i];
+		if (sp_rows.length() > 0) sp_rows += ";";
+		sp_rows += sp.kind + "~" + wire_escape(sp.name) + "~" + (sp.hostile ? "1" : "0");
+	}
+	if (sp_rows.length() == 0) sp_rows = "-";
+	ctx.send_control(ps, pkt_build("BM_SPECIES", {sp_rows}));
+
 	string rows = "";
 	for (uint i = 0; i < ctx.maps.length(); i++) {
 		MapInstance@ m = ctx.maps[i];
 		if (rows.length() > 0) rows += ";";
 		rows += wire_escape(m.slug) + ":" + wire_escape(m.map.name) + ":" + m.map.width + ":" + m.map.height
 			+ ":" + m.map.min_z + ":" + m.map.max_z + ":" + m.map.default_surface + ":" + wire_escape(m.map.ambience_default)
-			+ ":" + (m.map.pvp_enabled ? "1" : "0") + ":" + ctx.count_players_on_map(m.slug) + ":" + m.map.raw_lines.length();
+			+ ":" + (m.map.pvp_enabled ? "1" : "0") + ":" + ctx.count_players_on_map(m.slug) + ":" + m.map.raw_lines.length()
+			+ ":" + (m.map.allow_build ? "1" : "0") + ":" + (m.map.weather_enabled ? "1" : "0") + ":" + m.map.time_mode;
 	}
 	if (rows.length() == 0) rows = "-";
 	ctx.send_control(ps, pkt_build("BM_MAPS", {@ed != null ? ed.slug : ctx.default_map_slug, rows}));
@@ -276,6 +291,7 @@ void builder_reload_map_clients(ServerCtx@ ctx, MapInstance@ mi) {
 	if (@mi == null) return;
 	ctx.sync_map_occluders(mi);
 	world_init_nodes(ctx, mi);
+	wildlife_sync_map_spawns(ctx, mi);
 	for (uint i = 0; i < ctx.sessions.length(); i++) {
 		PlayerSession@ p = ctx.sessions[i];
 		if (!p.authed || p.peer_id == 0 || p.current_map.lower() != mi.slug.lower()) continue;
@@ -356,9 +372,34 @@ string build_box_line_from_cmd(string kind, string[]@ p, uint off, int map_w, in
 		double z2 = safe_double(field(p, off + 6, "" + map_max_z), double(MAP_MIN_Z), double(MAP_MAX_Z), double(map_max_z));
 		order_pair(x1, x2); order_pair(y1, y2); order_pair(z1, z2);
 		string surf = field(p, off + 7, "grass");
-		string amb = field(p, off + 8, "ambience/forest_day.ogg");
+		string amb = field(p, off + 8, "");
 		bool safe = field(p, off + 9, "0") == "1";
-		return make_z_line(lbl, x1, y1, x2, y2, z1, z2, surf, amb, safe);
+		string rev = normalize_reverb_preset(field(p, off + 10, "none"));
+		return make_z_line(lbl, x1, y1, x2, y2, z1, z2, surf, amb, safe, rev);
+	}
+	if (kind == "animal_spawn") {
+		string lbl = wire_unescape(field(p, off, "Wildlife Spawn"));
+		double x1 = safe_double(field(p, off + 1, "0"), 0.0, double(map_w), 0.0);
+		double x2 = safe_double(field(p, off + 2, "20"), 0.0, double(map_w), 20.0);
+		double y1 = safe_double(field(p, off + 3, "0"), 0.0, double(map_h), 0.0);
+		double y2 = safe_double(field(p, off + 4, "20"), 0.0, double(map_h), 20.0);
+		double z1 = safe_double(field(p, off + 5, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+		double z2 = safe_double(field(p, off + 6, "5"), double(MAP_MIN_Z), double(MAP_MAX_Z), 5.0);
+		order_pair(x1, x2); order_pair(y1, y2); order_pair(z1, z2);
+		int iv_ms = safe_int(field(p, off + 7, "5000"), 250, 3600000, 5000);
+		int qty = safe_int(field(p, off + 8, "3"), 1, 50, 3);
+		string[]@ parsed_sp = parse_species_csv(field(p, off + 9, ""));
+		string[] valid_sp;
+		for (uint si = 0; si < parsed_sp.length(); si++) {
+			if (@find_species(parsed_sp[si]) != null) valid_sp.insert_last(parsed_sp[si]);
+		}
+		if (valid_sp.length() == 0) {
+			err = "Select at least 1 valid animal species.";
+			return "";
+		}
+		bool leash = field(p, off + 10, "1") == "1";
+		string act_time = normalize_active_time(field(p, off + 11, "always"));
+		return make_e_line(lbl, x1, y1, x2, y2, z1, z2, iv_ms, qty, join_species_csv(valid_sp), leash, act_time);
 	}
 	if (kind == "water") {
 		string lbl = wire_unescape(field(p, off, "Water"));
@@ -542,18 +583,13 @@ void builder_handle_map_cmd(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
 		int max_z = safe_int(field(p, 7, "30"), 5, MAP_MAX_Z, 30);
 		if (min_z > max_z) { int t = min_z; min_z = max_z; max_z = t; }
 		string surf = field(p, 8, "grass");
-		string amb = field(p, 9, "ambience/forest_day.ogg");
-		bool add_floor = field(p, 10, "1") == "1";
-		double sx = clampd(safe_double(field(p, 11, "" + (w / 2)), 2.0, double(w - 2), double(w / 2)), 2.0, double(w - 2));
-		double sy = clampd(safe_double(field(p, 12, "" + (h / 2)), 2.0, double(h - 2), double(h / 2)), 2.0, double(h - 2));
-		double sz = safe_double(field(p, 13, "0"), double(min_z), double(max_z), 0.0);
+		string tmpl = field(p, 9, "flat").trim_whitespace().lower();
+		if (tmpl != "flat" && tmpl != "void" && tmpl != "arena" && tmpl != "cave") tmpl = "flat";
+		double sx = clampd(safe_double(field(p, 10, "" + (w / 2)), 2.0, double(w - 2), double(w / 2)), 2.0, double(w - 2));
+		double sy = clampd(safe_double(field(p, 11, "" + (h / 2)), 2.0, double(h - 2), double(h / 2)), 2.0, double(h - 2));
+		double sz = safe_double(field(p, 12, "0"), double(min_z), double(max_z), 0.0);
 
-		string raw_map = make_m_line(dname, w, h, min_z, max_z, surf, amb, true) + "\n"
-			+ make_s_line("Main Spawn", sx, sy, sz, 0) + "\n"
-			+ make_z_line(dname + " Grounds", 0, 0, double(w), double(h), double(min_z), double(max_z), surf, amb, false) + "\n";
-		if (add_floor) {
-			raw_map += make_p_line("Base Floor", 0, 0, double(w), double(h), sz, sz, surf, "floor", false) + "\n";
-		}
+		string raw_map = generate_map_template_raw(tmpl, dname, w, h, min_z, max_z, surf, sx, sy, sz);
 
 		MapInstance nmi;
 		nmi.slug = slug;
@@ -570,8 +606,9 @@ void builder_handle_map_cmd(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
 		}
 		ctx.maps.insert_last(nmi);
 		world_init_nodes(ctx, nmi);
+		wildlife_sync_map_spawns(ctx, nmi);
 		ps.builder_edit_map = nmi.slug;
-		ctx.logger.log("BUILDER", ps.name + " created new map '" + nmi.slug + "' (" + w + "x" + h + ")");
+		ctx.logger.log("BUILDER", ps.name + " created new map '" + nmi.slug + "' (" + tmpl + ", " + w + "x" + h + ")");
 		ctx.send_sfx_to(ps, "self", "builder/map_create.ogg", ps.x, ps.y, ps.z, 0.85);
 		builder_send_hub_sync(ctx, ps);
 		ctx.send_control(ps, pkt_3("BM_RES", "ok", wire_escape("Created map " + dname + " (" + slug + ").")));
@@ -580,7 +617,6 @@ void builder_handle_map_cmd(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
 
 	if (cmd == "select_map") {
 		string slug = field(p, 2, "");
-		bool also_tp = field(p, 3, "0") == "1";
 		MapInstance@ target = ctx.find_map(slug);
 		if (@target == null) {
 			ctx.send_control(ps, pkt_3("BM_RES", "err", wire_escape("Map not found: " + slug)));
@@ -588,12 +624,47 @@ void builder_handle_map_cmd(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
 		}
 		ps.builder_edit_map = target.slug;
 		builder_send_hub_sync(ctx, ps);
-		if (also_tp && target.map.spawns.length() > 0) {
-			MapSpawn@ sp = target.map.spawns[0];
-			world_transfer_player_map(ctx, ps, target, sp.x, sp.y, sp.z, sp.facing);
-		} else {
-			ctx.send_control(ps, pkt_3("BM_RES", "ok", wire_escape("Active builder map set to " + target.map.name + ".")));
+		ctx.send_control(ps, pkt_3("BM_RES", "ok", wire_escape("Active builder map set to " + target.map.name + " (edit only).")));
+		return;
+	}
+
+	if (cmd == "clone_map") {
+		string src_slug = field(p, 2, ps.builder_edit_map);
+		MapInstance@ src = ctx.find_map(src_slug);
+		if (@src == null) {
+			ctx.send_control(ps, pkt_3("BM_RES", "err", wire_escape("Source map not found: " + src_slug)));
+			return;
 		}
+		string new_slug = slugify_map_id(field(p, 3, src.slug + "_copy"));
+		if (@ctx.find_map(new_slug) != null) {
+			ctx.send_control(ps, pkt_3("BM_RES", "err", wire_escape("A map named " + new_slug + " already exists.")));
+			return;
+		}
+		string new_name = strip_control_chars(wire_unescape(field(p, 4, src.map.name + " Copy")), 40);
+		if (new_name.length() < 2) new_name = new_slug;
+
+		MapInstance cmi;
+		cmi.slug = new_slug;
+		cmi.file_path = ctx.maps_dir + "/" + new_slug + ".map";
+		cmi.map.slug = new_slug;
+		string err;
+		if (!cmi.map.load_from_string(src.map.serialize(), err)) {
+			ctx.send_control(ps, pkt_3("BM_RES", "err", wire_escape("Clone load error: " + err)));
+			return;
+		}
+		cmi.map.lm_replace_line(0, make_m_line(new_name, cmi.map.width, cmi.map.height, cmi.map.min_z, cmi.map.max_z, cmi.map.default_surface, cmi.map.ambience_default, cmi.map.pvp_enabled, cmi.map.allow_build, cmi.map.weather_enabled, cmi.map.time_mode), err);
+		if (!builder_save_map_disk(ctx, cmi, err)) {
+			ctx.send_control(ps, pkt_3("BM_RES", "err", wire_escape(err)));
+			return;
+		}
+		ctx.maps.insert_last(cmi);
+		world_init_nodes(ctx, cmi);
+		wildlife_sync_map_spawns(ctx, cmi);
+		ps.builder_edit_map = cmi.slug;
+		ctx.logger.log("BUILDER", ps.name + " cloned '" + src.slug + "' -> '" + cmi.slug + "'");
+		ctx.send_sfx_to(ps, "self", "builder/map_create.ogg", ps.x, ps.y, ps.z, 0.85);
+		builder_send_hub_sync(ctx, ps);
+		ctx.send_control(ps, pkt_3("BM_RES", "ok", wire_escape("Cloned map to " + new_name + " (" + cmi.slug + ").")));
 		return;
 	}
 
@@ -605,11 +676,14 @@ void builder_handle_map_cmd(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
 		int max_z = safe_int(field(p, 6, "" + mi.map.max_z), 5, MAP_MAX_Z, mi.map.max_z);
 		if (min_z > max_z) { int t = min_z; min_z = max_z; max_z = t; }
 		string surf = field(p, 7, mi.map.default_surface);
-		string amb = field(p, 8, mi.map.ambience_default);
+		string amb = normalize_amb_ref(field(p, 8, mi.map.ambience_default));
 		bool pvp = field(p, 9, "1") == "1";
+		bool abuild = field(p, 10, mi.map.allow_build ? "1" : "0") == "1";
+		bool weath = field(p, 11, mi.map.weather_enabled ? "1" : "0") == "1";
+		string tmode = normalize_time_mode(field(p, 12, mi.map.time_mode));
 		mi.push_undo();
 		string err;
-		if (!mi.map.lm_replace_line(0, make_m_line(dname, w, h, min_z, max_z, surf, amb, pvp), err)) {
+		if (!mi.map.lm_replace_line(0, make_m_line(dname, w, h, min_z, max_z, surf, amb, pvp, abuild, weath, tmode), err)) {
 			ctx.send_control(ps, pkt_3("BM_RES", "err", wire_escape(err)));
 			return;
 		}
@@ -763,6 +837,10 @@ void builder_handle_map_cmd(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p) {
 		return;
 	}
 	if (cmd == "lm_tp") {
+		if (mi.slug.lower() != ps.current_map.lower()) {
+			ctx.send_control(ps, pkt_3("BM_RES", "err", wire_escape("You are editing " + mi.map.name + " from another map. Use /maps to travel there first.")));
+			return;
+		}
 		uint idx = uint(safe_int(field(p, 2, "0"), 0, 5000, 0));
 		double ax, ay, az;
 		mi.map.line_anchor_pos(idx, ax, ay, az);

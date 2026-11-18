@@ -197,10 +197,10 @@ void world_kill_env(ServerCtx@ ctx, PlayerSession@ victim, const string&in cause
 	world_respawn_player(ctx, victim);
 }
 
-bool world_transfer_player_map(ServerCtx@ ctx, PlayerSession@ ps, MapInstance@ dest, double dx, double dy, double dz, int dfac, const string&in travel_sfx = "world/portal_travel.ogg") {
+bool world_transfer_player_map(ServerCtx@ ctx, PlayerSession@ ps, MapInstance@ dest, double dx, double dy, double dz, int dfac, const string&in travel_sfx = "world/portal_travel.ogg", bool is_portal = false) {
 	if (@ps == null || @dest == null) return false;
 	string old_map = ps.current_map;
-	if (old_map != dest.slug) {
+	if (old_map != dest.slug && travel_sfx.length() > 0 && travel_sfx != "none") {
 		ctx.broadcast_sfx_3d(old_map, "world", travel_sfx, ps.x, ps.y, ps.z, 0.7, 18.0);
 	}
 	ps.current_map = dest.slug;
@@ -230,9 +230,17 @@ bool world_transfer_player_map(ServerCtx@ ctx, PlayerSession@ ps, MapInstance@ d
 			fmt2(ps.x), fmt2(ps.y), fmt2(ps.z), "" + ps.facing
 		}));
 		ctx.send_map_sync(ps);
-		ctx.send_sfx_to(ps, "self", travel_sfx, ps.x, ps.y, ps.z, 0.85);
-		ctx.broadcast_sfx_3d(dest.slug, "world", travel_sfx, ps.x, ps.y, ps.z, 0.75, 22.0);
+		if (travel_sfx.length() > 0 && travel_sfx != "none") {
+			ctx.send_sfx_to(ps, "self", travel_sfx, ps.x, ps.y, ps.z, 0.85);
+			ctx.broadcast_sfx_3d(dest.slug, "world", travel_sfx, ps.x, ps.y, ps.z, 0.75, 22.0);
+		}
 		ctx.send_speech(ps, MBUF_GAME, true, "Entered " + dest.map.name + ", " + dest.map.zone_name_at(ps.x, ps.y, ps.z) + ".");
+	} else if (is_portal) {
+		if (travel_sfx.length() > 0 && travel_sfx != "none") {
+			ctx.send_sfx_to(ps, "self", travel_sfx, ps.x, ps.y, ps.z, 0.85);
+			ctx.broadcast_sfx_3d(dest.slug, "world", travel_sfx, ps.x, ps.y, ps.z, 0.75, 22.0);
+		}
+		ctx.send_speech(ps, MBUF_GAME, true, dest.map.zone_name_at(ps.x, ps.y, ps.z) + ", height " + int(ps.z) + ".");
 	} else {
 		ctx.send_speech(ps, MBUF_SYSTEM, true, "Teleported to " + int(ps.x) + ", " + int(ps.y) + ", Z " + int(ps.z) + " on " + dest.map.name + ".");
 	}
@@ -457,7 +465,7 @@ void world_step_player_move(ServerCtx@ ctx, PlayerSession@ ps, double dt, uint64
 	if (@prt != null && prt.auto_step) {
 		MapInstance@ dest = ctx.find_map(prt.target_map);
 		if (@dest != null) {
-			world_transfer_player_map(ctx, ps, dest, prt.dest_x, prt.dest_y, prt.dest_z, prt.dest_facing, prt.sound_file);
+			world_transfer_player_map(ctx, ps, dest, prt.dest_x, prt.dest_y, prt.dest_z, prt.dest_facing, prt.sound_file, true);
 			return;
 		}
 	}
@@ -568,8 +576,8 @@ void world_step_vitals_and_env(ServerCtx@ ctx, uint64 now_ms) {
 		bool holding_torch = @eq != null && eq.id == "torch";
 		if (near_fire || holding_torch) {
 			ps.warmth = clampi(ps.warmth + 6, 0, 100);
-		} else if (!under_roof && (ctx.is_night || ctx.is_raining)) {
-			ps.warmth = clampi(ps.warmth - (ctx.is_raining ? 2 : 1), 0, 100);
+		} else if (!under_roof && (ctx.is_map_night(mi) || ctx.is_map_raining(mi))) {
+			ps.warmth = clampi(ps.warmth - (ctx.is_map_raining(mi) ? 2 : 1), 0, 100);
 		} else {
 			ps.warmth = clampi(ps.warmth + 1, 0, 100);
 		}
@@ -609,7 +617,7 @@ void world_handle_gather(ServerCtx@ ctx, PlayerSession@ ps, uint64 now_ms) {
 	if (@prt != null) {
 		MapInstance@ dest = ctx.find_map(prt.target_map);
 		if (@dest != null) {
-			world_transfer_player_map(ctx, ps, dest, prt.dest_x, prt.dest_y, prt.dest_z, prt.dest_facing, prt.sound_file);
+			world_transfer_player_map(ctx, ps, dest, prt.dest_x, prt.dest_y, prt.dest_z, prt.dest_facing, prt.sound_file, true);
 			return;
 		}
 	}

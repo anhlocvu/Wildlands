@@ -197,6 +197,9 @@ class WildlifeMob {
 	int facing = 0;
 	int hp = 50, max_hp = 50;
 	double home_x = 0.0, home_y = 0.0, home_z = 0.0;
+	int spawn_zone_idx = -1;
+	bool leash_to_zone = false;
+	double leash_min_x = 0.0, leash_min_y = 0.0, leash_max_x = 0.0, leash_max_y = 0.0;
 	uint64 aggro_peer = 0;
 	uint64 next_think_ms = 0;
 	uint64 windup_end_ms = 0;
@@ -213,6 +216,8 @@ class MapInstance {
 	WildlifeMob@[] mobs;
 	LootDrop@[] drops;
 	ArrowProjectile@[] arrows;
+	uint64[] animal_spawn_next_ms;
+	bool[] animal_spawn_waiting;
 	string[][] undo_history;
 
 	void push_undo() {
@@ -243,7 +248,6 @@ class ServerCtx {
 	bool headless = false;
 	bool maintenance_mode = false;
 	uint64 bind_delay_ms = 0;
-	int target_wildlife = 12;
 	int target_bots = 0;
 	int guest_seq = 1;
 	uint64 next_entity_id = 1;
@@ -308,6 +312,19 @@ class ServerCtx {
 			if (sessions[i].authed && sessions[i].peer_id != 0 && sessions[i].current_map.lower() == low) c++;
 		}
 		return c;
+	}
+
+	bool is_map_night(MapInstance@ mi) {
+		if (@mi != null) {
+			if (mi.map.time_mode == "night") return true;
+			if (mi.map.time_mode == "day") return false;
+		}
+		return is_night;
+	}
+
+	bool is_map_raining(MapInstance@ mi) {
+		if (@mi != null && !mi.map.weather_enabled) return false;
+		return is_raining;
 	}
 
 	PlayerSession@ find_session_by_peer(uint64 peer_id) {

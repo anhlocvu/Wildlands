@@ -310,7 +310,6 @@ void st_run_world_menu(NetClient@ nc) {
 		m.add_item("Set Time: Nighttime", "t_night");
 		m.add_item("Clear Ground Loot Across All Maps", "clear_drops");
 		if (nc.my_rank >= RANK_DEV) {
-			m.add_item("Set Target Wildlife Count", "wildlife");
 			m.add_item("Set Target Practice Bot Count", "bots");
 			m.add_item("Reload Maps, Items and Server Config Live", "reload");
 		}
@@ -333,35 +332,53 @@ void st_run_world_menu(NetClient@ nc) {
 			if (show_text_prompt("Global Announcement", "Message to broadcast to all players", "", txt, 200)) {
 				nc.send_control(pkt_build("STAFF", {"world", "announce", wire_escape(txt)}));
 			}
-		} else if (sel == "wildlife" || sel == "bots") {
+		} else if (sel == "bots") {
 			menu nm;
-			init_std_menu(nm, "Choose " + sel + " target count.");
+			init_std_menu(nm, "Choose practice bot target count.");
 			int[] bots_c = {0, 2, 4, 6, 10};
-			int[] wild_c = {0, 6, 12, 20, 32};
-			int[]@ cnts = (sel == "bots") ? @bots_c : @wild_c;
-			for (uint i = 0; i < cnts.length(); i++) nm.add_item("" + cnts[i], "" + cnts[i]);
+			for (uint i = 0; i < bots_c.length(); i++) nm.add_item("" + bots_c[i], "" + bots_c[i]);
 			while (nm.monitor()) { wait(5); nc.pump(); g_audio.tick_menu_audio(); }
-			if (nm.selected_item_id.length() > 0) nc.send_control(pkt_build("STAFF", {"world", sel, nm.selected_item_id}));
+			if (nm.selected_item_id.length() > 0) nc.send_control(pkt_build("STAFF", {"world", "bots", nm.selected_item_id}));
 		}
 	}
 }
 
-void st_run_spawner_menu(NetClient@ nc) {
+bool run_server_maps_menu(NetClient@ nc, bool already_loaded = false) {
+	if (nc.my_rank < RANK_BUILDER) {
+		g_audio.play_ui_cue("error.ogg", 0.8f);
+		say("Builder rank or higher is required for /maps.", true);
+		return false;
+	}
+	if (!already_loaded) {
+		nc.maps_dir_ready = false;
+		nc.send_control(pkt_2("MAPS", "list"));
+		timer wt;
+		while (wt.elapsed < 1200 && nc.state == CONN_READY && !nc.maps_dir_ready) {
+			wait(5); nc.pump(); g_audio.tick_menu_audio();
+		}
+	}
+	if (nc.state != CONN_READY) return false;
 	menu m;
-	init_std_menu(m, "Spawn Creature or Practice Bot at current position on " + nc.current_map_name + ".");
-	string[] kinds = {"deer", "rabbit", "boar", "wolf", "bear", "bot_survivor"};
-	string[] labels = {"Deer (passive prey)", "Rabbit (fast small prey)", "Wild Boar", "Wolf (pack predator)", "Grizzly Bear (heavy apex)", "Practice Bot Survivor"};
-	for (uint i = 0; i < kinds.length(); i++) m.add_item(labels[i], kinds[i]);
+	init_std_menu(m, "Server Maps Directory. Press Enter on a map to teleport there. %0 maps.");
+	if (nc.server_maps_dir.length() == 0) {
+		m.add_item("No maps available.", "__cancel");
+	} else {
+		for (uint i = 0; i < nc.server_maps_dir.length(); i++) {
+			MapsDirectoryRow@ mr = nc.server_maps_dir[i];
+			string tag = (mr.slug == nc.current_map_slug) ? " [Current Map]" : "";
+			m.add_item(mr.name + " (" + mr.slug + ", " + mr.width + "x" + mr.height + ", Z " + mr.min_z + " to " + mr.max_z
+				+ ", " + mr.players + " players, " + mr.lines + " lines)" + tag, mr.slug);
+		}
+	}
 	m.add_item("Cancel", "__cancel");
 	while (m.monitor()) {
 		wait(5); nc.pump(); g_audio.tick_menu_audio();
-		if (nc.state != CONN_READY) return;
+		if (nc.state != CONN_READY) return false;
 	}
-	if (m.selected_item_id.length() == 0 || m.selected_item_id == "__cancel") return;
-	nc.send_control(pkt_build("STAFF", {
-		"spawn_mob", m.selected_item_id, nc.current_map_slug,
-		fmt2(nc.my_x + 2.0), fmt2(nc.my_y + 2.0), fmt2(nc.my_z)
-	}));
+	string slug = m.selected_item_id;
+	if (slug.length() == 0 || slug == "__cancel") return false;
+	nc.send_control(pkt_3("MAPS", "tp", slug));
+	return true;
 }
 
 void st_run_teleport_form(NetClient@ nc) {
@@ -480,8 +497,8 @@ void run_staff_panel(NetClient@ nc) {
 		m.add_item("Account Directory (Online Status & Last Seen)", "accounts");
 		if (nc.my_rank >= RANK_DEV) m.add_item("Server Lifecycle (Shutdown, Restart, Maintenance, MOTD)", "lifecycle");
 		if (nc.my_rank >= RANK_ADMIN) m.add_item("World, Weather, Saves & Broadcasts", "world");
-		if (nc.my_rank >= RANK_ADMIN) m.add_item("Spawn Wildlife or Practice Bots", "spawner");
-		m.add_item("Teleport to Any Map or Coordinates", "tp");
+		m.add_item("View All Maps (/maps)", "maps_dir");
+		m.add_item("Teleport to Specific Coordinates", "tp");
 		m.add_item("Open STW Audio Map Builder Hub (F8)", "builder");
 		m.add_item("Server Telemetry, Audit Logs & Player Reports", "logs_reports");
 		m.add_item("Send Staff Chat Message (/sc)", "staff_chat");
@@ -498,7 +515,7 @@ void run_staff_panel(NetClient@ nc) {
 		if (sel == "accounts") st_run_account_directory(nc);
 		else if (sel == "lifecycle") st_run_lifecycle_menu(nc);
 		else if (sel == "world") st_run_world_menu(nc);
-		else if (sel == "spawner") st_run_spawner_menu(nc);
+		else if (sel == "maps_dir") { if (run_server_maps_menu(nc, false)) return; }
 		else if (sel == "tp") { st_run_teleport_form(nc); return; }
 		else if (sel == "builder") { run_map_builder_hub(nc); }
 		else if (sel == "logs_reports") st_run_logs_reports_menu(nc);

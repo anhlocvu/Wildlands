@@ -325,3 +325,123 @@
 2026-11-18 20:07:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
 2026-11-18 20:07:18 [NET] Peer 1 (anhloc) disconnected (closed)
 2026-11-18 20:11:20 [INFO] Server shut down cleanly.
+2026-11-18 22:44:40 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-18 22:44:40 [READY] Server listening on port 7198 (proto=3, maps=3, accounts=0).
+2026-11-18 22:44:43 [NET] Peer 1 connected from 127.0.0.1:52539
+2026-11-18 22:45:01 [AUTH_REG] Registered new account ClientHero from 127.0.0.1:52539
+2026-11-18 22:45:01 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:52539
+2026-11-18 22:45:01 [NET] Peer 1 (ClientHero) disconnected (closed)
+2026-11-18 22:45:01 [NET] Peer 2 connected from 127.0.0.1:57349
+2026-11-18 22:45:01 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:57349
+2026-11-18 22:45:01 [NET] Peer 2 (ClientHero) disconnected (closed)
+2026-11-18 22:45:02 [NET] Peer 3 connected from 127.0.0.1:57350
+2026-11-18 22:45:02 [AUTH_FAIL] LOGIN refused for ClientHero from 127.0.0.1:57350: Unknown account name or incorrect password.
+2026-11-18 22:45:02 [AUTH_FAIL] REG refused for clienthero from 127.0.0.1:57350: That account name is already taken.
+2026-11-18 22:45:02 [NET] Peer 3 () disconnected (closed)
+2026-11-18 22:45:02 [NET] Peer 4 connected from 127.0.0.1:57352
+2026-11-18 22:45:02 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:57352
+2026-11-18 22:45:02 [CHAT] ClientHero: Hello from Client E2E
+2026-11-18 22:45:03 [PM] ClientHero -> ClientHero (len=8)
+2026-11-18 22:45:04 [NET] Peer 4 (ClientHero) disconnected (closed)
+2026-11-18 22:53:03 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-18 22:53:03 [READY] Server listening on port 7100 (proto=3, maps=3, accounts=1).
+2026-11-18 22:53:06 [INFO] Server shut down cleanly.
+2026-11-18 22:53:15 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-18 22:53:15 [READY] Server listening on port 7100 (proto=3, maps=3, accounts=1).
+2026-11-18 22:53:26 [NET] Peer 1 connected from 127.0.0.1:58967
+2026-11-18 22:53:26 [AUTH] Signed in anhloc (Developer) on anhloc from 127.0.0.1:58967
+2026-11-18 22:53:30 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 3ms
+2026-11-18 22:53:41 [BUILDER] anhloc deleted map anhloc
+2026-11-18 22:53:45 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 15ms
+2026-11-18 22:54:00 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 16ms
+2026-11-18 22:54:15 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 16ms
+2026-11-18 22:54:30 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 16ms
+2026-11-18 22:54:45 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 17ms
+2026-11-18 22:55:00 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 17ms
+2026-11-18 22:55:16 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 17ms
+2026-11-18 22:55:31 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 17ms
+2026-11-18 22:55:46 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 16ms
+2026-11-18 22:56:01 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 15ms
+2026-11-18 22:56:16 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 17ms
+2026-11-18 22:56:31 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 9ms
+2026-11-18 22:56:46 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 16ms
+2026-11-18 22:57:01 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 15ms
+2026-11-18 22:57:16 [STAT] Online: 1 | Maps: 2 | Objects: 0 | Worst tick: 8ms
+2026-11-18 22:57:28 [BUILDER] anhloc created new map 'anhloc' (flat, 50x50)
+2026-11-18 22:57:31 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 22:57:39 [STAFF] anhloc warped via /maps to anhloc
+2026-11-18 22:57:46 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 22:58:01 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 10ms
+2026-11-18 22:58:16 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 8ms
+2026-11-18 22:58:31 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 22:58:46 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-18 22:59:01 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 17ms
+2026-11-18 22:59:16 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 22:59:31 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 18ms
+2026-11-18 22:59:37 [INFO] Server shut down cleanly.
+2026-11-18 23:01:54 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-18 23:01:54 [READY] Server listening on port 7100 (proto=3, maps=3, accounts=1).
+2026-11-18 23:01:59 [NET] Peer 1 connected from 127.0.0.1:55364
+2026-11-18 23:01:59 [AUTH] Signed in anhloc (Developer) on anhloc from 127.0.0.1:55364
+2026-11-18 23:02:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:02:24 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 23:02:39 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-18 23:02:54 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:03:04 [BUILDER] anhloc added stairs to anhloc
+2026-11-18 23:03:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 17ms
+2026-11-18 23:03:24 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 17ms
+2026-11-18 23:03:39 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 17ms
+2026-11-18 23:03:54 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-18 23:03:54 [BUILDER] anhloc saved map anhloc (4 lines)
+2026-11-18 23:04:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 17ms
+2026-11-18 23:04:24 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-18 23:04:30 [BUILDER] anhloc reloaded map anhloc
+2026-11-18 23:04:39 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 17ms
+2026-11-18 23:04:54 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-18 23:05:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 13ms
+2026-11-18 23:05:24 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 7ms
+2026-11-18 23:05:39 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 19ms
+2026-11-18 23:05:54 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 23:06:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 23:06:24 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 21ms
+2026-11-18 23:06:39 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:06:54 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:07:04 [BUILDER] anhloc added floor to anhloc
+2026-11-18 23:07:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:07:24 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 23:07:32 [BUILDER] anhloc saved map anhloc (5 lines)
+2026-11-18 23:07:34 [BUILDER] anhloc reloaded map anhloc
+2026-11-18 23:07:39 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 17ms
+2026-11-18 23:07:54 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:08:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 20ms
+2026-11-18 23:08:24 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:08:39 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 23:08:54 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:08:59 [BUILDER] anhloc added water to anhloc
+2026-11-18 23:09:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:09:24 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 24ms
+2026-11-18 23:09:39 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 17ms
+2026-11-18 23:09:54 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 20ms
+2026-11-18 23:10:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-18 23:10:18 [BUILDER] anhloc added ramp to anhloc
+2026-11-18 23:10:24 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:10:39 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 18ms
+2026-11-18 23:10:54 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 23:11:09 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 17ms
+2026-11-18 23:11:24 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 23:11:40 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 7ms
+2026-11-18 23:11:55 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 7ms
+2026-11-18 23:11:59 [BUILDER] anhloc added zone to anhloc
+2026-11-18 23:12:10 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 18ms
+2026-11-18 23:12:25 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 23:12:40 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:12:55 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:13:10 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 10ms
+2026-11-18 23:13:21 [BUILDER] anhloc added animal_spawn to anhloc
+2026-11-18 23:13:25 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-18 23:13:40 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:13:55 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-18 23:14:10 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-18 23:14:25 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 15ms
+2026-11-18 23:14:31 [NET] Peer 1 (anhloc) disconnected (closed)
+2026-11-18 23:14:35 [INFO] Server shut down cleanly.

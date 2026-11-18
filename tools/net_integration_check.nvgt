@@ -46,6 +46,8 @@ class TestBot {
 	double x = 0.0, y = 0.0, z = 0.0;
 	int facing = 0;
 	int hp = 100, hunger = 100, thirst = 100, stamina = 100, warmth = 100;
+	bool last_night = false;
+	bool last_rain = false;
 	bool fractured = false;
 	string cur_map = "wildlands_valley";
 	bool snap_ok = false;
@@ -78,7 +80,7 @@ class TestBot {
 		assert_true(peer != 0, label + " connect start");
 		timer t;
 		while (t.elapsed < 3000) {
-			if (g_global_timer.elapsed > 45000) fail_now("Global integration timeout");
+			if (g_global_timer.elapsed > 65000) fail_now("Global integration timeout");
 			wait(5);
 			const network_event@ ev = net.request(0);
 			if (@ev == null || ev.type == event_none) continue;
@@ -211,6 +213,8 @@ class TestBot {
 			thirst = safe_int(field(p, 8, "100"), 0, 100, 100);
 			stamina = safe_int(field(p, 9, "100"), 0, 100, 100);
 			warmth = safe_int(field(p, 10, "100"), 0, 100, 100);
+			last_night = field(p, 11, "0") == "1";
+			last_rain = field(p, 12, "0") == "1";
 			fractured = field(p, 14, "0") == "1";
 			snap_ents.resize(0);
 			string raw_e = field(p, 15, "-");
@@ -235,7 +239,7 @@ class TestBot {
 	string wait_for_op(uint ch, const string&in prefix, uint timeout_ms = 3000) {
 		timer t;
 		while (t.elapsed < timeout_ms) {
-			if (g_global_timer.elapsed > 45000) fail_now("Global integration timeout");
+			if (g_global_timer.elapsed > 65000) fail_now("Global integration timeout");
 			pump_once();
 			for (uint i = 0; i < log.length(); i++) {
 				if (log[i].ch == ch && log[i].msg.starts_with(prefix)) {
@@ -419,16 +423,20 @@ void run_phase_1(const string&in host, uint16 port) {
 	pump_pair(alice, dev, null, 250);
 	assert_true(alice.inv_qty_of("cooked_meat") == 0, "Eating cooked_meat consumed stack");
 
-	// 4. Wildlife Hunting (Melee + Bow & Arrow + Loot Drop) & Safe Zone vs Duel + Guard Block
-	dev.send_ctrl("DEV|set_wildlife|10");
+	// 4. Per-Map E Wildlife Hunting (Melee + Bow & Arrow + Loot Drop) & Safe Zone vs Duel + Guard Block
 	dev.send_ctrl("DEV|spawn_item|TestDev|stone_axe|1");
 	dev.send_ctrl("DEV|spawn_item|TestDev|wooden_bow|1");
 	dev.send_ctrl("DEV|spawn_item|TestDev|arrow|5");
-	// Search live mob in Dev's earshot or roam northern woods (55, 85) where rabbits/deer/wolves spawn
-	dev.send_ctrl("DEV|tp|TestDev|55|88|0");
-	dev.drain(400);
-	BotEnt@ mob = dev.find_ent_prefix("m");
-	if (@mob == null) { dev.send_ctrl("DEV|tp|TestDev|35|88|0"); dev.drain(400); @mob = dev.find_ent_prefix("m"); }
+	// Move into Whispering Woods Grazers E zone (44..104 x 72..92, 5000ms timer) and wait for spawn if server just booted
+	dev.send_ctrl("DEV|tp|TestDev|60|82|0");
+	BotEnt@ mob = null;
+	timer mob_wt;
+	while (mob_wt.elapsed < 6000) {
+		dev.drain(200);
+		@mob = dev.find_ent_prefix("m");
+		if (@mob != null) break;
+	}
+	assert_true(@mob != null, "Whispering Woods E spawn zone populated wildlife dynamically");
 	if (@mob != null) {
 		// Teleport directly behind mob within melee range and strike until killed!
 		dev.send_ctrl("DEV|tp|TestDev|" + fmt2(mob.x) + "|" + fmt2(mob.y - 1.0) + "|0");
@@ -635,14 +643,134 @@ void run_phase_1(const string&in host, uint16 port) {
 	assert_true(dev.wait_for_op(CH_CONTROL, "MAP_HDR|skywatch_citadel|", 2500) != "", "Received skywatch_citadel MAP_HDR");
 	dev.drain(300);
 	assert_true(dev.cur_map == "skywatch_citadel" && dev.map_ok, "Dev loaded skywatch_citadel live");
+	dev.drain(450);
+	assert_true(@dev.find_ent_prefix("m") == null, "Test map skywatch_citadel has zero wildlife without E spawn zones");
 	dev.send_ctrl("STAFF|tp_loc|wildlands_valley|80|80|0");
 	assert_true(dev.wait_for_op(CH_CONTROL, "MAP_TRANSFER|wildlands_valley|", 2500) != "", "Teleported Dev back to wildlands_valley");
 	dev.drain(250);
 
-	// STW Builder F8 create_map, 6-axis add_box, Line Manager, undo, validate, save
+	// Feature 003: Dynamic BM_SPECIES, create_map template (silent none), /maps RBAC & navigation,
+	// Builder edit-only select_map & lm_tp block, Approach A E spawn timer, zone reverb, map rules & clone_map
 	dev.log.resize(0);
-	dev.send_ctrl("BUILDMAP|create_map|e2e_arena|E2E Arena|80|80|-10|20|carpet|ambience/indoor_room.ogg|1|40|40|0");
-	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Builder created e2e_arena map");
+	dev.send_ctrl("BUILDMAP|hub_sync");
+	string sp_pkt = dev.wait_for_op(CH_CONTROL, "BM_SPECIES|", 2500);
+	assert_true(sp_pkt.find("rabbit~") >= 0 && sp_pkt.find("wolf~") >= 0 && sp_pkt.find("bot_survivor~") >= 0, "BM_SPECIES populated dynamically from server g_species");
+
+	// Non-builder Alice rejected on /maps
+	alice.log.resize(0);
+	alice.send_ctrl("MAPS|list");
+	alice.drain(200);
+	assert_true(has_msg_containing(alice, "Builder rank"), "Rank 0 player denied on MAPS|list");
+
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|create_map|e2e_arena|E2E Arena|80|80|-10|20|carpet|flat|40|40|0");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Builder created silent flat e2e_arena map");
+
+	// Selecting active builder map NEVER teleports player
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|select_map|e2e_arena");
+	dev.drain(200);
+	assert_true(dev.cur_map == "wildlands_valley", "BUILDMAP|select_map switched edit target without teleporting player");
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|lm_tp|1");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|err|", 2000) != "", "BUILDMAP|lm_tp blocked cross-map teleport cleanly");
+
+	// Builder uses /maps directory & MAPS|tp to teleport cleanly into e2e_arena
+	dev.log.resize(0);
+	dev.send_ctrl("MAPS|list");
+	string ml_pkt = dev.wait_for_op(CH_CONTROL, "MAPS_LIST|", 2500);
+	assert_true(ml_pkt.find("e2e_arena~") >= 0 && ml_pkt.find("skywatch_citadel~") >= 0, "MAPS_LIST contains all server maps");
+	dev.log.resize(0);
+	dev.send_ctrl("MAPS|tp|e2e_arena");
+	assert_true(dev.wait_for_op(CH_CONTROL, "MAP_TRANSFER|e2e_arena|", 2500) != "", "/maps teleported Dev onto e2e_arena");
+	assert_true(dev.wait_for_op(CH_CONTROL, "MAP_HDR|e2e_arena|", 2500) != "", "Received e2e_arena map sync");
+	dev.drain(250);
+	assert_true(dev.map.ambience_default == "none", "Newly created map defaults to silent ambience 'none'");
+
+	// Edit header rules: allow_build=0, weather=0, time_mode=night + add cave reverb zone + add same-map portal
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|edit_header|E2E Arena|80|80|-10|20|carpet|none|1|0|0|night");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "edit_header updated v3 map rules");
+	dev.drain(250);
+	assert_true(dev.last_night && !dev.last_rain, "Per-map time_mode=night & weather=0 enforced in snapshots");
+
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|add_box|zone|Arena Cave|30|60|30|60|-5|10|stone|none|0|cave");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Added cave reverb zone");
+	dev.drain(250);
+	assert_true(dev.map.reverb_at(40, 40, 0) == "cave", "Synced e2e_arena zone reports cave reverb preset");
+
+	// Non-admin Alice rejected by allow_build=0
+	dev.send_ctrl("DEV|spawn_item|Alice|wood_wall_kit|1");
+	dev.send_ctrl("STAFF|act|move_map|Alice|e2e_arena");
+	assert_true(alice.wait_for_op(CH_CONTROL, "MAP_TRANSFER|e2e_arena|", 2500) != "", "Alice moved to e2e_arena");
+	pump_pair(alice, dev, null, 250);
+	alice.log.resize(0);
+	alice.send_ctrl("ACT|build|wood_wall");
+	pump_pair(alice, dev, null, 200);
+	assert_true(has_msg_containing(alice, "Building is disabled"), "allow_build=0 blocked non-admin build");
+	dev.send_ctrl("STAFF|act|move_map|Alice|wildlands_valley");
+	assert_true(alice.wait_for_op(CH_CONTROL, "MAP_TRANSFER|wildlands_valley|", 2500) != "", "Alice returned to wildlands_valley");
+	pump_pair(alice, dev, null, 200);
+
+	// Test Approach A shared ms E Animal Spawn Zone (1200ms timer, qty 2) on e2e_arena
+	dev.send_ctrl("MAPS|tp|e2e_arena");
+	dev.drain(250);
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|add_box|animal_spawn|Arena Rabbits|37|43|37|43|0|4|1200|2|rabbit|1|always");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Added E animal_spawn zone");
+	dev.drain(500);
+	assert_true(@dev.find_ent_prefix("m") == null, "Approach A waited before initial 1200ms spawn interval elapsed");
+	dev.drain(950); // total ~1450ms >= 1200ms
+	int e_mob_cnt = 0;
+	for (uint si = 0; si < dev.snap_ents.length(); si++) {
+		if (dev.snap_ents[si].id.starts_with("m")) e_mob_cnt++;
+	}
+	assert_true(e_mob_cnt == 2, "Approach A spawned exact quantity 2 mobs after 1200ms interval (got " + e_mob_cnt + ")");
+	// Kill 1 mob and verify Approach A respawns back to 2 after 1200ms
+	BotEnt@ kill_target = dev.find_ent_prefix("m");
+	assert_true(@kill_target != null, "Found spawned mob to kill");
+	int axe_e = dev.inv_slot_of("stone_axe");
+	if (axe_e >= 0) dev.send_ctrl("ACT|equip|" + axe_e);
+	for (int k = 0; k < 6; k++) {
+		BotEnt@ cur_k = dev.find_ent_prefix("m");
+		if (@cur_k == null) break;
+		dev.send_ctrl("DEV|tp|TestDev|" + fmt2(cur_k.x) + "|" + fmt2(cur_k.y - 0.9) + "|0");
+		dev.send_input(0, 0);
+		dev.drain(80);
+		dev.send_ctrl("ACT|attack");
+		dev.drain(650);
+		if (has_msg_containing(dev, "You defeated")) break;
+	}
+	dev.drain(1500);
+	int post_mob_cnt = 0;
+	for (uint si = 0; si < dev.snap_ents.length(); si++) {
+		if (dev.snap_ents[si].id.starts_with("m")) post_mob_cnt++;
+	}
+	assert_true(post_mob_cnt == 2, "Approach A respawned killed mob back to 2 after shared interval (got " + post_mob_cnt + ")");
+
+	// Same-map portal test + Clone Map test
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|add_box|portal|Arena Lift|40|43|40|43|0|3|e2e_arena|52|52|0|90|0|world/portal_travel.ogg");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Added same-map portal");
+	dev.send_ctrl("DEV|tp|TestDev|41.5|41.5|0");
+	dev.drain(150);
+	dev.log.resize(0);
+	dev.send_ctrl("ACT|interact");
+	dev.drain(250);
+	assert_true(dev.cur_map == "e2e_arena" && abs(dev.x - 52.0) < 1.5 && abs(dev.y - 52.0) < 1.5, "Same-map portal teleported smoothly without reload");
+	assert_true(has_msg_containing(dev, "portal_travel.ogg"), "Same-map portal played travel cue");
+
+	dev.log.resize(0);
+	dev.send_ctrl("BUILDMAP|clone_map|e2e_arena|e2e_clone|E2E Clone");
+	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Cloned e2e_arena into e2e_clone");
+	dev.log.resize(0);
+	dev.send_ctrl("MAPS|list");
+	assert_true(dev.wait_for_op(CH_CONTROL, "MAPS_LIST|", 2500).find("e2e_clone~") >= 0, "Cloned map appears in MAPS_LIST");
+
+	// Also verify carpet stairs box, Line Manager, undo, validate, save on e2e_arena
+	dev.send_ctrl("BUILDMAP|select_map|e2e_arena");
+	dev.drain(100);
 	dev.log.resize(0);
 	dev.send_ctrl("BUILDMAP|add_box|stairs|Carpet Steps|20|24|20|24|0|8|carpet|0|y|1");
 	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Added 6-axis carpet stairs box");
@@ -658,8 +786,9 @@ void run_phase_1(const string&in host, uint16 port) {
 	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Builder validate succeeded");
 	dev.send_ctrl("BUILDMAP|save");
 	assert_true(dev.wait_for_op(CH_CONTROL, "BM_RES|ok|", 2500) != "", "Builder save succeeded");
-	dev.send_ctrl("BUILDMAP|select_map|wildlands_valley|0");
-	dev.drain(150);
+	dev.send_ctrl("MAPS|tp|wildlands_valley");
+	assert_true(dev.wait_for_op(CH_CONTROL, "MAP_TRANSFER|wildlands_valley|", 2500) != "", "Returned Dev to wildlands_valley via /maps");
+	dev.drain(200);
 
 	// Staff overview, /report, reports_list, report_resolve, non-dev lifecycle refusal & cancel
 	dev.log.resize(0);

@@ -3,8 +3,8 @@
 const string GAME_NAME = "Wildlands Online";
 const string GAME_ORG = "WildlandsStudio";
 const string GAME_APP = "WildlandsOnline";
-const string GAME_VERSION = "2.0.0";
-const uint PROTO_VERSION = 2;
+const string GAME_VERSION = "3.0.0";
+const uint PROTO_VERSION = 3;
 
 // Single top-level server address constants (per online-audio-game-dev conventions).
 const string MAIN_SERVER_HOST = "wildlands.example.com";

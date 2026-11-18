@@ -1,26 +1,38 @@
-# Audio Map Builder Guide (`F8`) — Wildlands Online v2
+# Audio Map Builder Guide (`F8`) — Wildlands Online v3 (STW Maps System)
 
-Welcome to the **STW-Style Multi-Map Audio Map Builder**. Authorized staff (`Builder`, `Admin`, or allowlisted `Developer`) can author entire worlds with 3D vertical geometry, underground caverns (`min_z .. max_z`), staircases, audio zones, deep/shallow water pools, hazards, ambient landmarks, and cross-map portals — all screen-reader accessible with zero external text editors required.
+Welcome to the **STW Maps System & Multi-Map Audio Map Builder**. Authorized staff (`Builder`, `Admin`, or allowlisted `Developer`) can author 3D maps with vertical architecture, staircases, silent or zoned acoustics (`audio_freeverb_node` reverb presets), map-scoped Animal Spawn Zones (`E`), map starter templates, map cloning, and 2-corner coordinate clipboards — all screen-reader accessible.
 
 ---
 
-## 1. Opening the Builder Hub (`F8`)
+## 1. Opening the Builder Hub (`F8`) & Navigating Maps (`/maps`)
 
-Press **`F8`** in-game (or open **Pause Menu -> Audio Map Builder Hub (F8)**) to launch the main hub for the currently active builder map:
+Press **`F8`** in-game (or open **Pause Menu -> Audio Map Builder Hub (F8)**) to manage map authoring:
 
-1. **Add Element by 6-Axis Box Coordinates (`Min X .. Max Z`)**: Opens dedicated `audio_form` dialogs so you enter bounds (`Minimum X`, `Maximum X`, `Minimum Y`, `Maximum Y`, `Minimum Z`, `Maximum Z`) directly rather than walking every corner tile-by-tile.
-2. **Line Manager (`Browse, Edit, Move, Duplicate, Delete`)**: Inspect and manipulate every line of the `.map` file live on the server.
-3. **Create New Map**: Spawns a brand new `.map` inside `server/maps/` with custom dimensions, elevation range, default surface, default ambience, spawn point, and optional base floor slab.
-4. **Switch Active Map**: Select any loaded map on the server to edit in place or teleport directly to its primary spawn point.
-5. **Edit Active Map Properties**: Change the display name, X/Y dimensions, Z elevation range, default ground surface, default ambience loop, or PvP rules on the `M|` header line.
-6. **Undo Last Map Change**: Reverts the last box addition, line edit, reorder, or deletion on the active map (up to 25 undo snapshots per map in memory).
-7. **Builder Noclip Flight**: Toggles wall/gravity bypass so you can walk through walls and hover smoothly across heights without fall damage while testing builds.
-8. **Free-Roam Cursor Mode & Palette**: Walk a discrete `(X, Y, Z)` cursor tile-by-tile with `Arrow` keys and `PageUp` / `PageDown`, press `M` to mark a corner, and `Enter` / `B` to drop quick shapes.
-9. **Validate / Save / Reload / Delete**:
-   - **Validate**: Runs `WorldMap::validate()` across bounds, spawns, surfaces, and audio references.
-   - **Save**: Atomically writes `.map` via `.tmp` -> `.bak` -> `.map`.
-   - **Reload**: Reloads the saved `.map` from disk onto the live server and re-syncs all players on that map.
-   - **Delete Map**: Archives non-default maps to `<slug>.map.deleted.bak` and evacuates players cleanly to default spawn.
+1. **Add Element or Animal Spawn Zone**: Opens 6-axis `audio_form` dialogs (`Minimum X`, `Maximum X`, `Minimum Y`, `Maximum Y`, `Minimum Z`, `Maximum Z`). If both Corner 1 and Corner 2 are set in the **Coordinate Clipboard**, bounds auto-fill automatically!
+2. **Line Manager (`Browse, Edit, Ping Bounds, Move, Duplicate, Delete`)**: Inspect, filter (`E`, `M`, `FLOOR`, `STAIRS`, `P`, `W`, `Z`, `L`, `H`, `D`, `R`, `A`, `S`), reorder, or **Ping Element Bounds in 3D Audio** (plays a 3D chime at SW -> SE -> NE -> NW corners around you).
+3. **Coordinate Clipboard**: Mark **Corner 1** (`M` in cursor mode or hub menu) and **Corner 2** (`Shift+M` in cursor mode or hub menu) from your player or cursor position to pre-fill 6-axis box forms quickly.
+4. **Create New Map (Silent by Default + Templates)**: Creates a new `.map` starting with `ambience_default = "none"` (no forced ambience audio until you add a Zone or edit the header). Choose a starter template:
+   - **`flat`**: Full ground slab at Spawn Z.
+   - **`void`**: Floating 6x6 starter pad at Spawn Z.
+   - **`arena`**: Floor slab enclosed by stone perimeter walls + `hall` acoustic reverb.
+   - **`cave`**: Enclosed stone floor & overhead ceiling roof + `cave` acoustic reverb.
+5. **Clone Active Map**: Duplicates the active builder map (geometry, zones, portals, animal spawns) to a new map slug and display name.
+6. **Switch Active Builder Map (Edit Only)**: Changes which map your F8 Builder Hub and Line Manager edit **without teleporting your character**.
+   - **To travel/teleport to another map**, type **`/maps`** (or `/map`, available to `Builder` rank and higher) or open **`F9 -> View All Maps (/maps)`**, highlight any map on the server, and press **`Enter`**.
+7. **Edit Active Map Properties (`M` Header)**: Configure Display Name, X/Y bounds, Z min/max, default surface, default ambience (including **`None (Silent)`**), **PvP duels**, **Allow Survival Building (`allow_build`)**, **Enable Weather/Rain (`weather_enabled`)**, and **Time of Day Rule (`auto` / `day` / `night`)**.
+8. **Undo / Noclip / Cursor Mode / Validate / Save / Reload / Delete**:
+   - **Undo**: Reverts the last edit (up to 25 steps per map).
+   - **Builder Noclip Flight**: Bypasses wall collision & gravity while flying through builds.
+   - **Validate / Save / Reload / Delete**: Validates integrity, atomically saves `.tmp` -> `.bak` -> `.map`, reloads live (also syncing live animal spawn zones), or archives non-default maps to `.deleted.bak`.
+
+---
+
+## 2. Dynamic Animal Spawn Zones (`E`) — Map-Scoped Wildlife
+
+There is NO global random wildlife spawning across maps. Blank or custom test maps remain completely peaceful until you explicitly place **Animal Spawn Zones (`E`)**:
+- Open **`F8 -> Add Element or Animal Spawn Zone -> Animal Spawn Zone`**.
+- Fill in: **Label**, **Minimum X**, **Maximum X**, **Minimum Y**, **Maximum Y**, **Minimum Z**, **Maximum Z**, **Spawn / Respawn Delay (ms)** (e.g. `5000` ms), **Spawn Quantity** (max living creatures maintained by this line), **Animal Species multi-select checkbox list** (`Up`/`Down` to browse dynamically synced server species, **`Space`** to check one or multiple species), **Leash to Zone**, and **Active Time (`always` / `day` / `night`)**, then press **Create Animal Spawn Zone**.
+- **Shared Respawn Timer**: When a zone has fewer living animals than **Quantity** (on startup, after zone creation, or when a creature is slain), it waits **Delay (ms)** once (additional kills during the wait share that timer) and then spawns randomized species from your checked selection up to **Quantity**. Multiple independent `E` zones with different coordinates can live on the same map.
 
 ---
 
@@ -58,22 +70,23 @@ Staircases span a vertical volume `(min_x..max_x, min_y..max_y, min_z..max_z)` a
 
 ---
 
-## 5. STW 6-Axis Element Catalog (`.map` v2 Syntax)
+## 6. STW 6-Axis Element Catalog (`.map` v3 Syntax)
 
 | Tag | Element | Format & Coordinate Semantics |
 |---|---|---|
-| `M` | Map Header | `M\|name\|width\|height\|min_z\|max_z\|default_surface\|ambience\|pvp_enabled(0/1)` |
+| `M` | Map Header | `M\|name\|w\|h\|min_z\|max_z\|default_surface\|ambience(or none)\|pvp\|allow_build\|weather\|time_mode(auto/day/night)` |
 | `S` | Spawn Point | `S\|label\|x\|y\|z\|facing` |
-| `Z` | Audio Zone | `Z\|name\|x1\|y1\|x2\|y2\|z1\|z2\|surface\|ambience\|safe_zone(0/1)` |
+| `Z` | Audio Zone | `Z\|name\|x1\|y1\|x2\|y2\|z1\|z2\|surface\|ambience(or none)\|safe_zone\|reverb(none/room/hall/cave)` |
 | `W` | Solid Wall | `W\|label\|x1\|y1\|x2\|y2\|z1\|z2\|material(wood/stone)\|occlude(0/1)` |
 | `P` | Platform / Stairs / Ramp | `P\|label\|x1\|y1\|x2\|y2\|z1\|z2\|surface\|kind(floor/stairs/ramp)\|is_roof(0/1)\|axis(x/y)\|dir(-1/1)` |
 | `L` | Water Body | `L\|label\|x1\|y1\|x2\|y2\|z1\|z2\|depth(shallow/deep)\|loop_sound` |
 | `H` | Hazard Box | `H\|label\|x1\|y1\|x2\|y2\|z1\|z2\|damage\|interval_ms\|hit_sound` |
-| `D` | Map Portal | `D\|label\|x1\|y1\|x2\|y2\|z1\|z2\|target_slug\|dest_x\|dest_y\|dest_z\|dest_fac\|auto_step(0/1)\|travel_sound` |
+| `D` | Map Portal | `D\|label\|x1\|y1\|x2\|y2\|z1\|z2\|target_slug(or same map)\|dest_x\|dest_y\|dest_z\|dest_fac\|auto_step(0/1)\|travel_sound` |
 | `R` | Resource Node | `R\|type(tree/rock/iron_vein/berry_bush/herb_patch)\|x\|y\|z\|charges\|respawn_sec` |
 | `A` | 3D Emitter | `A\|label\|sound_file\|x\|y\|z\|range\|volume` |
+| `E` | Animal Spawn Zone | `E\|label\|x1\|y1\|x2\|y2\|z1\|z2\|interval_ms\|count\|species_csv\|leash(0/1)\|active_time(always/day/night)` |
 
-Note: Older `NAME=..` v1 files load automatically with an automatic base ground slab at `Z = 0` so existing maps remain valid.
+Older v1 and v2 `.map` files load automatically with safe defaults (`allow_build=1`, `weather=1`, `time_mode=auto`, `reverb=none`). Use Zone **`reverb_preset`** (`room`, `hall`, `cave`) to apply real-time NVGT Freeverb acoustics on footsteps and world SFX inside chambers and dungeons!
 
 ---
 

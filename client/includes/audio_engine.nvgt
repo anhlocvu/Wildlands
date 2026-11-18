@@ -37,11 +37,13 @@ class AudioEngine {
 	WorldMap@ active_map = null;
 
 	mixer@ mix_self = null;
+	mixer@ mix_steps = null;
 	mixer@ mix_threat = null;
 	mixer@ mix_actors = null;
 	mixer@ mix_world = null;
 	mixer@ mix_ambience = null;
 	mixer@ mix_music = null;
+	string active_reverb_preset = "none";
 
 	// Persistent music / ambient streams
 	sound@ menu_bgm = null;
@@ -80,11 +82,13 @@ class AudioEngine {
 		}
 
 		@mix_self = mixer();
+		@mix_steps = mixer();
 		@mix_threat = mixer();
 		@mix_actors = mixer();
 		@mix_world = mixer();
 		@mix_ambience = mixer();
 		@mix_music = mixer();
+		active_reverb_preset = "none";
 
 		pool.y_is_elevation = false;
 		pool.max_distance = int(EARSHOT_RADIUS);
@@ -127,6 +131,7 @@ class AudioEngine {
 		float duck_mid = duck ? 0.78f : 1.0f;
 
 		mix_self.volume = linear_to_db(float(cached_layer_pct[LAYER_SELF]) / 100.0f);
+		if (@mix_steps != null) mix_steps.volume = mix_self.volume;
 		mix_threat.volume = linear_to_db(float(cached_layer_pct[LAYER_THREAT]) / 100.0f);
 		mix_actors.volume = linear_to_db((float(cached_layer_pct[LAYER_ACTORS]) / 100.0f) * duck_mid);
 		mix_world.volume = linear_to_db((float(cached_layer_pct[LAYER_WORLD]) / 100.0f) * duck_mid);
@@ -186,7 +191,30 @@ class AudioEngine {
 
 		string full = sfx_path(rel);
 		if (!file_exists(full)) return;
-		sound_play(full, vector(FLOAT_MAX, FLOAT_MAX, FLOAT_MAX), linear_to_db(0.75f), 0.0f, 100.0f, mix_self);
+		sound_play(full, vector(FLOAT_MAX, FLOAT_MAX, FLOAT_MAX), linear_to_db(0.75f), 0.0f, 100.0f, @mix_steps != null ? mix_steps : mix_self);
+	}
+
+	void set_zone_reverb(const string&in preset_in) {
+		string p = normalize_reverb_preset(preset_in);
+		if (p == active_reverb_preset) return;
+		active_reverb_preset = p;
+		if (g_audio_silent || @mix_world == null) return;
+		mixer@[] rev_mixers = {mix_steps, mix_world, mix_actors, mix_threat};
+		for (uint i = 0; i < rev_mixers.length(); i++) {
+			if (@rev_mixers[i] == null) continue;
+			rev_mixers[i].effects_chain.clear(true);
+			if (p != "none") {
+				audio_freeverb_node@ fv = audio_freeverb_node();
+				if (p == "room") {
+					fv.room_size = 0.35f; fv.damping = 0.65f; fv.width = 0.65f; fv.wet = 0.16f; fv.dry = 0.90f;
+				} else if (p == "hall") {
+					fv.room_size = 0.72f; fv.damping = 0.42f; fv.width = 0.90f; fv.wet = 0.28f; fv.dry = 0.85f;
+				} else {
+					fv.room_size = 0.92f; fv.damping = 0.25f; fv.width = 1.00f; fv.wet = 0.42f; fv.dry = 0.80f;
+				}
+				rev_mixers[i].effects_chain.add_node(fv);
+			}
+		}
 	}
 
 	int play_world_sfx(const string&in layer_tag, const string&in rel, double sx, double sy, double sz, float vol_scale = 1.0f, bool check_occlude = true, bool looping = false, bool persistent = false) {
@@ -263,6 +291,7 @@ class AudioEngine {
 
 	void stop_world_audio() {
 		clear_emitters();
+		set_zone_reverb("none");
 		if (@amb_curr != null) { amb_curr.stop(); @amb_curr = null; }
 		if (@amb_prev != null) { amb_prev.stop(); @amb_prev = null; }
 		if (@rain_loop != null) { rain_loop.stop(); @rain_loop = null; }
@@ -304,24 +333,25 @@ class AudioEngine {
 		// 1. Update listener FIRST so sound_pool applies rotation & attenuation cleanly
 		pool.update_listener_3d(float(px), float(py), float(pz), double(facing));
 
-		// 2. Adaptive zone ambient crossfade (forest switches day/night seamlessly)
-		string desired = zone_amb;
+		// 2. Adaptive zone ambient crossfade ("none" stops/silences loop cleanly; forest switches day/night seamlessly)
+		string desired = normalize_amb_ref(zone_amb);
 		if (desired == "ambience/forest_day.ogg" && is_night) desired = "ambience/forest_night.ogg";
-		if (desired.length() == 0) desired = is_night ? "ambience/forest_night.ogg" : "ambience/forest_day.ogg";
 
 		if (desired != amb_curr_path) {
 			if (@amb_prev != null) { amb_prev.stop(); @amb_prev = null; }
 			@amb_prev = @amb_curr;
 			@amb_curr = null;
-			string full = sfx_path(desired);
-			if (file_exists(full)) {
-				@amb_curr = sound();
-				if (amb_curr.load(full)) {
-					amb_curr.set_mixer(mix_ambience);
-					amb_curr.volume = -100.0f;
-					amb_curr.play_looped();
-				} else {
-					@amb_curr = null;
+			if (desired != "none") {
+				string full = sfx_path(desired);
+				if (file_exists(full)) {
+					@amb_curr = sound();
+					if (amb_curr.load(full)) {
+						amb_curr.set_mixer(mix_ambience);
+						amb_curr.volume = -100.0f;
+						amb_curr.play_looped();
+					} else {
+						@amb_curr = null;
+					}
 				}
 			}
 			amb_curr_path = desired;

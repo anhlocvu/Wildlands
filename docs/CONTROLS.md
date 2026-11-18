@@ -42,13 +42,14 @@ The browsable tracker list strictly includes targets within **`30` steps** (`TRA
 - **`B`**: Open Survival Building menu (place wall/door/floor/stairs/campfire/chest/bench/beacon)
 - **`L`**: Lock / Unlock targeted Door or Chest; **`R`**: Repair targeted Structure; **`Ctrl+Delete`**: Demolish owned Structure
 
-## 5. Audio Map Builder (`F8`) & Staff Panel (`F9`)
-- **`F8`** (`Builder`+): Open the **STW Audio Map Builder Hub** (Create New Map, Switch Map, 6-Axis Coordinate Box Forms `Min X..Max Z`, Full Line Manager, Undo, Noclip, Validate, Save, Hot-Reload).
-  - In **Free-Roam Cursor Mode**: **Arrows / PageUp / PageDown** step cursor `(X, Y, Z)`, **`M`** marks Corner 1, **`B` / `Enter`** opens Cursor Palette, **`Ctrl+S`** saves & reloads, **`F8`** exits cursor mode.
-- **`F9`** (`Moderator`+): Open the **Categorized Staff Panel** (Account Directory with `Online` & `Last seen` timestamps, Target Actions, Developer Server Lifecycle Shutdown/Restart, World Controls, Mob Spawner, Teleport, Telemetry, Audit Logs & Player Reports).
+## 5. Audio Map Builder (`F8`), `/maps` Navigation & Staff Panel (`F9`)
+- **`/maps`** (or `/map`, **`Builder`+** via `/` modal chat): Open the **Server Maps Directory**; press **`Enter`** on any map to teleport to its spawn and select it for editing.
+- **`F8`** (`Builder`+): Open the **STW Audio Map Builder Hub** (Add Elements & Animal Spawn Zones, Line Manager + 3D Bounds Ping, Coordinate Clipboard, Create New Map Templates, Clone Map, Switch Active Map Edit-Only, Map Header Rules/Reverb, Undo, Noclip, Validate, Save, Hot-Reload).
+  - In **Free-Roam Cursor Mode**: **Arrows / PageUp / PageDown** step cursor `(X, Y, Z)`, **`M`** marks Corner 1, **`Shift+M`** marks Corner 2, **`B` / `Enter`** opens Cursor Palette, **`Ctrl+S`** saves & reloads, **`F8`** exits cursor mode.
+- **`F9`** (`Moderator`+): Open the **Categorized Staff Panel** (Account Directory with `Online` & `Last seen` timestamps, View All Maps `/maps`, Target Actions, Developer Server Lifecycle Shutdown/Restart, World Controls, Coordinate Teleport, Telemetry, Audit Logs & Player Reports).
 
 ## 6. Chat, Buffers & Online Status Keys
-- **`/`**: Open Modal Chat input (`Enter` sends, `Escape` cancels; supports `/pm <user> <msg>`, `/r <msg>`, `/local <msg>`, `/global <msg>`, `/team <msg>`, `/emote <text>`, `/report <msg>`, `/sc <msg>`, `/who`, `/ping`)
+- **`/`**: Open Modal Chat input (`Enter` sends, `Escape` cancels; supports `/pm <user> <msg>`, `/r <msg>`, `/local <msg>`, `/global <msg>`, `/team <msg>`, `/emote <text>`, `/report <msg>`, `/sc <msg>`, `/maps` for Builder+, `/who`, `/ping`)
 - **`,` / `.`** *(Comma / Period ONLY; PageUp/PageDown reserved for stairs)*: Switch Message Buffer channel (`All`, `Chat`, `Messages`, `Social`, `Game`, `System`)
 - **`[` / `]`**: Browse buffer history (older / newer line); **Home / End** in buffer mode or **Shift+[ / ]**: Oldest / newest line
 - **`` ` `` (Backtick) or `Ctrl+R`**: Repeat last spoken line

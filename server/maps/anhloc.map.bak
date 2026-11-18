@@ -1,0 +1,4 @@
+M|anhloc|50|50|0|100|grass|none|1|1|1|auto
+S|Primary Spawn|20.00|20.00|0.00|0
+P|Base Ground|0.00|0.00|50.00|50.00|0.00|0.00|grass|floor|0|y|1
+P|Staircase|5.00|5.00|5.00|5.00|0.00|20.00|stone|stairs|0|y|1

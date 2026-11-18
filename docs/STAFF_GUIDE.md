@@ -1,6 +1,6 @@
-# Staff Operations Guide (`F9`) — Wildlands Online v2
+# Staff Operations Guide (`F9`) — Wildlands Online v3
 
-This guide covers the **Categorized Staff & Developer Control Panel (`F9`)**, rank permissions, live account inspection (`Online` vs `Last seen`), player moderation, multi-map management, world controls, audit logging, and safe server lifecycle management (`Shutdown` / `Restart`).
+This guide covers the **Categorized Staff & Developer Control Panel (`F9`)**, `/maps` server directory teleportation, rank permissions, live account inspection (`Online` vs `Last seen`), player moderation, world controls, audit logging, and safe server lifecycle management (`Shutdown` / `Restart`).
 
 ---
 
@@ -9,12 +9,12 @@ This guide covers the **Categorized Staff & Developer Control Panel (`F9`)**, ra
 | Rank ID | Role | Primary Permissions |
 |---|---|---|
 | `0` | **Player** | Standard gameplay, `/report`, social/chat/building |
-| `1` | **Builder** | STW Audio Map Builder (`F8`), multi-map editing, Line Manager, Staff Chat (`/sc`) |
-| `2` | **Moderator (`RANK_MOD`)** | Staff Panel (`F9`), Account Directory (Online / Last Seen), Rescue, Teleport To, Bring lower ranks, Kick, Timed Mute/Ban (`<= RANK_MOD` targets), Unmute, Audit Logs & Report Resolution |
-| `3` | **Admin (`RANK_ADMIN`)** | All Moderator powers + View Account Last IP, Move Player Between Maps, Heal & Cure Fracture, Give Item Catalog, Clear Inventory, Set Rank (up to Moderator), Invalidate Session Token, World Time/Weather/Drops/Announcements, Creature/Bot Spawner |
-| `4` | **Developer (`RANK_DEV`)** | All Admin powers + Allowlisted Lifecycle Operations (`server/data/devs.txt`): Countdown Shutdown, Clean Server Restart, Cancel Countdown, Maintenance Lock, Guest Toggle, Live MOTD & Changelog Edit, Wildlife/Bot Population Scaling, Live Full Reload |
+| `1` | **Builder** | STW Audio Map Builder (`F8`), `/maps` server browser & teleport, multi-map editing, Line Manager, Staff Chat (`/sc`) |
+| `2` | **Moderator (`RANK_MOD`)** | All Builder powers + Staff Panel (`F9`), Account Directory (`Online` / `Last seen`), Rescue, Teleport To, Bring lower ranks, Kick, Timed Mute/Ban (`<= RANK_MOD` targets), Unmute, Audit Logs & Report Resolution |
+| `3` | **Admin (`RANK_ADMIN`)** | All Moderator powers + View Account Last IP, Move Player Between Maps, Heal & Cure Fracture, Give Item Catalog, Clear Inventory, Set Rank (up to Moderator), Invalidate Session Token, World Time/Weather/Drops/Announcements |
+| `4` | **Developer (`RANK_DEV`)** | All Admin powers + Allowlisted Lifecycle Operations (`server/data/devs.txt`): Countdown Shutdown, Clean Server Restart, Cancel Countdown, Maintenance Lock, Guest Toggle, Live MOTD & Changelog Edit, Practice Bot Count, Live Full Reload |
 
-> **Security Rule**: Lifecycle controls (`shutdown`, `restart`, `maintenance`, `guests`, `motd`, `changelog_add`) require **both** `RANK_DEV` **and** presence in `server/data/devs.txt`. Every denied attempt logs a `REFUSED` audit entry.
+> **Security Rule**: Lifecycle controls (`shutdown`, `restart`, `maintenance`, `guests`, `motd`, `changelog_add`) require **both** `RANK_DEV` **and** presence in `server/data/devs.txt`. Every denied attempt logs a `REFUSED` audit entry. Note that wildlife population is managed dynamically per map using **Builder `F8 -> Add Element -> Animal Spawn Zone (`E`)`** rather than global spawner commands.
 
 ---
 
@@ -52,11 +52,12 @@ Press **`F9`** in-game (or open **Pause Menu -> Staff Panel (F9)**). All actions
 - Broadcast high-priority `Server Announcement:` speech to every player across all maps.
 - Override weather (`Clear` / `Rain`) and time-of-day (`Day` / `Night`).
 - Clear ground drops across all maps to tidy loot clutter.
-- Tune live server wildlife population and practice bot count (`Developer`), or reload config/maps live.
+- Adjust practice bot count (`Developer`), or reload config/maps live (`E` spawn zones reload per map).
 
-### Category 4: Spawner & Multi-Map Teleport
-- **Spawn Wildlife or Practice Bots**: Choose `deer`, `rabbit`, `boar`, `wolf`, `bear`, or `bot_survivor` to spawn right near you on your current map.
-- **Teleport to Any Map or Coordinates**: Pick any loaded map and enter `(X, Y, Z)` coordinates directly.
+### Category 4: View All Maps (`/maps`) & Multi-Map Teleport
+- **View All Maps (`/maps`)**: Opens the unified Server Maps Directory (identical to typing `/maps` in chat), listing every map on the server with size, elevation range, live player count, and line count; press **`Enter`** on any map to teleport to its spawn and focus it in Builder.
+- **Teleport to Specific Coordinates**: Pick any loaded map and enter `(X, Y, Z)` coordinates directly.
+- *(Note: Animal spawning has moved to `F8 -> Add Element -> Animal Spawn Zone` so wildlife lives strictly inside map-authored regions.)*
 
 ### Category 5: Telemetry, Audit Logs & Player Reports
 - Live telemetry overview: Server uptime, worst simulation tick time (ms), online count, total registered accounts, loaded maps + per-map player distribution, persistent structure count, active wildlife/bot count, and open report badge count.

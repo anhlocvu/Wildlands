@@ -1,4 +1,5 @@
-M|anhloc|50|50|0|50|grass|ambience/forest_day.ogg|1
-S|Main Spawn|20.00|20.00|0.00|0
-Z|anhloc Grounds|0.00|0.00|50.00|50.00|0.00|50.00|grass|ambience/forest_day.ogg|0
-P|Base Floor|0.00|0.00|50.00|50.00|0.00|0.00|grass|floor|0|y|1
+M|anhloc|50|50|0|100|grass|none|1|1|1|auto
+S|Primary Spawn|20.00|20.00|0.00|0
+P|Base Ground|0.00|0.00|50.00|50.00|0.00|0.00|grass|floor|0|y|1
+P|Staircase|5.00|5.00|5.00|5.00|0.00|20.00|stone|stairs|0|y|1
+P|Deck|10.00|5.00|10.00|5.00|0.00|20.00|stone|floor|0|y|1

@@ -16,8 +16,9 @@ class MapZone {
 	double min_x = 0.0, min_y = 0.0, max_x = 10.0, max_y = 10.0;
 	double min_z = double(MAP_MIN_Z), max_z = double(MAP_MAX_Z);
 	string surface = "grass";
-	string ambience_loop = "";
+	string ambience_loop = "none";
 	bool is_safe_zone = false;
+	string reverb_preset = "none"; // "none", "room", "hall", "cave"
 }
 
 class MapWall {
@@ -88,6 +89,17 @@ class MapEmitter {
 	double volume = 0.60;
 }
 
+class MapAnimalSpawn {
+	string label = "Wildlife Spawn";
+	double min_x = 0.0, min_y = 0.0, max_x = 20.0, max_y = 20.0;
+	double min_z = 0.0, max_z = 5.0;
+	int interval_ms = 5000;
+	int count = 3;
+	string[] species;
+	bool leash = true;
+	string active_time = "always"; // "always", "day", "night"
+}
+
 // Dynamic wall/door/floor proxy synced onto map for unified collision, floor & sound occlusion.
 class DynOccluder {
 	uint64 id = 0;
@@ -123,15 +135,68 @@ string slugify_map_id(const string&in raw) {
 	return out_s;
 }
 
-// Record line formatters (MAP_V2 canonical format)
-string make_m_line(const string&in name, int w, int h, int min_z, int max_z, const string&in surf, const string&in amb, bool pvp = true) {
-	return "M|" + wire_escape(name) + "|" + w + "|" + h + "|" + min_z + "|" + max_z + "|" + surf + "|" + amb + "|" + (pvp ? "1" : "0");
+string normalize_reverb_preset(const string&in raw) {
+	string low = raw.trim_whitespace().lower();
+	if (low == "room" || low == "hall" || low == "cave") return low;
+	return "none";
+}
+
+string normalize_time_mode(const string&in raw) {
+	string low = raw.trim_whitespace().lower();
+	if (low == "day" || low == "night") return low;
+	return "auto";
+}
+
+string normalize_amb_ref(const string&in raw) {
+	string s = raw.trim_whitespace();
+	if (s.length() == 0 || s.lower() == "none") return "none";
+	return s;
+}
+
+string normalize_active_time(const string&in raw) {
+	string low = raw.trim_whitespace().lower();
+	if (low == "day" || low == "night") return low;
+	return "always";
+}
+
+string[] parse_species_csv(const string&in csv) {
+	string[] out_arr;
+	string[]@ raw = split_keep_empty(csv, ",");
+	for (uint i = 0; i < raw.length(); i++) {
+		string k = raw[i].trim_whitespace().lower();
+		if (k.length() == 0) continue;
+		bool dup = false;
+		for (uint j = 0; j < out_arr.length(); j++) {
+			if (out_arr[j] == k) { dup = true; break; }
+		}
+		if (!dup) out_arr.insert_last(k);
+	}
+	return out_arr;
+}
+
+string join_species_csv(const string[]&in arr) {
+	string s = "";
+	for (uint i = 0; i < arr.length(); i++) {
+		string k = arr[i].trim_whitespace().lower();
+		if (k.length() == 0) continue;
+		if (s.length() > 0) s += ",";
+		s += k;
+	}
+	return s;
+}
+
+// Record line formatters (MAP_V3 canonical format)
+string make_m_line(const string&in name, int w, int h, int min_z, int max_z, const string&in surf, const string&in amb, bool pvp = true, bool allow_build = true, bool weather_enabled = true, const string&in time_mode = "auto") {
+	return "M|" + wire_escape(name) + "|" + w + "|" + h + "|" + min_z + "|" + max_z + "|" + surf + "|" + normalize_amb_ref(amb) + "|" + (pvp ? "1" : "0") + "|" + (allow_build ? "1" : "0") + "|" + (weather_enabled ? "1" : "0") + "|" + normalize_time_mode(time_mode);
 }
 string make_s_line(const string&in label, double x, double y, double z, int facing) {
 	return "S|" + wire_escape(label) + "|" + fmt2(x) + "|" + fmt2(y) + "|" + fmt2(z) + "|" + wrap_deg(facing);
 }
-string make_z_line(const string&in name, double x1, double y1, double x2, double y2, double z1, double z2, const string&in surf, const string&in amb, bool safe) {
-	return "Z|" + wire_escape(name) + "|" + fmt2(x1) + "|" + fmt2(y1) + "|" + fmt2(x2) + "|" + fmt2(y2) + "|" + fmt2(z1) + "|" + fmt2(z2) + "|" + surf + "|" + amb + "|" + (safe ? "1" : "0");
+string make_z_line(const string&in name, double x1, double y1, double x2, double y2, double z1, double z2, const string&in surf, const string&in amb, bool safe, const string&in reverb_preset = "none") {
+	string a = amb.trim_whitespace();
+	if (a.lower() == "inherit") a = "";
+	else if (a.lower() == "none") a = "none";
+	return "Z|" + wire_escape(name) + "|" + fmt2(x1) + "|" + fmt2(y1) + "|" + fmt2(x2) + "|" + fmt2(y2) + "|" + fmt2(z1) + "|" + fmt2(z2) + "|" + surf + "|" + a + "|" + (safe ? "1" : "0") + "|" + normalize_reverb_preset(reverb_preset);
 }
 string make_w_line(const string&in label, double x1, double y1, double x2, double y2, double z1, double z2, const string&in mat, bool occlude = true) {
 	return "W|" + wire_escape(label) + "|" + fmt2(x1) + "|" + fmt2(y1) + "|" + fmt2(x2) + "|" + fmt2(y2) + "|" + fmt2(z1) + "|" + fmt2(z2) + "|" + mat + "|" + (occlude ? "1" : "0");
@@ -154,6 +219,40 @@ string make_r_line(const string&in rtype, double x, double y, double z, int char
 string make_a_line(const string&in label, const string&in snd, double x, double y, double z, int rng, double vol) {
 	return "A|" + wire_escape(label) + "|" + snd + "|" + fmt2(x) + "|" + fmt2(y) + "|" + fmt2(z) + "|" + rng + "|" + fmt2(vol);
 }
+string make_e_line(const string&in label, double x1, double y1, double x2, double y2, double z1, double z2, int interval_ms, int count, const string&in species_csv, bool leash = true, const string&in active_time = "always") {
+	string[]@ parsed = parse_species_csv(species_csv);
+	string clean_csv = join_species_csv(parsed);
+	return "E|" + wire_escape(label) + "|" + fmt2(x1) + "|" + fmt2(y1) + "|" + fmt2(x2) + "|" + fmt2(y2) + "|" + fmt2(z1) + "|" + fmt2(z2) + "|" + interval_ms + "|" + count + "|" + clean_csv + "|" + (leash ? "1" : "0") + "|" + normalize_active_time(active_time);
+}
+
+string generate_map_template_raw(const string&in tmpl_in, const string&in name, int w, int h, int min_z, int max_z, const string&in surf, double sx, double sy, double sz) {
+	string tmpl = tmpl_in.trim_whitespace().lower();
+	if (tmpl != "void" && tmpl != "arena" && tmpl != "cave") tmpl = "flat";
+	string use_surf = tmpl == "cave" ? "stone" : surf;
+	string out_str = make_m_line(name, w, h, min_z, max_z, use_surf, "none", true, true, true, "auto") + "\n";
+	out_str += make_s_line("Primary Spawn", sx, sy, sz, 0) + "\n";
+	if (tmpl == "void") {
+		double px1 = clampd(sx - 3.0, 0.0, double(w));
+		double py1 = clampd(sy - 3.0, 0.0, double(h));
+		double px2 = clampd(sx + 3.0, 0.0, double(w));
+		double py2 = clampd(sy + 3.0, 0.0, double(h));
+		out_str += make_p_line("Starter Pad", px1, py1, px2, py2, sz, sz, use_surf, "floor", false, "y", 1) + "\n";
+	} else if (tmpl == "arena") {
+		out_str += make_z_line("Combat Arena", 0.0, 0.0, double(w), double(h), double(min_z), double(max_z), use_surf, "", false, "hall") + "\n";
+		out_str += make_p_line("Arena Floor", 0.0, 0.0, double(w), double(h), sz, sz, use_surf, "floor", false, "y", 1) + "\n";
+		out_str += make_w_line("North Perimeter", 0.0, double(h - 1), double(w), double(h), sz, sz + 5.0, "stone", true) + "\n";
+		out_str += make_w_line("South Perimeter", 0.0, 0.0, double(w), 1.0, sz, sz + 5.0, "stone", true) + "\n";
+		out_str += make_w_line("West Perimeter", 0.0, 1.0, 1.0, double(h - 1), sz, sz + 5.0, "stone", true) + "\n";
+		out_str += make_w_line("East Perimeter", double(w - 1), 1.0, double(w), double(h - 1), sz, sz + 5.0, "stone", true) + "\n";
+	} else if (tmpl == "cave") {
+		out_str += make_z_line("Echoing Cavern", 0.0, 0.0, double(w), double(h), double(min_z), double(max_z), "stone", "", false, "cave") + "\n";
+		out_str += make_p_line("Cavern Floor", 0.0, 0.0, double(w), double(h), sz, sz, "stone", "floor", false, "y", 1) + "\n";
+		out_str += make_p_line("Cavern Ceiling", 0.0, 0.0, double(w), double(h), sz + 6.0, sz + 6.0, "stone", "floor", true, "y", 1) + "\n";
+	} else {
+		out_str += make_p_line("Base Ground", 0.0, 0.0, double(w), double(h), sz, sz, use_surf, "floor", false, "y", 1) + "\n";
+	}
+	return out_str;
+}
 
 class WorldMap {
 	string slug = "wildlands_valley";
@@ -165,6 +264,9 @@ class WorldMap {
 	string default_surface = "grass";
 	string ambience_default = "ambience/forest_day.ogg";
 	bool pvp_enabled = true;
+	bool allow_build = true;
+	bool weather_enabled = true;
+	string time_mode = "auto";
 
 	MapSpawn@[] spawns;
 	MapZone@[] zones;
@@ -175,6 +277,7 @@ class WorldMap {
 	MapPortal@[] portals;
 	MapResourceSpawn@[] resources;
 	MapEmitter@[] emitters;
+	MapAnimalSpawn@[] animal_spawns;
 	DynOccluder@[] dyn_occluders;
 	string[] raw_lines;
 
@@ -185,8 +288,11 @@ class WorldMap {
 		min_z = -20;
 		max_z = 30;
 		default_surface = "grass";
-		ambience_default = "ambience/forest_day.ogg";
+		ambience_default = "none";
 		pvp_enabled = true;
+		allow_build = true;
+		weather_enabled = true;
+		time_mode = "auto";
 		spawns.resize(0);
 		zones.resize(0);
 		walls.resize(0);
@@ -196,6 +302,7 @@ class WorldMap {
 		portals.resize(0);
 		resources.resize(0);
 		emitters.resize(0);
+		animal_spawns.resize(0);
 		dyn_occluders.resize(0);
 		raw_lines.resize(0);
 	}
@@ -215,8 +322,11 @@ class WorldMap {
 				max_z = safe_int(field(p, 5, "30"), 5, MAP_MAX_Z, 30);
 				if (min_z > max_z) { int t = min_z; min_z = max_z; max_z = t; }
 				default_surface = field(p, 6, "grass");
-				ambience_default = field(p, 7, "ambience/forest_day.ogg");
+				ambience_default = normalize_amb_ref(field(p, 7, "none"));
 				pvp_enabled = safe_int(field(p, 8, "1"), 0, 1, 1) == 1;
+				allow_build = p.length() >= 10 ? (safe_int(field(p, 9, "1"), 0, 1, 1) == 1) : true;
+				weather_enabled = p.length() >= 11 ? (safe_int(field(p, 10, "1"), 0, 1, 1) == 1) : true;
+				time_mode = p.length() >= 12 ? normalize_time_mode(field(p, 11, "auto")) : "auto";
 			} else if (p.length() >= 7) {
 				name = wire_unescape(field(p, 1, "Unnamed"));
 				width = safe_int(field(p, 2, "120"), 40, 500, 120);
@@ -224,8 +334,11 @@ class WorldMap {
 				min_z = -20;
 				max_z = safe_int(field(p, 4, "20"), 5, MAP_MAX_Z, 20);
 				default_surface = field(p, 5, "grass");
-				ambience_default = field(p, 6, "ambience/forest_day.ogg");
+				ambience_default = normalize_amb_ref(field(p, 6, "none"));
 				pvp_enabled = true;
+				allow_build = true;
+				weather_enabled = true;
+				time_mode = "auto";
 			} else {
 				err = "Malformed M header on line " + line_no;
 				return false;
@@ -250,8 +363,10 @@ class WorldMap {
 				z.min_z = safe_double(field(p, 6, "-50"), double(MAP_MIN_Z), double(MAP_MAX_Z), double(MAP_MIN_Z));
 				z.max_z = safe_double(field(p, 7, "100"), double(MAP_MIN_Z), double(MAP_MAX_Z), double(MAP_MAX_Z));
 				z.surface = field(p, 8, "grass");
-				z.ambience_loop = field(p, 9, "");
+				z.ambience_loop = field(p, 9, "").trim_whitespace();
+				if (z.ambience_loop.lower() == "inherit") z.ambience_loop = "";
 				z.is_safe_zone = safe_int(field(p, 10, "0"), 0, 1, 0) == 1;
+				z.reverb_preset = p.length() >= 12 ? normalize_reverb_preset(field(p, 11, "none")) : "none";
 			} else if (p.length() >= 9) {
 				z.name = wire_unescape(field(p, 1, "Wilderness"));
 				z.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
@@ -259,8 +374,10 @@ class WorldMap {
 				z.max_x = safe_double(field(p, 4, "10"), 0.0, 500.0, 10.0);
 				z.max_y = safe_double(field(p, 5, "10"), 0.0, 500.0, 10.0);
 				z.surface = field(p, 6, "grass");
-				z.ambience_loop = field(p, 7, "");
+				z.ambience_loop = field(p, 7, "").trim_whitespace();
+				if (z.ambience_loop.lower() == "inherit") z.ambience_loop = "";
 				z.is_safe_zone = safe_int(field(p, 8, "0"), 0, 1, 0) == 1;
+				z.reverb_preset = "none";
 			} else {
 				err = "Malformed Z zone on line " + line_no;
 				return false;
@@ -413,6 +530,25 @@ class WorldMap {
 			e.range = safe_int(field(p, 6, "20"), 2, 100, 20);
 			e.volume = safe_double(field(p, 7, "0.60"), 0.05, 1.0, 0.60);
 			emitters.insert_last(e);
+		} else if (tag == "E") {
+			if (p.length() < 11) { err = "Malformed E animal spawn on line " + line_no; return false; }
+			MapAnimalSpawn es;
+			es.label = wire_unescape(field(p, 1, "Wildlife Spawn"));
+			es.min_x = safe_double(field(p, 2, "0"), 0.0, 500.0, 0.0);
+			es.min_y = safe_double(field(p, 3, "0"), 0.0, 500.0, 0.0);
+			es.max_x = safe_double(field(p, 4, "20"), 0.0, 500.0, 20.0);
+			es.max_y = safe_double(field(p, 5, "20"), 0.0, 500.0, 20.0);
+			es.min_z = safe_double(field(p, 6, "0"), double(MAP_MIN_Z), double(MAP_MAX_Z), 0.0);
+			es.max_z = safe_double(field(p, 7, "5"), double(MAP_MIN_Z), double(MAP_MAX_Z), 5.0);
+			es.interval_ms = safe_int(field(p, 8, "5000"), 250, 3600000, 5000);
+			es.count = safe_int(field(p, 9, "3"), 1, 50, 3);
+			es.species = parse_species_csv(field(p, 10, ""));
+			es.leash = p.length() >= 12 ? (safe_int(field(p, 11, "1"), 0, 1, 1) == 1) : true;
+			es.active_time = p.length() >= 13 ? normalize_active_time(field(p, 12, "always")) : "always";
+			order_pair(es.min_x, es.max_x);
+			order_pair(es.min_y, es.max_y);
+			order_pair(es.min_z, es.max_z);
+			animal_spawns.insert_last(es);
 		} else {
 			err = "Unknown map record tag '" + tag + "' on line " + line_no;
 			return false;
@@ -469,14 +605,14 @@ class WorldMap {
 			}
 			return out_str;
 		}
-		string out_str = make_m_line(name, width, height, min_z, max_z, default_surface, ambience_default, pvp_enabled) + "\n";
+		string out_str = make_m_line(name, width, height, min_z, max_z, default_surface, ambience_default, pvp_enabled, allow_build, weather_enabled, time_mode) + "\n";
 		for (uint i = 0; i < spawns.length(); i++) {
 			MapSpawn@ s = spawns[i];
 			out_str += make_s_line(s.label, s.x, s.y, s.z, s.facing) + "\n";
 		}
 		for (uint i = 0; i < zones.length(); i++) {
 			MapZone@ z = zones[i];
-			out_str += make_z_line(z.name, z.min_x, z.min_y, z.max_x, z.max_y, z.min_z, z.max_z, z.surface, z.ambience_loop, z.is_safe_zone) + "\n";
+			out_str += make_z_line(z.name, z.min_x, z.min_y, z.max_x, z.max_y, z.min_z, z.max_z, z.surface, z.ambience_loop, z.is_safe_zone, z.reverb_preset) + "\n";
 		}
 		for (uint i = 0; i < walls.length(); i++) {
 			MapWall@ w = walls[i];
@@ -506,6 +642,10 @@ class WorldMap {
 			MapEmitter@ e = emitters[i];
 			out_str += make_a_line(e.label, e.sound_file, e.x, e.y, e.z, e.range, e.volume) + "\n";
 		}
+		for (uint i = 0; i < animal_spawns.length(); i++) {
+			MapAnimalSpawn@ es = animal_spawns[i];
+			out_str += make_e_line(es.label, es.min_x, es.min_y, es.max_x, es.max_y, es.min_z, es.max_z, es.interval_ms, es.count, join_species_csv(es.species), es.leash, es.active_time) + "\n";
+		}
 		return out_str;
 	}
 
@@ -521,6 +661,13 @@ class WorldMap {
 			string mat;
 			if (blocked_by_wall(s.x, s.y, s.z, PLAYER_RADIUS, mat))
 				errs.insert_last("Spawn " + s.label + " overlaps wall (" + mat + ")");
+		}
+		for (uint i = 0; i < animal_spawns.length(); i++) {
+			MapAnimalSpawn@ es = animal_spawns[i];
+			if (es.species.length() == 0)
+				errs.insert_last("Animal spawn " + es.label + " requires at least 1 species");
+			if (es.max_x <= 0.0 || es.min_x >= double(width) || es.max_y <= 0.0 || es.min_y >= double(height))
+				errs.insert_last("Animal spawn " + es.label + " out of map bounds");
 		}
 		return errs;
 	}
@@ -598,14 +745,16 @@ class WorldMap {
 		string[]@ p = split_keep_empty(ln, FIELD_SEP);
 		string tag = field(p, 0, "");
 		string num = "Line " + (idx + 1);
-		if (tag == "M") return num + " [Header]: " + wire_unescape(field(p, 1, "")) + ", " + width + "x" + height + ", Z " + min_z + " to " + max_z + ", " + default_surface;
+		if (tag == "M") return num + " [Header]: " + wire_unescape(field(p, 1, "")) + ", " + width + "x" + height + ", Z " + min_z + " to " + max_z + ", " + default_surface + ", amb " + ambience_default + ", time " + time_mode + (allow_build ? "" : ", no-build") + (weather_enabled ? "" : ", no-weather");
 		if (tag == "S") return num + " [Spawn]: " + wire_unescape(field(p, 1, "")) + " at X " + field(p, 2) + ", Y " + field(p, 3) + ", Z " + field(p, 4);
 		if (tag == "Z") {
 			string z1 = p.length() >= 11 ? field(p, 6) : "" + min_z;
 			string z2 = p.length() >= 11 ? field(p, 7) : "" + max_z;
 			string sf = p.length() >= 11 ? field(p, 8) : field(p, 6);
 			string safe_s = (p.length() >= 11 ? field(p, 10) : field(p, 8)) == "1" ? ", safe" : "";
-			return num + " [Zone]: " + wire_unescape(field(p, 1)) + ", X " + field(p, 2) + " to " + field(p, 4) + ", Y " + field(p, 3) + " to " + field(p, 5) + ", Z " + z1 + " to " + z2 + ", " + sf + safe_s;
+			string rv = p.length() >= 12 ? normalize_reverb_preset(field(p, 11, "none")) : "none";
+			string rv_s = rv != "none" ? ", reverb " + rv : "";
+			return num + " [Zone]: " + wire_unescape(field(p, 1)) + ", X " + field(p, 2) + " to " + field(p, 4) + ", Y " + field(p, 3) + " to " + field(p, 5) + ", Z " + z1 + " to " + z2 + ", " + sf + safe_s + rv_s;
 		}
 		if (tag == "W") return num + " [Wall]: " + wire_unescape(field(p, 1)) + ", X " + field(p, 2) + " to " + field(p, 4) + ", Y " + field(p, 3) + " to " + field(p, 5) + ", Z " + field(p, 6) + " to " + field(p, 7) + ", " + field(p, 8);
 		if (tag == "P") {
@@ -617,6 +766,7 @@ class WorldMap {
 		if (tag == "D") return num + " [Portal]: " + wire_unescape(field(p, 1)) + " to " + field(p, 8) + " at X " + field(p, 2) + ", Y " + field(p, 3) + ", Z " + field(p, 6);
 		if (tag == "R") return num + " [Resource]: " + field(p, 1) + " at X " + field(p, 2) + ", Y " + field(p, 3) + ", Z " + field(p, 4);
 		if (tag == "A") return num + " [Emitter]: " + wire_unescape(field(p, 1)) + " (" + field(p, 2) + ") at X " + field(p, 3) + ", Y " + field(p, 4) + ", Z " + field(p, 5);
+		if (tag == "E") return num + " [AnimalSpawn]: " + wire_unescape(field(p, 1)) + ", X " + field(p, 2) + " to " + field(p, 4) + ", Y " + field(p, 3) + " to " + field(p, 5) + ", Z " + field(p, 6) + " to " + field(p, 7) + ", " + field(p, 8) + "ms, qty " + field(p, 9) + ", " + field(p, 10) + " (" + field(p, 12, "always") + ")";
 		return num + ": " + ln;
 	}
 
@@ -626,7 +776,7 @@ class WorldMap {
 		string[]@ p = split_keep_empty(raw_lines[idx], FIELD_SEP);
 		string tag = field(p, 0, "");
 		if (tag == "S" || tag == "R") {
-			int off = tag == "S" ? 2 : 2;
+			int off = 2;
 			ax = safe_double(field(p, off, "50"), 1.0, double(width - 1), 50.0);
 			ay = safe_double(field(p, off + 1, "50"), 1.0, double(height - 1), 50.0);
 			az = safe_double(field(p, off + 2, "0"), double(min_z), double(max_z), 0.0);
@@ -634,7 +784,7 @@ class WorldMap {
 			ax = safe_double(field(p, 3, "50"), 1.0, double(width - 1), 50.0);
 			ay = safe_double(field(p, 4, "50"), 1.0, double(height - 1), 50.0);
 			az = safe_double(field(p, 5, "0"), double(min_z), double(max_z), 0.0);
-		} else if (tag == "Z" || tag == "W" || tag == "P" || tag == "L" || tag == "H" || tag == "D") {
+		} else if (tag == "Z" || tag == "W" || tag == "P" || tag == "L" || tag == "H" || tag == "D" || tag == "E") {
 			double x1 = safe_double(field(p, 2, "10"), 0.0, double(width), 10.0);
 			double y1 = safe_double(field(p, 3, "10"), 0.0, double(height), 10.0);
 			double x2 = safe_double(field(p, 4, "10"), 0.0, double(width), 10.0);
@@ -642,11 +792,48 @@ class WorldMap {
 			ax = 0.5 * (x1 + x2);
 			ay = 0.5 * (y1 + y2);
 			if (tag == "Z" && p.length() < 11) az = 0.0;
+			else if (tag == "E" || tag == "Z" || tag == "D") az = safe_double(field(p, 6, "0"), double(min_z), double(max_z), 0.0);
 			else if (tag == "P" && p.length() < 13) az = safe_double(field(p, 6, "0"), double(min_z), double(max_z), 0.0);
 			else az = safe_double(field(p, 7, "0"), double(min_z), double(max_z), 0.0);
 		} else if (spawns.length() > 0) {
 			ax = spawns[0].x; ay = spawns[0].y; az = spawns[0].z;
 		}
+	}
+
+	bool line_bounds(uint idx, double&out x1, double&out y1, double&out z1, double&out x2, double&out y2, double&out z2) {
+		x1 = 0; y1 = 0; z1 = 0; x2 = double(width); y2 = double(height); z2 = 0;
+		if (idx >= raw_lines.length()) return false;
+		string[]@ p = split_keep_empty(raw_lines[idx], FIELD_SEP);
+		string tag = field(p, 0, "");
+		if (tag == "S" || tag == "R") {
+			x1 = safe_double(field(p, 2, "50"), 0.0, double(width), 50.0);
+			y1 = safe_double(field(p, 3, "50"), 0.0, double(height), 50.0);
+			z1 = safe_double(field(p, 4, "0"), double(min_z), double(max_z), 0.0);
+			x2 = x1; y2 = y1; z2 = z1;
+			return true;
+		}
+		if (tag == "A") {
+			x1 = safe_double(field(p, 3, "50"), 0.0, double(width), 50.0);
+			y1 = safe_double(field(p, 4, "50"), 0.0, double(height), 50.0);
+			z1 = safe_double(field(p, 5, "0"), double(min_z), double(max_z), 0.0);
+			x2 = x1; y2 = y1; z2 = z1;
+			return true;
+		}
+		if (tag == "Z" || tag == "W" || tag == "P" || tag == "L" || tag == "H" || tag == "D" || tag == "E") {
+			x1 = safe_double(field(p, 2, "0"), 0.0, double(width), 0.0);
+			y1 = safe_double(field(p, 3, "0"), 0.0, double(height), 0.0);
+			x2 = safe_double(field(p, 4, "10"), 0.0, double(width), 10.0);
+			y2 = safe_double(field(p, 5, "10"), 0.0, double(height), 10.0);
+			if (tag == "Z" && p.length() < 11) { z1 = double(min_z); z2 = double(max_z); }
+			else if (tag == "P" && p.length() < 13) { z1 = safe_double(field(p, 6, "0"), double(min_z), double(max_z), 0.0); z2 = z1; }
+			else {
+				z1 = safe_double(field(p, 6, "0"), double(min_z), double(max_z), 0.0);
+				z2 = safe_double(field(p, 7, "0"), double(min_z), double(max_z), 0.0);
+			}
+			order_pair(x1, x2); order_pair(y1, y2); order_pair(z1, z2);
+			return true;
+		}
+		return false;
 	}
 
 	// ------------------------------------------------------------------ QUERIES, STAIRS & AIR LAW
@@ -676,8 +863,17 @@ class WorldMap {
 
 	string ambience_at(double x, double y, double z = 0.0) {
 		MapZone@ zo = zone_at(x, y, z);
-		if (@zo != null && zo.ambience_loop.length() > 0) return zo.ambience_loop;
-		return ambience_default;
+		if (@zo != null) {
+			string za = zo.ambience_loop.trim_whitespace();
+			if (za.lower() == "none") return "none";
+			if (za.length() > 0 && za.lower() != "inherit") return za;
+		}
+		return normalize_amb_ref(ambience_default);
+	}
+
+	string reverb_at(double x, double y, double z = 0.0) {
+		MapZone@ zo = zone_at(x, y, z);
+		return @zo != null ? normalize_reverb_preset(zo.reverb_preset) : "none";
 	}
 
 	bool is_water_at(double x, double y, double z, string&out depth_out) {
@@ -905,9 +1101,11 @@ class WorldMap {
 
 	string[]@ collect_sound_refs() {
 		string[] refs;
-		if (ambience_default.length() > 0) refs.insert_last(ambience_default);
+		string def_amb = normalize_amb_ref(ambience_default);
+		if (def_amb != "none") refs.insert_last(def_amb);
 		for (uint i = 0; i < zones.length(); i++) {
-			if (zones[i].ambience_loop.length() > 0) refs.insert_last(zones[i].ambience_loop);
+			string za = zones[i].ambience_loop.trim_whitespace();
+			if (za.length() > 0 && za.lower() != "none" && za.lower() != "inherit") refs.insert_last(za);
 		}
 		for (uint i = 0; i < waters.length(); i++) {
 			if (waters[i].sound_loop.length() > 0) refs.insert_last(waters[i].sound_loop);

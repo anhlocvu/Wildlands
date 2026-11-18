@@ -1,38 +1,24 @@
 // Server multi-map wildlife & practice bot AI simulation.
-// Supports idempotent target counts per map (default_map or specified MapInstance).
+// All wildlife spawns strictly from per-map MapAnimalSpawn (E) records using a shared ms respawn timer.
 
 #include "combat.nvgt"
 
-string pick_wildlife_kind(MapInstance@ mi, double&out sx, double&out sy) {
-	int w = @mi != null ? mi.map.width : 120;
-	int h = @mi != null ? mi.map.height : 120;
-	int roll = random(1, 100);
-	sx = double(random(10, w > 20 ? w - 10 : w - 2));
-	sy = double(random(10, h > 20 ? h - 10 : h - 2));
-	if (@mi != null && mi.slug == "wildlands_valley") {
-		if (roll <= 32) { sx = random(18, 98); sy = random(68, 108); return "rabbit"; }
-		if (roll <= 58) { sx = random(20, 105); sy = random(70, 110); return "deer"; }
-		if (roll <= 82) { sx = random(15, 108); sy = random(72, 112); return "wolf"; }
-		if (roll <= 94) { sx = random(12, 32); sy = random(10, 58); return "bear"; }
-		sx = random(40, 105); sy = random(8, 30);
-		return "bandit";
-	}
-	if (roll <= 30) return "rabbit";
-	if (roll <= 55) return "deer";
-	if (roll <= 80) return "wolf";
-	if (roll <= 92) return "bear";
-	return "bandit";
-}
-
-void spawn_mob(ServerCtx@ ctx, MapInstance@ mi, const string&in kind, double sx, double sy, double sz, bool is_bot) {
+void spawn_mob(ServerCtx@ ctx, MapInstance@ mi, const string&in kind, double sx, double sy, double sz, bool is_bot,
+	int spawn_zone_idx = -1, bool leash = false, double lmin_x = 0.0, double lmin_y = 0.0, double lmax_x = 0.0, double lmax_y = 0.0) {
 	if (@mi == null) return;
 	SpeciesDef@ sp = find_species(kind);
 	if (@sp == null) return;
 	WildlifeMob mob;
 	mob.id = ctx.next_entity_id++;
-	mob.kind = kind;
+	mob.kind = sp.kind;
 	mob.name = is_bot ? ("Bot_" + mob.id) : sp.name;
 	mob.is_bot = is_bot;
+	mob.spawn_zone_idx = spawn_zone_idx;
+	mob.leash_to_zone = leash;
+	mob.leash_min_x = lmin_x;
+	mob.leash_min_y = lmin_y;
+	mob.leash_max_x = lmax_x;
+	mob.leash_max_y = lmax_y;
 	mob.x = clampd(sx, 2.0, double(mi.map.width - 2));
 	mob.y = clampd(sy, 2.0, double(mi.map.height - 2));
 	double sup_z; string sup_surf; bool dw; bool ur;
@@ -58,43 +44,158 @@ int count_mobs_by_type(MapInstance@ mi, bool is_bot) {
 	return c;
 }
 
-void wildlife_set_target_count_map(ServerCtx@ ctx, MapInstance@ mi, int count, bool bots) {
+int count_mobs_for_zone(MapInstance@ mi, int zi) {
+	if (@mi == null) return 0;
+	int c = 0;
+	for (uint i = 0; i < mi.mobs.length(); i++) {
+		WildlifeMob@ m = mi.mobs[i];
+		if (!m.is_bot && m.spawn_zone_idx == zi) c++;
+	}
+	return c;
+}
+
+double rand_range(double lo, double hi) {
+	if (hi <= lo) return lo;
+	return lo + (hi - lo) * (double(random(0, 10000)) / 10000.0);
+}
+
+void pick_point_in_spawn_zone(MapInstance@ mi, MapAnimalSpawn@ es, double&out px, double&out py, double&out pz) {
+	double xlo = clampd(es.min_x, 2.0, double(mi.map.width - 2));
+	double xhi = clampd(es.max_x, 2.0, double(mi.map.width - 2));
+	double ylo = clampd(es.min_y, 2.0, double(mi.map.height - 2));
+	double yhi = clampd(es.max_y, 2.0, double(mi.map.height - 2));
+	if (xlo > xhi) { double t = xlo; xlo = xhi; xhi = t; }
+	if (ylo > yhi) { double t = ylo; ylo = yhi; yhi = t; }
+
+	double fb_x = 0.5 * (xlo + xhi);
+	double fb_y = 0.5 * (ylo + yhi);
+	double fb_z = es.min_z;
+	bool have_fb = false;
+
+	for (uint attempt = 0; attempt < 16; attempt++) {
+		double cx = rand_range(xlo, xhi);
+		double cy = rand_range(ylo, yhi);
+		double sup_z; string sup_surf; bool dw; bool ur;
+		if (!mi.map.find_support_at(cx, cy, es.max_z + 0.5, sup_z, sup_surf, dw, ur)) continue;
+		if (sup_z < es.min_z - 0.5 || sup_z > es.max_z + 0.5) continue;
+		string mat;
+		if (mi.map.blocked_by_wall(cx, cy, sup_z, 0.35, mat)) continue;
+		if (!have_fb) {
+			fb_x = cx; fb_y = cy; fb_z = sup_z;
+			have_fb = true;
+		}
+		if (mi.map.is_safe_at(cx, cy, sup_z)) continue;
+		px = cx; py = cy; pz = sup_z;
+		return;
+	}
+	if (have_fb) {
+		px = fb_x; py = fb_y; pz = fb_z;
+		return;
+	}
+	px = fb_x;
+	py = fb_y;
+	double gz = mi.map.ground_z_at(px, py, es.max_z + 0.5);
+	pz = (gz < double(mi.map.min_z)) ? es.min_z : clampd(gz, es.min_z, es.max_z);
+}
+
+void wildlife_sync_map_spawns(ServerCtx@ ctx, MapInstance@ mi) {
 	if (@mi == null) return;
+	int zcnt = int(mi.map.animal_spawns.length());
+	mi.animal_spawn_next_ms.resize(uint(zcnt));
+	mi.animal_spawn_waiting.resize(uint(zcnt));
+	for (int zi = 0; zi < zcnt; zi++) {
+		mi.animal_spawn_next_ms[uint(zi)] = 0;
+		mi.animal_spawn_waiting[uint(zi)] = false;
+	}
+
+	int[] kept_per_zone(uint(zcnt), 0);
+	for (int i = int(mi.mobs.length()) - 1; i >= 0; i--) {
+		WildlifeMob@ m = mi.mobs[uint(i)];
+		if (m.is_bot) continue;
+		if (m.spawn_zone_idx < 0 || m.spawn_zone_idx >= zcnt) {
+			mi.mobs.remove_at(uint(i));
+			continue;
+		}
+		MapAnimalSpawn@ es = mi.map.animal_spawns[uint(m.spawn_zone_idx)];
+		bool valid_kind = (es.species.find(m.kind) >= 0);
+		bool valid_qty = kept_per_zone[uint(m.spawn_zone_idx)] < es.count;
+		bool in_box = (m.home_x >= es.min_x - 1.0 && m.home_x <= es.max_x + 1.0 && m.home_y >= es.min_y - 1.0 && m.home_y <= es.max_y + 1.0);
+		if (!valid_kind || !valid_qty || !in_box) {
+			mi.mobs.remove_at(uint(i));
+			continue;
+		}
+		m.leash_to_zone = es.leash;
+		m.leash_min_x = es.min_x;
+		m.leash_min_y = es.min_y;
+		m.leash_max_x = es.max_x;
+		m.leash_max_y = es.max_y;
+		kept_per_zone[uint(m.spawn_zone_idx)]++;
+	}
+}
+
+void wildlife_set_bot_count(ServerCtx@ ctx, int count) {
 	count = clampi(count, 0, 50);
-	int cur = count_mobs_by_type(mi, bots);
+	ctx.target_bots = count;
+	MapInstance@ mi = ctx.default_map();
+	if (@mi == null) return;
+	int cur = count_mobs_by_type(mi, true);
 	while (cur < count) {
 		double sx = double(mi.map.width) * 0.5, sy = double(mi.map.height) * 0.5, sz = 0.0;
 		if (mi.map.spawns.length() > 0) {
 			sx = mi.map.spawns[0].x; sy = mi.map.spawns[0].y; sz = mi.map.spawns[0].z;
 		}
-		string kind = "bot_survivor";
-		if (bots) {
-			sx = clampd(sx + double(random(-8, 8)), 3.0, double(mi.map.width - 3));
-			sy = clampd(sy + double(random(-8, 8)), 3.0, double(mi.map.height - 3));
-		} else {
-			kind = pick_wildlife_kind(mi, sx, sy);
-			sz = 0.0;
-		}
-		spawn_mob(ctx, mi, kind, sx, sy, sz, bots);
+		sx = clampd(sx + double(random(-8, 8)), 3.0, double(mi.map.width - 3));
+		sy = clampd(sy + double(random(-8, 8)), 3.0, double(mi.map.height - 3));
+		spawn_mob(ctx, mi, "bot_survivor", sx, sy, sz, true);
 		cur++;
 	}
 	for (int i = int(mi.mobs.length()) - 1; i >= 0 && cur > count; i--) {
-		if (mi.mobs[uint(i)].is_bot == bots) {
+		if (mi.mobs[uint(i)].is_bot) {
 			mi.mobs.remove_at(uint(i));
 			cur--;
 		}
 	}
 }
 
-void wildlife_set_target_count(ServerCtx@ ctx, int count, bool bots) {
-	count = clampi(count, 0, 50);
-	if (bots) ctx.target_bots = count;
-	else ctx.target_wildlife = count;
+void wildlife_step_spawn_zones(ServerCtx@ ctx, MapInstance@ mi, uint64 now_ms) {
+	uint zcnt = mi.map.animal_spawns.length();
+	if (zcnt == 0) return;
+	if (mi.animal_spawn_next_ms.length() != zcnt || mi.animal_spawn_waiting.length() != zcnt) {
+		wildlife_sync_map_spawns(ctx, mi);
+	}
+	bool map_night = ctx.is_map_night(mi);
 
-	for (uint i = 0; i < ctx.maps.length(); i++) {
-		MapInstance@ mi = ctx.maps[i];
-		int per_map = (mi.slug == ctx.default_map_slug) ? count : (bots ? 0 : (count / 2));
-		wildlife_set_target_count_map(ctx, mi, per_map, bots);
+	for (uint zi = 0; zi < zcnt; zi++) {
+		MapAnimalSpawn@ es = mi.map.animal_spawns[zi];
+		if (es.species.length() == 0) continue;
+
+		if ((es.active_time == "day" && map_night) || (es.active_time == "night" && !map_night)) {
+			mi.animal_spawn_waiting[zi] = false;
+			mi.animal_spawn_next_ms[zi] = 0;
+			continue;
+		}
+
+		int alive = count_mobs_for_zone(mi, int(zi));
+		if (alive < es.count) {
+			if (!mi.animal_spawn_waiting[zi]) {
+				mi.animal_spawn_waiting[zi] = true;
+				mi.animal_spawn_next_ms[zi] = now_ms + uint64(es.interval_ms);
+			} else if (now_ms >= mi.animal_spawn_next_ms[zi]) {
+				int need = es.count - alive;
+				for (int k = 0; k < need; k++) {
+					string kind = es.species[uint(random(0, int(es.species.length()) - 1))];
+					if (@find_species(kind) == null) continue;
+					double px, py, pz;
+					pick_point_in_spawn_zone(mi, es, px, py, pz);
+					spawn_mob(ctx, mi, kind, px, py, pz, false, int(zi), es.leash, es.min_x, es.min_y, es.max_x, es.max_y);
+				}
+				mi.animal_spawn_waiting[zi] = false;
+				mi.animal_spawn_next_ms[zi] = 0;
+			}
+		} else {
+			mi.animal_spawn_waiting[zi] = false;
+			mi.animal_spawn_next_ms[zi] = 0;
+		}
 	}
 }
 
@@ -160,7 +261,11 @@ void wildlife_step_map(ServerCtx@ ctx, MapInstance@ mi, double dt, uint64 now_ms
 			mob.aggro_peer = 0;
 			if (now_ms >= mob.next_think_ms) {
 				mob.next_think_ms = now_ms + uint64(random(2000, 4500));
-				if (get_2d_distance(mob.x, mob.y, mob.home_x, mob.home_y) > 14.0) {
+				if (mob.leash_to_zone && (mob.x < mob.leash_min_x || mob.x > mob.leash_max_x || mob.y < mob.leash_min_y || mob.y > mob.leash_max_y)) {
+					double cx = 0.5 * (mob.leash_min_x + mob.leash_max_x);
+					double cy = 0.5 * (mob.leash_min_y + mob.leash_max_y);
+					mob.facing = wrap_deg(int(bearing_to(mob.x, mob.y, cx, cy) + 0.5));
+				} else if (get_2d_distance(mob.x, mob.y, mob.home_x, mob.home_y) > 14.0) {
 					mob.facing = wrap_deg(int(bearing_to(mob.x, mob.y, mob.home_x, mob.home_y) + 0.5));
 				} else {
 					mob.facing = random(0, 7) * 45;
@@ -176,9 +281,22 @@ void wildlife_step_map(ServerCtx@ ctx, MapInstance@ mi, double dt, uint64 now_ms
 		string mat;
 		bool blocked = mi.map.blocked_by_wall(nx, ny, mob.z, 0.35, mat);
 		if (!blocked && !mob.is_bot && mi.map.is_safe_at(nx, ny, mob.z)) blocked = true;
+		if (!blocked && mob.leash_to_zone) {
+			double lx1 = mob.leash_min_x - 3.0, lx2 = mob.leash_max_x + 3.0;
+			double ly1 = mob.leash_min_y - 3.0, ly2 = mob.leash_max_y + 3.0;
+			bool next_out = (nx < lx1 || nx > lx2 || ny < ly1 || ny > ly2);
+			if (next_out) {
+				double cx = 0.5 * (mob.leash_min_x + mob.leash_max_x);
+				double cy = 0.5 * (mob.leash_min_y + mob.leash_max_y);
+				if (get_2d_distance(nx, ny, cx, cy) > get_2d_distance(mob.x, mob.y, cx, cy)) {
+					blocked = true;
+					mob.aggro_peer = 0;
+				}
+			}
+		}
 		double next_sup_z; string next_surf; bool dw; bool ur;
 		bool has_floor = mi.map.find_support_at(nx, ny, mob.z + 0.8, next_sup_z, next_surf, dw, ur);
-		if (!has_floor || abs(next_sup_z - mob.z) > 2.5) blocked = true; // Stay off air cliffs!
+		if (!has_floor || abs(next_sup_z - mob.z) > 2.5) blocked = true;
 
 		if (!blocked) {
 			mob.x = nx; mob.y = ny;
@@ -192,10 +310,10 @@ void wildlife_step_map(ServerCtx@ ctx, MapInstance@ mi, double dt, uint64 now_ms
 
 void wildlife_step_all(ServerCtx@ ctx, double dt, uint64 now_ms) {
 	if (ctx.tick_count % uint64(TICK_HZ * 5) == 0) {
-		wildlife_set_target_count(ctx, ctx.target_wildlife, false);
-		wildlife_set_target_count(ctx, ctx.target_bots, true);
+		wildlife_set_bot_count(ctx, ctx.target_bots);
 	}
 	for (uint i = 0; i < ctx.maps.length(); i++) {
+		wildlife_step_spawn_zones(ctx, ctx.maps[i], now_ms);
 		wildlife_step_map(ctx, ctx.maps[i], dt, now_ms);
 	}
 }

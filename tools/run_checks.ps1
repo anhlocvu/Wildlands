@@ -47,7 +47,7 @@ function Start-TestServer {
     $srvExe = Join-Path $Root "server\server.exe"
     $useMaps = if ($MapsDir.Length -gt 0) { $MapsDir } else { Join-Path $Root "server\maps" }
     $primaryMap = Join-Path $useMaps "wildlands_valley.map"
-    $args = @("--headless", "--port", "$Port", "--data-dir", $DataDir, "--maps-dir", $useMaps, "--map", $primaryMap, "--bots", "1", "--wildlife", "8")
+    $args = @("--headless", "--port", "$Port", "--data-dir", $DataDir, "--maps-dir", $useMaps, "--map", $primaryMap, "--bots", "1")
     if (-not $ProdMode) { $args = @("--test-mode") + $args }
     $script:ServerProc = Start-Process -FilePath $srvExe -ArgumentList $args -WorkingDirectory $Root -PassThru -WindowStyle Hidden
     $deadline = (Get-Date).AddSeconds(3)

@@ -145,6 +145,14 @@ void main() {
 	assert_true(buffer_is_muted(BUF_CHAT), "Buffer mute toggled cleanly");
 	buffer_toggle_mute();
 
+	// Verify zone reverb API & silent ambience state + non-builder /maps gating
+	g_audio.set_zone_reverb("cave");
+	assert_true(g_audio.active_reverb_preset == "cave", "AudioEngine set_zone_reverb cave state applied");
+	g_audio.set_zone_reverb("none");
+	assert_true(g_audio.active_reverb_preset == "none", "AudioEngine set_zone_reverb reset to none");
+	chat_dispatch_line(nc, "/maps");
+	assert_true(!nc.maps_menu_pending, "Rank 0 player blocked client-side on /maps");
+
 	nc.disconnect_clean();
 	g_audio.stop_world_audio();
 	wipe_dir(prof_dir);

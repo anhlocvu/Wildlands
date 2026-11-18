@@ -253,7 +253,6 @@ void run_dev_menu(NetClient@ nc) {
 		m.add_item("Teleport Player to Coordinates", "tp");
 		m.add_item("Grant Account Rank", "grant_rank");
 		m.add_item("Set Simulated Bot Count", "set_bots");
-		m.add_item("Set Wildlife Population", "set_wildlife");
 		m.add_item("Toggle Rain Weather", "weather");
 		m.add_item("Toggle Day or Night", "time");
 		m.add_item("Broadcast Server Announcement", "announce");
@@ -278,13 +277,6 @@ void run_dev_menu(NetClient@ nc) {
 			string cnt;
 			if (show_text_prompt("Bot Count", "Number of test bots (0 to 16)", "2", cnt, 4)) {
 				nc.send_control(pkt_3("DEV", "set_bots", cnt));
-			}
-			continue;
-		}
-		if (cmd == "set_wildlife") {
-			string cnt;
-			if (show_text_prompt("Wildlife Count", "Number of wildlife mobs (0 to 30)", "12", cnt, 4)) {
-				nc.send_control(pkt_3("DEV", "set_wildlife", cnt));
 			}
 			continue;
 		}

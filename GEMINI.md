@@ -86,3 +86,35 @@ luôn luôn tuân thủ quy trình specify trong mọi trường hợp phát tri
 - Bổ sung 22 file `.ogg` CC0 thật qua `tools/asset_pipeline.py` (tổng **116** file hợp lệ, tất cả đều có header `OggS`).
 - Bổ sung [BUILDER_GUIDE.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/BUILDER_GUIDE.md) và [STAFF_GUIDE.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/STAFF_GUIDE.md) (đọc được trực tiếp trong Pause Menu), cùng cập nhật `CONTROLS.md`, `PROTOCOL.md`, `ARCHITECTURE.md`, `PLAN.md`.
 - Biên dịch sạch `server/server.exe` và `client/client.exe` bằng `nvgt -c` và xác nhận **`=== ALL CHECKS PASSED ===`** qua `tools/run_checks.ps1` (exit code 0 across offline unit tests, build, Phase 1/2 E2E integration gồm leo cầu thang âm gỗ, rơi từ Z=12 gãy xương chữa bằng Wooden Splint, cổng đa bản đồ sang `skywatch_citadel`, Builder `F8` + Line Manager, Staff `Online`/`Last seen` + `/report` + `/sc` + graceful shutdown, `client.exe --smoke-test`, và `client_ui_e2e_check.nvgt` với STW Tracker `<= 30`).
+
+
+---
+
+## Nhật ký kỹ thuật — Wildlands Online v3 (`003-stw-maps-system`, 2026-11-18)
+
+### 1. Hệ thống Spawn Động vật theo từng Bản đồ (`E` Animal Spawn Zone — Phương án A)
+- **Gỡ bỏ hoàn toàn Spawner toàn cục**: Xóa `wildlife_set_target_count` tự động thả quái trên mọi map trong `server/includes/wildlife.nvgt`, xóa mục spawn & đặt số lượng động vật khỏi Staff Panel (`client/includes/staff_ui.nvgt`, `STAFF|spawn_mob`, `STAFF|world|wildlife`) và Dev Console (`client/includes/menus.nvgt`, `DEV|set_wildlife`), giữ `wildlife_set_bot_count` riêng cho practice bots. Các map test (`skywatch_citadel.map`, `anhloc.map`, map tạo mới) hoàn toàn yên bình (0 động vật) trừ khi được thêm dòng `E`.
+- **Cơ chế Timer `ms` dùng chung (Approach A)** & Danh sách loài **100% động** từ `g_species`:
+  - `common/map.nvgt` thêm lớp `MapAnimalSpawn` (`E|label|min_x|min_y|max_x|max_y|min_z|max_z|interval_ms|count|species_csv|leash|active_time`), validator từ chối dòng `E` rỗng loài, cùng `make_e_line`, `parse_species_csv`, `join_species_csv`.
+  - Server gửi động toàn bộ catalog sinh vật từ `g_species` qua gói `BM_SPECIES` mỗi lần mở `F8` (`builder_send_hub_sync`).
+  - Client (`client/includes/builder_ui.nvgt`) xây dựng form **Create Animal Spawn Zone** đúng thứ tự: `Label`, `Min X`, `Max X`, `Min Y`, `Max Y`, `Min Z`, `Max Z`, `Spawn / Respawn Time (ms)`, `Spawn Quantity`, **List Box Checkbox đa chọn** (`audio_form::create_list(..., 0, true, false)` cho phép Up/Down & Space chọn 1 hoặc nhiều loài — tránh bug `set_list_properties` của NVGT), `Leash` checkbox, `Active Time (always|day|night)`, nút `Create Animal Spawn Zone`. Hỗ trợ sửa/lọc `E` trong Line Manager và đồng bộ nóng `wildlife_sync_map_spawns()`.
+  - Tác giả hóa 6 vùng `E` cân bằng trên [wildlands_valley.map](file:///C:/Users/LCBoy/Desktop/data/stw/server/maps/wildlands_valley.map) **ngoài** vùng an toàn `Settlement Clearing` (`35..65 x 35..65`).
+
+### 2. Gỡ dịch chuyển khỏi Builder & Thêm `/maps` + Staff "View All Maps"
+- Tách bạch chỉnh sửa với di chuyển: `F8 -> Switch Active Builder Map` (`bm_switch_map_menu`, `BUILDMAP|select_map`) chỉ đổi bản đồ đang sửa (`edit-only`); `BUILDMAP|lm_tp` chỉ cho phép dịch chuyển trong map người chơi đang đứng.
+- Triển khai `MAPS|list` -> `MAPS_LIST` và `MAPS|tp|<slug>` (`PROTO_VERSION = 3`, `GAME_VERSION = "3.0.0"`) giới hạn từ **`RANK_BUILDER` trở lên** (`server/includes/admin_dev.nvgt`, `server/server.nvgt`).
+- Hợp nhất UI `run_server_maps_menu` (`client/includes/staff_ui.nvgt`, `chat_input.nvgt`, `client.nvgt`) dùng chung cho cả lệnh **`/maps`** (hoặc `/map`) và mục **`View All Maps (/maps)`** trong `F9 Staff Panel` — Enter vào bản đồ sẽ dịch chuyển tới spawn của map đó.
+
+### 3. Tạo Map Im lặng Mặc định & Bộ Nâng cấp STW Maps System
+- **Silent-by-default Create Map**: Bỏ chọn âm thanh môi trường trong `bm_create_map_form`, mặc định `ambience_default = "none"`. Sửa `client/includes/audio_engine.nvgt` & `net_client.nvgt` dừng/fade-out êm `amb_curr` khi ambience là `"none"` thay vì ép bật `forest_day.ogg`; `collect_sound_refs()` bỏ qua `"none"`/`"inherit"`. Bổ sung lựa chọn `None (Silent)` và `Inherit Map Default` ở Edit Header & Zone.
+- **Map Header v3 Rules (`M`)**: Hỗ trợ `allow_build (0/1)`, `weather_enabled (0/1)`, `time_mode (auto|day|night)` tương thích ngược v1/v2; server thực thi trong `builder_place_structure`, `send_scoped_snapshots`, `world_step_vitals_and_env`, `wildlife_step_spawn_zones`.
+- **Zone Acoustic Reverb (`Z` + NVGT `audio_freeverb_node`)**: Thêm `reverb_preset` (`none|room|hall|cave`) gắn `audio_freeverb_node` trên `mix_steps`, `mix_world`, `mix_actors`, `mix_threat` khi người chơi đi vào vùng có reverb (giữ thoại, UI cue, ambience, nhạc nền sạch/dry).
+- **Templates, Clone, 2-Corner Clipboard, Bounds Ping & Internal Portals**:
+  - `generate_map_template_raw` hỗ trợ `flat`, `void`, `arena`, `cave` khi tạo map mới; `BUILDMAP|clone_map` nhân bản map đang mở.
+  - Clipboard 2 góc (`Corner 1` / `Corner 2` qua `M` / `Shift+M` hoặc menu Hub) tự điền `Min X..Max Z` vào mọi form hộp 6 trục mới; Line Manager thêm `Ping Element Bounds in 3D Audio`.
+  - Cổng dịch chuyển cùng map (`D` với `target_map == current_map`) phát âm thanh và đọc vùng/độ cao mới gọn nhẹ không nạp lại bản đồ.
+
+### 4. Kiểm thử & Tài liệu (`tools/run_checks.ps1`)
+- Cập nhật [BUILDER_GUIDE.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/BUILDER_GUIDE.md), [STAFF_GUIDE.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/STAFF_GUIDE.md), [CONTROLS.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/CONTROLS.md), [PROTOCOL.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/PROTOCOL.md).
+- Biên dịch `server/server.exe` và `client/client.exe` bằng `nvgt -c` và xác nhận **`=== ALL CHECKS PASSED ===`** qua `tools/run_checks.ps1` (exit code 0 across `common_check`, `map_check` v3/E/reverb/templates, `auth_check`, `asset_check`, `client_profile_check`, E2E Phase 1/2 gồm Approach A 1200ms spawn & respawn, `/maps` RBAC & teleport, `select_map` edit-only, `allow_build=0`, `time_mode=night`, `clone_map`, same-map portal, `client.exe --smoke-test`, và `client_ui_e2e_check.nvgt`).
+

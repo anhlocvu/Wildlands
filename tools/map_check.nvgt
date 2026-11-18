@@ -100,6 +100,43 @@ void main() {
 	check("LM delete line", bm.lm_delete_line(3, berr) && bm.raw_lines.length() == orig_lines + 1, berr);
 	check("LM refuses deleting M header", !bm.lm_delete_line(0, berr));
 
+	// Feature 003: Map v3 rules, Z reverb, "none" ambience, templates, & E Animal Spawn Zones
+	check("v2 map fallback rules default", bm.allow_build && bm.weather_enabled && bm.time_mode == "auto");
+	check("parse_species_csv dedups", join_species_csv(parse_species_csv("Wolf, wolf, rabbit, deer ")) == "wolf,rabbit,deer");
+
+	string v3_raw =
+		make_m_line("Silent Night Cavern", 80, 80, -20, 40, "stone", "none", true, false, false, "night") + "\n"
+		+ make_s_line("Origin", 20, 20, 0, 0) + "\n"
+		+ make_z_line("Echo Hall", 0, 0, 40, 40, -10, 20, "stone", "", false, "hall") + "\n"
+		+ make_z_line("Silent Cave", 40, 0, 80, 40, -10, 20, "stone", "none", true, "cave") + "\n"
+		+ make_p_line("Floor", 0, 0, 80, 80, 0, 0, "stone", "floor", false) + "\n"
+		+ make_e_line("Pack Spawn", 10, 10, 30, 30, 0, 5, 5000, 4, "wolf,bear", true, "night") + "\n";
+
+	WorldMap v3m;
+	string v3err;
+	check("v3 map with E + reverb + none ambience loads", v3m.load_from_string(v3_raw, v3err), v3err);
+	check("v3 M flags applied", !v3m.allow_build && !v3m.weather_enabled && v3m.time_mode == "night" && v3m.ambience_default == "none");
+	check("v3 Z reverb presets", v3m.reverb_at(15, 15, 0) == "hall" && v3m.reverb_at(55, 15, 0) == "cave" && v3m.reverb_at(55, 55, 0) == "none");
+	check("v3 ambience none skips sound refs", v3m.ambience_at(15, 15, 0) == "none" && v3m.ambience_at(55, 15, 0) == "none" && v3m.collect_sound_refs().length() == 0);
+	check("v3 E parsed fields", v3m.animal_spawns.length() == 1 && v3m.animal_spawns[0].interval_ms == 5000 && v3m.animal_spawns[0].count == 4 && v3m.animal_spawns[0].species.length() == 2 && v3m.animal_spawns[0].active_time == "night");
+	double e_ax, e_ay, e_az;
+	v3m.line_anchor_pos(5, e_ax, e_ay, e_az);
+	check("E line anchor & bounds", abs(e_ax - 20.0) < 0.01 && abs(e_ay - 20.0) < 0.01 && v3m.line_summary(5).find("AnimalSpawn") >= 0);
+
+	// Empty species CSV rejected on E validation
+	string bad_e_raw = make_m_line("Bad E", 60, 60, -10, 20, "grass", "none") + "\n" + make_s_line("Start", 10, 10, 0, 0) + "\n" + "E|Empty|5|5|15|15|0|4|5000|2||1|always\n";
+	WorldMap bad_e;
+	check("E rejects empty species list", !bad_e.load_from_string(bad_e_raw, v3err));
+
+	// Templates check (silent default + valid structure)
+	string[] tmpls = {"flat", "void", "arena", "cave"};
+	for (uint ti = 0; ti < tmpls.length(); ti++) {
+		WorldMap tm;
+		string terr;
+		bool ok = tm.load_from_string(generate_map_template_raw(tmpls[ti], "Tmpl " + tmpls[ti], 80, 80, -20, 30, "grass", 40, 40, 0), terr);
+		check("template " + tmpls[ti] + " valid & silent", ok && tm.ambience_default == "none" && tm.collect_sound_refs().length() == 0, terr);
+	}
+
 	println(fails == 0 ? "PASS" : (fails + " failure(s)"));
 	exit(fails == 0 ? 0 : 1);
 }
