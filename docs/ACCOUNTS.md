@@ -27,7 +27,8 @@
 - **Rate Limiting**: Per-IP authentication/registration throttling prevents brute-force and account spam (configurable/lifted under `--test-mode`).
 
 ## 4. Atomic Server Store & Ranks
-- `data/accounts.dat` and `data/world_objects.dat` use atomic writes (`.tmp` -> `.bak` -> rename).
+- `data/accounts.dat` (`ACCOUNTS_V3`, backward-compatible with `ACCOUNTS_V1`/`ACCOUNTS_V2`) and `data/world_objects.dat` use atomic writes (`.tmp` -> `.bak` -> rename).
+- **Persistent Inventory & Hand State**: Each registered account saves `has_saved_inv`, `saved_inv` (`id:qty;...`), `left_hand_id`, `right_hand_id`, `equipped_armor_id`, and `active_hand` (`0=none`, `1=left`, `2=right`) across disconnects, logouts, and server restarts. New/migrated accounts without saved inventory receive starter gear once (`has_saved_inv` then remains `1` even if the pack is later emptied). Guest sessions remain non-persistent.
 - **Fatal Corrupt Store Rule**: If `data/accounts.dat` exists and fails validation, the server shows a modal `alert()`, logs the error, and refuses to start so existing accounts are never overwritten.
 - **Ranks**: `Player (0)` < `Builder (1)` < `Moderator (2)` < `Admin (3)` < `Developer (4)`.
   - Nobody moderates sideways or upwards (`actor.rank > target.rank` strictly enforced).

@@ -13,6 +13,7 @@ void admin_save_all_state(ServerCtx@ ctx) {
 			sp.account.last_y = sp.y;
 			sp.account.last_z = sp.z;
 			sp.account.last_seen_epoch = int64(TIME_STAMP);
+			sp.sync_inv_to_account();
 			ctx.accounts.dirty = true;
 		}
 	}
@@ -480,7 +481,7 @@ void admin_handle_staff(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint64 n
 				ctx.send_speech(ps, MBUF_SYSTEM, true, "Permission denied."); return;
 			}
 			if (@tlive == null) { ctx.send_speech(ps, MBUF_SYSTEM, true, tname + " is not online."); return; }
-			tlive.inv.resize(0);
+			tlive.clear_inv_and_hands();
 			ctx.send_inv(tlive);
 			ctx.send_speech(tlive, MBUF_SYSTEM, true, "Your inventory was cleared by staff.");
 			ctx.send_speech(ps, MBUF_SYSTEM, true, "Cleared inventory of " + tlive.name + ".");

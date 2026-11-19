@@ -23,6 +23,8 @@ ui/track_lost.ogg
 ui/track_arrived.ogg
 ui/cat_switch.ogg
 ui/staff_alert.ogg
+ui/inv_open.ogg
+ui/inv_close.ogg
 steps/grass_1.ogg
 steps/grass_2.ogg
 steps/grass_3.ogg

@@ -29,6 +29,8 @@ All audio assets are real recordings from verified open-license sources, byte-ve
 | `ui/track_arrived.ogg` | Kenney Interface Sounds (CC0) |
 | `ui/cat_switch.ogg` | Kenney Interface Sounds (CC0) |
 | `ui/staff_alert.ogg` | 100 CC0 SFX by rubberduck (CC0) |
+| `ui/inv_open.ogg` | Kenney RPG Audio (CC0) |
+| `ui/inv_close.ogg` | Kenney RPG Audio (CC0) |
 | `steps/grass_1.ogg` | Kenney Impact Sounds (CC0) |
 | `steps/grass_2.ogg` | Kenney Impact Sounds (CC0) |
 | `steps/grass_3.ogg` | Kenney Impact Sounds (CC0) |

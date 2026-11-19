@@ -23,11 +23,14 @@ void chat_dispatch_line(NetClient@ nc, const string&in raw) {
 	string body = (sp < 0 ? "" : rest.substr(uint(sp) + 1)).trim_whitespace();
 
 	if (cmd == "help" || cmd == "?") {
-		say("Chat commands: message for global, slash pm name message, slash r message to reply, slash local message, slash team message, slash emote action, slash report message, slash sc staff message, slash maps for builders and staff, slash who, slash ping.", true);
+		say("Chat commands: message for global, slash pm name message, slash r message to reply, slash local message, slash team message, slash emote action, slash report message, slash sc staff message, slash maps for builders and staff, slash who, slash near, slash uptime, slash ping, slash motd.", true);
 		return;
 	}
 	if (cmd == "who") { nc.request_who(true); return; }
+	if (cmd == "near" || cmd == "whonear") { nc.request_who_near(true); return; }
+	if (cmd == "uptime") { nc.request_uptime(true); return; }
 	if (cmd == "ping") { nc.request_ping(true); return; }
+	if (cmd == "motd") { nc.request_motd(true); return; }
 	if (cmd == "maps" || cmd == "map") {
 		if (nc.my_rank < RANK_BUILDER) {
 			g_audio.play_ui_cue("error.ogg", 0.8f);

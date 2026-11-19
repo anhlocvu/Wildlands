@@ -81,6 +81,7 @@ class ClientProfile {
 	int turn_snap_deg = 45;
 	bool hrtf_enabled = true;
 	bool speech_ducking = true;
+	bool beacons_enabled = true;
 	bool tutorial_done = false;
 	string custom_host = "127.0.0.1";
 	uint16 custom_port = DEFAULT_PORT;
@@ -108,6 +109,7 @@ class ClientProfile {
 		turn_snap_deg = 45;
 		hrtf_enabled = true;
 		speech_ducking = true;
+		beacons_enabled = true;
 		tutorial_done = false;
 		custom_host = "127.0.0.1";
 		custom_port = DEFAULT_PORT;
@@ -125,10 +127,10 @@ class ClientProfile {
 		keybinds.insert_last(KeyBind("step_right", "Sidestep Right", KEY_D));
 		keybinds.insert_last(KeyBind("turn_left", "Turn Left", KEY_LEFT));
 		keybinds.insert_last(KeyBind("turn_right", "Turn Right", KEY_RIGHT));
-		keybinds.insert_last(KeyBind("jump", "Jump", KEY_SPACE));
+		keybinds.insert_last(KeyBind("jump", "Jump (Shift+Space by default)", KEY_SPACE));
 		keybinds.insert_last(KeyBind("climb_up", "Climb Up Stairs", KEY_PAGEUP));
 		keybinds.insert_last(KeyBind("climb_down", "Climb Down Stairs", KEY_PAGEDOWN));
-		keybinds.insert_last(KeyBind("use_belt", "Use Active Belt Item", KEY_Q));
+		keybinds.insert_last(KeyBind("use_hand", "Use or Equip Active Hand Item", KEY_SPACE));
 		keybinds.insert_last(KeyBind("attack", "Attack", KEY_F));
 		keybinds.insert_last(KeyBind("block", "Block / Guard", KEY_G));
 		keybinds.insert_last(KeyBind("interact", "Interact / Gather / Door / Portal", KEY_E));
@@ -146,11 +148,17 @@ class ClientProfile {
 		keybinds.insert_last(KeyBind("lock", "Lock or Unlock Door or Chest", KEY_L));
 		keybinds.insert_last(KeyBind("repair", "Repair Nearby Structure", KEY_R));
 		keybinds.insert_last(KeyBind("chat", "Open Chat Input", KEY_SLASH));
-		keybinds.insert_last(KeyBind("who", "Who Is Online", KEY_U));
-		keybinds.insert_last(KeyBind("ping", "Ping Latency", KEY_P));
-		keybinds.insert_last(KeyBind("social", "Social and Profile Menu", KEY_F2));
+		keybinds.insert_last(KeyBind("who", "Who Is Online (All Players)", KEY_F1));
+		keybinds.insert_last(KeyBind("uptime", "Server Uptime", KEY_F2));
+		keybinds.insert_last(KeyBind("ping", "Ping Latency", KEY_F3));
+		keybinds.insert_last(KeyBind("motd", "Message of the Day", KEY_F4));
+		keybinds.insert_last(KeyBind("social", "Social and Profile Menu", KEY_F5));
+		keybinds.insert_last(KeyBind("toggle_beacons", "Toggle Beacon Sounds", KEY_F6));
 		keybinds.insert_last(KeyBind("map_builder", "Audio Map Builder Menu", KEY_F8));
 		keybinds.insert_last(KeyBind("staff_panel", "Staff Panel", KEY_F9));
+		keybinds.insert_last(KeyBind("help", "Context Controls Help", KEY_F11));
+		keybinds.insert_last(KeyBind("copy_last", "Copy Last Spoken Line", KEY_F12));
+		keybinds.insert_last(KeyBind("who_near", "Nearby Players (Who Is Near)", KEY_P));
 		keybinds.insert_last(KeyBind("repeat_spoken", "Repeat Last Spoken Line", KEY_GRAVE));
 		keybinds.insert_last(KeyBind("buf_prev", "Previous Buffer Channel", KEY_COMMA));
 		keybinds.insert_last(KeyBind("buf_next", "Next Buffer Channel", KEY_PERIOD));
@@ -251,15 +259,24 @@ class ClientProfile {
 		}
 		hrtf_enabled = safe_int(cfg.get_string("audio", "hrtf", "1"), 0, 1, 1) == 1;
 		speech_ducking = safe_int(cfg.get_string("audio", "ducking", "1"), 0, 1, 1) == 1;
+		beacons_enabled = safe_int(cfg.get_string("audio", "beacons", "1"), 0, 1, 1) == 1;
 		use_sr = safe_int(cfg.get_string("speech", "use_sr", "1"), 0, 1, 1) == 1;
 		tts_rate = safe_int(cfg.get_string("speech", "rate", "2"), -10, 10, 2);
 		tts_voice_name = cfg.get_string("speech", "voice", "");
 
 		int snap = safe_int(cfg.get_string("controls", "turn_snap", "45"), 45, 90, 45);
 		turn_snap_deg = (snap == 90) ? 90 : 45;
+		int kb_ver = safe_int(cfg.get_string("keybinds", "schema_version", "1"), 1, 100, 1);
 		for (uint i = 0; i < keybinds.length(); i++) {
-			string kv = cfg.get_string("keybinds", keybinds[i].action, "");
-			if (kv.length() > 0) keybinds[i].key = safe_int(kv, 1, 512, keybinds[i].default_key);
+			string act = keybinds[i].action;
+			if (kb_ver < 2 && is_v2_standardized_action(act)) continue;
+			if (kb_ver < 3 && is_v3_standardized_action(act)) continue;
+			string kv = cfg.get_string("keybinds", act, "");
+			if (kv.length() > 0) {
+				int loaded_k = safe_int(kv, 1, 512, keybinds[i].default_key);
+				if (kb_ver < 2 && is_v2_reserved_key(loaded_k)) continue;
+				keybinds[i].key = loaded_k;
+			}
 		}
 
 		string ch = strip_control_chars(cfg.get_string("network", "custom_host", LOCAL_SERVER_HOST), 80);
@@ -278,6 +295,21 @@ class ClientProfile {
 		}
 	}
 
+	bool is_v2_standardized_action(const string&in act) const {
+		return act == "who" || act == "uptime" || act == "ping" || act == "motd"
+			|| act == "social" || act == "toggle_beacons" || act == "who_near"
+			|| act == "help" || act == "copy_last";
+	}
+
+	bool is_v3_standardized_action(const string&in act) const {
+		return act == "use_hand" || act == "jump";
+	}
+
+	bool is_v2_reserved_key(int kc) const {
+		return kc == KEY_F1 || kc == KEY_F2 || kc == KEY_F3 || kc == KEY_F4
+			|| kc == KEY_F5 || kc == KEY_F6 || kc == KEY_F11 || kc == KEY_F12 || kc == KEY_P;
+	}
+
 	void ini_put(ini@ doc, const string&in sec, const string&in k, const string&in v) const {
 		if (!doc.section_exists(sec)) doc.create_section(sec);
 		doc.set_string(sec, k, v);
@@ -290,10 +322,12 @@ class ClientProfile {
 		}
 		ini_put(cfg, "audio", "hrtf", hrtf_enabled ? "1" : "0");
 		ini_put(cfg, "audio", "ducking", speech_ducking ? "1" : "0");
+		ini_put(cfg, "audio", "beacons", beacons_enabled ? "1" : "0");
 		ini_put(cfg, "speech", "use_sr", use_sr ? "1" : "0");
 		ini_put(cfg, "speech", "rate", "" + tts_rate);
 		ini_put(cfg, "speech", "voice", tts_voice_name);
 		ini_put(cfg, "controls", "turn_snap", "" + turn_snap_deg);
+		ini_put(cfg, "keybinds", "schema_version", "" + KEYBIND_SCHEMA_VERSION);
 		for (uint i = 0; i < keybinds.length(); i++) {
 			ini_put(cfg, "keybinds", keybinds[i].action, "" + keybinds[i].key);
 		}

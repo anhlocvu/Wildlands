@@ -64,10 +64,18 @@ void main() {
 	check("mod cannot mod admin (upwards)", !can_moderate(RANK_MOD, RANK_ADMIN));
 	check("player cannot mod player", !can_moderate(RANK_PLAYER, RANK_PLAYER));
 
-	// Save + reload roundtrip + .bak creation.
+	// Save + reload roundtrip + .bak creation + V3 inventory & dual-hand persistence.
 	a2.friends.insert_last("devlead");
 	a2.ban_reason = "pipe|test\\reason";
 	a2.banned_until = 5000;
+	a2.has_saved_inv = true;
+	a2.saved_inv.insert_last(ItemStack("wood", 12));
+	a2.saved_inv.insert_last(ItemStack("iron_axe", 1));
+	a2.saved_inv.insert_last(ItemStack("berries", 3));
+	a2.left_hand_id = "iron_axe";
+	a2.right_hand_id = "berries";
+	a2.equipped_armor_id = "";
+	a2.active_hand = 1;
 	check("save store succeeds", store.save(err), err);
 	check("second save creates .bak", store.save(err) && file_exists(store.db_path + ".bak"), err);
 
@@ -78,6 +86,22 @@ void main() {
 	AccountRecord@ r2 = store2.find("Ranger_1");
 	check("reloaded escaped ban_reason + friends", @r2 != null && r2.ban_reason == "pipe|test\\reason" && r2.has_friend("devlead"));
 	check("ban message active at t=1000", store2.ban_message_if_active(r2, 1000).find("pipe|test\\reason") >= 0);
+	check("reloaded V3 saved_inv & hands", @r2 != null && r2.has_saved_inv && r2.saved_inv.length() == 3
+		&& r2.saved_inv[0].id == "wood" && r2.saved_inv[0].qty == 12
+		&& r2.left_hand_id == "iron_axe" && r2.right_hand_id == "berries" && r2.active_hand == 1);
+
+	// Empty saved inventory MUST remain saved & empty (not treated as fresh starter account)
+	r2.saved_inv.resize(0);
+	r2.left_hand_id = "";
+	r2.right_hand_id = "";
+	r2.active_hand = 0;
+	check("save empty inv", store2.save(err), err);
+	AccountStore store3;
+	store3.db_path = store.db_path;
+	store3.devs_path = store.devs_path;
+	check("reload empty inv store", store3.load(err), err);
+	AccountRecord@ r3 = store3.find("Ranger_1");
+	check("empty saved inv preserved with has_saved_inv=true", @r3 != null && r3.has_saved_inv && r3.saved_inv.length() == 0 && r3.active_hand == 0);
 
 	// Corrupt account store MUST fail fatally instead of returning empty list.
 	file_put_contents(store.db_path, "CORRUPTED_GARBAGE\n", false);
@@ -96,12 +120,12 @@ void main() {
 	lh.current_map = "skywatch_citadel";
 	lh.last_seen_epoch = 1700001234;
 	lh.last_ip = "127.0.0.1";
-	check("upgrades and saves ACCOUNTS_V2", v1_store.save(err), err);
+	check("upgrades and saves ACCOUNTS_V3", v1_store.save(err), err);
 	AccountStore v2_reload;
 	v2_reload.db_path = v1_path;
 	v2_reload.devs_path = store.devs_path;
 	AccountRecord@ lh2 = null;
-	check("reloads ACCOUNTS_V2 fields cleanly", v2_reload.load(err) && (@lh2 = v2_reload.find("LegacyHero")) != null && lh2.current_map == "skywatch_citadel" && lh2.last_seen_epoch == 1700001234, err);
+	check("reloads ACCOUNTS_V3 fields cleanly", v2_reload.load(err) && (@lh2 = v2_reload.find("LegacyHero")) != null && lh2.current_map == "skywatch_citadel" && lh2.last_seen_epoch == 1700001234 && !lh2.has_saved_inv, err);
 
 	// StaffReportStore check
 	StaffReportStore rstore;

@@ -131,9 +131,9 @@ bool handle_auth_flow(const string&in host, uint16 port, bool force_account_dial
 
 void speak_context_help() {
 	if (g_net.map_builder_active) {
-		say("Map Builder cursor controls: Arrow keys step cursor, Page Up and Down adjust height, M marks corner, B or Enter opens cursor palette and Builder Hub, Ctrl+S saves map, F8 exits cursor mode.", true);
+		say("Map Builder cursor controls: Arrow keys step cursor, Page Up and Down adjust height, M marks corner 1, Shift+M marks corner 2, B or Enter opens cursor palette and Builder Hub, Ctrl+S saves map, F8 exits cursor mode, F11 or Shift+F1 repeats help.", true);
 	} else {
-		say("World controls: W A S D walk, Left and Right snap turn, Shift Left or Right smooth turn, Page Up and Down climb stairs, E interact or use portal, F attack, G guard, Q use belt item, 1 to 9 belt slots, I inventory, C crafting, B building, H vitals, X coordinates, K compass, Ctrl Equals or Minus tracker category, Equals or Minus browse targets within 30 steps, Backspace track, Shift Backspace stop tracking, O tracked direction and steps, V sonar, slash chat, comma period buffers, F2 social, F8 builder hub, F9 staff panel, Escape pause.", true);
+		say("World controls: W A S D walk, Left and Right snap turn, Shift Left or Right smooth turn, Shift Space jump, Page Up and Down climb stairs, E or Enter interact or use portal, F attack, G guard, 1 left hand select or stow, 2 right hand select or stow, Space use or equip active hand item, I inventory, C crafting, B building, H vitals, X coordinates, K compass, Ctrl Equals or Minus tracker category, Equals or Minus browse targets within 30 steps, Backspace track, Shift Backspace stop tracking, O tracked direction and steps, V sonar, slash chat, comma period buffers, F1 who is online, F2 server uptime, F3 ping, F4 message of the day, F5 social menu, F6 toggle beacons, P nearby players, F8 builder hub, F9 staff panel, F11 help, F12 copy last spoken, Escape pause.", true);
 	}
 }
 
@@ -170,8 +170,15 @@ void run_world_session() {
 			continue;
 		}
 
+		bool ctrl = key_down(KEY_LCTRL) || key_down(KEY_RCTRL);
+		bool shift = key_down(KEY_LSHIFT) || key_down(KEY_RSHIFT);
+		bool alt = key_down(KEY_LALT) || key_down(KEY_RALT);
+
 		// Global hotkeys
-		if (key_pressed(KEY_F1)) { speak_context_help(); continue; }
+		if ((shift && key_pressed(KEY_F1)) || (!alt && g_profile.key_pressed_bind("help"))) {
+			speak_context_help();
+			continue;
+		}
 		if (key_pressed(KEY_ESCAPE) || key_pressed(KEY_F10)) {
 			if (g_net.map_builder_active) {
 				run_map_builder_palette(g_net);
@@ -184,9 +191,6 @@ void run_world_session() {
 			}
 			continue;
 		}
-
-		bool ctrl = key_down(KEY_LCTRL) || key_down(KEY_RCTRL);
-		bool shift = key_down(KEY_LSHIFT) || key_down(KEY_RSHIFT);
 
 		// Builder Hub (F8) & Staff Panel (F9)
 		if (g_profile.key_pressed_bind("map_builder")) {
@@ -274,15 +278,31 @@ void run_world_session() {
 		}
 		if (g_profile.key_pressed_bind("trk_read")) g_tracker.read_tracked(g_net);
 		if (g_profile.key_pressed_bind("sonar")) trigger_sonar_sweep(g_net);
-		if (g_profile.key_pressed_bind("who")) g_net.request_who(true);
-		if (g_profile.key_pressed_bind("ping")) g_net.request_ping(true);
-
-		// Quick-belt slots 1..9
-		for (int s = 0; s < BELT_SLOTS; s++) {
-			if (key_pressed(KEY_1 + s)) {
-				g_net.send_control("ACT|equip|" + s);
+		if (!shift && !alt && g_profile.key_pressed_bind("who")) g_net.request_who(true);
+		if (!alt && g_profile.key_pressed_bind("uptime")) g_net.request_uptime(true);
+		if (!alt && g_profile.key_pressed_bind("ping")) g_net.request_ping(true);
+		if (!alt && g_profile.key_pressed_bind("motd")) g_net.request_motd(true);
+		if (!alt && g_profile.key_pressed_bind("who_near")) g_net.request_who_near(true);
+		if (!alt && g_profile.key_pressed_bind("toggle_beacons")) {
+			g_profile.beacons_enabled = !g_profile.beacons_enabled;
+			g_profile.save_settings();
+			g_audio.play_ui_cue(g_profile.beacons_enabled ? "ui/confirm.ogg" : "ui/menu_back.ogg", 0.7f);
+			say(g_profile.beacons_enabled ? "Beacon sounds enabled." : "Beacon sounds disabled.", true);
+		}
+		if (!alt && g_profile.key_pressed_bind("copy_last")) {
+			if (g_last_spoken.length() > 0) {
+				clipboard_set_text(g_last_spoken);
+				g_audio.play_ui_cue("ui/confirm.ogg", 0.65f);
+				say("Copied last spoken line.", true);
+			} else {
+				g_audio.play_ui_cue("error.ogg", 0.6f);
+				say("Nothing has been spoken yet.", true);
 			}
 		}
+
+		// Left / Right hand quick select & stow (1 = Left Hand, 2 = Right Hand)
+		if (!g_net.map_builder_active && !ctrl && !alt && key_pressed(KEY_1)) g_net.send_control("ACT|hand|1");
+		if (!g_net.map_builder_active && !ctrl && !alt && key_pressed(KEY_2)) g_net.send_control("ACT|hand|2");
 
 		// Menus & Single-tap Stair Climb (when not in builder cursor capture)
 		if (!g_net.map_builder_active) {
@@ -299,7 +319,10 @@ void run_world_session() {
 		if (g_profile.key_pressed_bind("interact") || (!g_net.map_builder_active && key_pressed(KEY_RETURN))) {
 			g_net.send_control("ACT|interact");
 		}
-		if (g_profile.key_pressed_bind("use_belt")) g_net.send_control("ACT|use_belt");
+		bool use_jump_shared = (g_profile.get_bind_key("use_hand") == g_profile.get_bind_key("jump"));
+		if (!g_net.map_builder_active && !ctrl && !alt && (!use_jump_shared || !shift) && g_profile.key_pressed_bind("use_hand")) {
+			g_net.send_control("ACT|use_hand");
+		}
 		if (g_profile.key_pressed_bind("lock")) g_net.send_control("ACT|lock");
 		if (g_profile.key_pressed_bind("repair")) g_net.send_control("ACT|repair");
 
@@ -340,7 +363,7 @@ void run_world_session() {
 			if (g_profile.key_down_bind("step_left")) mask |= IN_LEFT;
 			if (g_profile.key_down_bind("step_right")) mask |= IN_RIGHT;
 			if (shift) mask |= IN_SPRINT;
-			if (g_profile.key_down_bind("jump")) mask |= IN_JUMP;
+			if ((use_jump_shared ? shift : true) && g_profile.key_down_bind("jump")) mask |= IN_JUMP;
 			if (g_profile.key_down_bind("block")) mask |= IN_BLOCK;
 			if (g_profile.key_down_bind("climb_up")) mask |= IN_CLIMB_UP;
 			if (g_profile.key_down_bind("climb_down")) mask |= IN_CLIMB_DOWN;
@@ -435,6 +458,7 @@ void main() {
 	}
 
 	g_audio.set_menu_music(true);
+	string selected_connect_host = MAIN_SERVER_HOST;
 
 	while (true) {
 		menu mm;
@@ -443,19 +467,27 @@ void main() {
 			mm.intro_interrupt = false;
 			g_preserve_main_speech = false;
 		}
-		mm.add_item("Connect to Official Server (" + MAIN_SERVER_HOST + ")", "main_srv");
-		mm.add_item("Connect to Local Server (" + LOCAL_SERVER_HOST + ")", "local_srv");
-		mm.add_item("Sign In or Register on Custom Server (" + g_profile.custom_host + ":" + g_profile.custom_port + ")", "account_srv");
-		mm.add_item("Select Custom Server", "custom_srv");
+		mm.add_item("Connect", "connect");
 		mm.add_item("Settings and Audio Mixer", "settings");
 		mm.add_item("Interactive Audio Tutorial", "tutorial");
-		mm.add_item("News and Changelog", "news");
 		mm.add_item("Learn Game Sounds", "sounds");
+		mm.add_item("Credits", "credits");
 		mm.add_item("Exit Game", "exit");
 
 		while (mm.monitor()) {
 			wait(5);
 			g_audio.tick_menu_audio();
+			if (!SCRIPT_COMPILED) {
+				if (key_pressed(KEY_F1)) {
+					selected_connect_host = MAIN_SERVER_HOST;
+					g_audio.play_ui_cue("ui/menu_move.ogg", 0.7f);
+					say("Main server", true);
+				} else if (key_pressed(KEY_F2)) {
+					selected_connect_host = LOCAL_SERVER_HOST;
+					g_audio.play_ui_cue("ui/menu_move.ogg", 0.7f);
+					say("Localhost", true);
+				}
+			}
 		}
 
 		string sel = mm.selected_item_id;
@@ -466,38 +498,20 @@ void main() {
 			while (qt.elapsed < 450) { wait(5); g_audio.tick_menu_audio(); }
 			break;
 		}
-		if (sel == "main_srv") {
-			if (handle_auth_flow(MAIN_SERVER_HOST, DEFAULT_PORT)) run_world_session();
+		if (sel == "connect") {
+			string target_host = SCRIPT_COMPILED ? MAIN_SERVER_HOST : selected_connect_host;
+			if (handle_auth_flow(target_host, DEFAULT_PORT)) run_world_session();
 			g_net.disconnect_clean();
-			g_audio.set_menu_music(true);
-		} else if (sel == "local_srv") {
-			if (handle_auth_flow(LOCAL_SERVER_HOST, DEFAULT_PORT)) run_world_session();
-			g_net.disconnect_clean();
-			g_audio.set_menu_music(true);
-		} else if (sel == "account_srv") {
-			if (handle_auth_flow(g_profile.custom_host, g_profile.custom_port, true)) run_world_session();
-			g_net.disconnect_clean();
-			g_audio.set_menu_music(true);
-		} else if (sel == "custom_srv") {
-			string h = g_profile.custom_host;
-			uint16 p = g_profile.custom_port;
-			if (show_custom_server_form(h, p)) {
-				g_profile.custom_host = h;
-				g_profile.custom_port = p;
-				g_profile.save_settings();
-				if (handle_auth_flow(h, p)) run_world_session();
-				g_net.disconnect_clean();
-			}
 			g_audio.set_menu_music(true);
 		} else if (sel == "settings") {
 			run_settings_menu(g_profile, null);
 		} else if (sel == "tutorial") {
 			run_interactive_tutorial(g_profile);
 			g_audio.set_menu_music(true);
-		} else if (sel == "news") {
-			run_news_menu(null);
 		} else if (sel == "sounds") {
 			run_learn_sounds_menu(null);
+		} else if (sel == "credits") {
+			run_credits_menu(null);
 		}
 	}
 

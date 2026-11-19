@@ -136,3 +136,60 @@ luôn luôn tuân thủ quy trình specify trong mọi trường hợp phát tri
 - Bổ sung regression test cho cầu thang 1x1 (`5..5, 5..5, 0..20`), sàn 1x1, dốc gắt hẹp 1 ô Nam->Bắc (`Z 0..20`), dốc lơ lửng, bước đi số nguyên `20 -> 21`, leo cầu thang đá qua `ACT|climb|up` và đi lên/xuống dốc gắt không mất máu.
 - Biên dịch `server/server.exe` và `client/client.exe` bằng `nvgt -c`, chạy toàn bộ `tools/run_checks.ps1` đạt **`=== ALL CHECKS PASSED ===`** (exit code 0).
 
+---
+
+## Nhật ký kỹ thuật — Chuẩn hóa phím tắt F1–F5, Credits, News từ Server & Main Menu Connect (`004-hotkeys-credits-mainmenu-connect`, 2026-11-19)
+
+### 1. Chuẩn hóa hệ thống phím tắt trong game (`F1`–`F5` & tiện ích từ template `nvgt-dev`)
+- **`common/constants.nvgt` & `common/protocol.nvgt`**: Thêm `KEYBIND_SCHEMA_VERSION = 2` và helper `format_uptime_words(uint64 sec)`.
+- **`server/server.nvgt` & `server/includes/chat_social.nvgt`**: Bổ sung các gói điều khiển `UPTIME` -> `UPTIME_RES|<sec>`, `MOTD_REQ` -> `MOTD_RES|<escaped_motd>`, và `WHO_NEAR` -> `WHO_NEAR_RES|<cnt>|<entries>` (`social_send_who_near` lọc người chơi cùng map trong bán kính `EARSHOT_RADIUS`).
+- **`client/includes/profile.nvgt`**, **`client/includes/net_client.nvgt`**, **`client/includes/chat_input.nvgt`**, **`client/client.nvgt`**:
+  - Chuẩn hóa bộ phím tắt mặc định (hỗ trợ tự động migrate `settings.ini` cũ sang `schema_version = 2` mà vẫn giữ các phím tùy chỉnh không xung đột):
+    - **`F1`**: Xem người chơi online (`who` / `/who`)
+    - **`F2`**: Xem thời gian chạy của server (`uptime` / `/uptime`)
+    - **`F3`**: Kiểm tra ping (`ping` / `/ping`, kèm cue `ui/track_ping.ogg`)
+    - **`F4`**: Đọc Message of the Day trực tiếp từ server (`motd` / `/motd`, bỏ qua khi giữ `Alt` để không đụng `Alt+F4`)
+    - **`F5`**: Mở Social Menu (`social`, đồng bộ nhãn `Social and Online Players (F5)` trong Pause Menu)
+    - **`F6`**: Bật/tắt âm thanh Beacon (`toggle_beacons`, lưu vào `beacons_enabled`)
+    - **`P`**: Xem người chơi ở gần kèm hướng tương đối & số bước (`who_near` / `/near`)
+    - **`F11` / `Shift+F1`**: Đọc trợ giúp phím ngữ cảnh (`help`)
+    - **`F12`**: Chép dòng thoại cuối cùng vừa đọc vào clipboard (`copy_last` qua `clipboard_set_text`)
+
+### 2. Credits chuyên nghiệp, Sửa News & Main Menu một nút Connect (`client/includes/menus.nvgt`, `client/client.nvgt`)
+- **`run_credits_menu()`**: Thêm mục **Credits** trong Main Menu với bố cục studio chuyên nghiệp, ghi tác giả là **LC Boy** và kèm ghi chú template phát triển game sinh tồn online từ đầu.
+- **`run_news_menu(NetClient@ nc)`**: Gỡ bỏ hoàn toàn việc đọc lén file cục bộ `server/data/motd.txt` và `changelog.txt`; gỡ `News and Changelog` khỏi Main Menu (Phương án B), chỉ hiển thị dữ liệu thật từ server trong **Pause Menu** khi đã kết nối.
+- **Main Menu tối giản + Phím tắt Dev (`!SCRIPT_COMPILED`)**:
+  - Xóa các mục chọn nhiều server và hộp nhập Custom Server khỏi Main Menu; chỉ giữ đúng một nút **`Connect`** kết nối tới `MAIN_SERVER_HOST:DEFAULT_PORT` (`common/constants.nvgt`).
+  - Khi chạy trực tiếp `client.nvgt` chưa biên dịch (`!SCRIPT_COMPILED`): nhấn **`F1`** chuyển sang `MAIN_SERVER_HOST` và đọc `"Main server"`, nhấn **`F2`** chuyển sang `LOCAL_SERVER_HOST` (`127.0.0.1`) và đọc `"Localhost"`. Khi chạy `client.exe` đã biên dịch, `F1`/`F2` bị khóa và luôn kết nối `MAIN_SERVER_HOST`.
+
+### 3. Kiểm thử & Biên dịch (`tools/run_checks.ps1`)
+- Bổ sung kiểm thử cho `format_uptime_words`, `beacons_enabled`, keybind `F1`–`F6`/`F11`/`F12`/`P`, migrate `settings.ini` v1 -> v2, `UPTIME`/`MOTD_REQ`/`WHO_NEAR`, và `/uptime`, `/motd`, `/near`.
+- Cập nhật [docs/CONTROLS.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/CONTROLS.md) và [docs/PROTOCOL.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/PROTOCOL.md).
+- Biên dịch `server/server.exe` & `client/client.exe` bằng `nvgt -c` và chạy toàn bộ `tools/run_checks.ps1` đạt **`=== ALL CHECKS PASSED ===`** (exit code 0).
+
+---
+
+## Nhật ký kỹ thuật — Lưu trữ Hàng tồn kho Server, Hệ thống Tay Trái/Phải & Âm thanh Ba lô (`005-persistent-inventory-dual-hand`, 2026-11-19)
+
+### 1. Lưu trữ Hàng tồn kho & Trạng thái Tay Bền vững (`ACCOUNTS_V3`)
+- **`common/items.nvgt`**: Bổ sung `encode_item_stacks` và `decode_item_stacks` dùng chung cho cả túi đồ tài khoản và rương đồ (`world.nvgt`).
+- **`server/includes/accounts.nvgt`**: Nâng cấp định dạng `ACCOUNTS_V3` (tương thích ngược `ACCOUNTS_V1`/`ACCOUNTS_V2`), lưu `has_saved_inv`, `saved_inv`, `left_hand_id`, `right_hand_id`, `equipped_armor_id`, và `active_hand`. Nhờ cờ `has_saved_inv`, tài khoản mới chỉ nhận bộ đồ khởi đầu đúng 1 lần; tài khoản đã từng chơi (kể cả khi ba lô rỗng hoàn toàn) luôn giữ nguyên kho đồ thật qua offline/online và khởi động lại server.
+- **`server/includes/state.nvgt` & `server/server.nvgt` & `server/includes/admin_dev.nvgt`**:
+  - Thay `belt_slot` bằng `left_hand_id`, `right_hand_id`, `equipped_armor_id`, `active_hand` (`0=none`, `1=left`, `2=right`) trên `PlayerSession`.
+  - Đồng bộ `sync_inv_to_account()` qua `send_inv()` và `ctx_sync_session_account()` khi `LOGOUT`, `disconnect`, hết grace period, autosave và `admin_save_all_state()`; nâng cấp `STAFF|act|clear_inv` gọi `clear_inv_and_hands()`.
+
+### 2. Cơ chế Tay Trái/Phải (`I` + Trái/Phải, `1`/`2`, `Space` & `Shift+Space`)
+- **`server/includes/world.nvgt` & `server/server.nvgt`**:
+  - `ACT|assign_hand|<left|right>|<inv_idx>`: Gán vật phẩm trong ba lô vào tay trái hoặc tay phải; chỉ cho phép cầm cùng 1 vật phẩm ở **cả 2 tay** khi số lượng trong kho `>= 2` (nếu số lượng `== 1`, gán sang tay kia sẽ tự động chuyển tay). `reconcile_hands()` tự động giữ đúng bất biến này khi vật phẩm bị tiêu hao, cất rương hoặc xóa.
+  - `ACT|hand|<1|2>`: Nhấn `1` (tay trái) hoặc `2` (tay phải) lần 1 chọn tay và đọc tên vật phẩm; nhấn lại đúng phím tay đó lần 2 khi đang chọn sẽ cất vật phẩm vào lại ba lô và làm tay trống (`active_hand = 0`); nhấn phím tay đối diện chuyển nhanh sang tay kia.
+  - `ACT|use_hand` (`Space`): Trang bị `weapon`/`tool`/`armor` hoặc sử dụng ngay `food`/`drink`/`med`/`kit` ở tay đang chọn; `ps.active_item()` dùng cho tấn công (`F`), khai thác (`E`/`Enter`) và sưởi đuốc (`torch`).
+- **`client/includes/profile.nvgt`, `net_client.nvgt`, `menus.nvgt`, `client.nvgt`**:
+  - Gỡ bỏ hoàn toàn belt slot `1..9` và phím `Q`; nâng `KEYBIND_SCHEMA_VERSION = 3` (`common/constants.nvgt`) đặt `use_hand = KEY_SPACE` và `jump = KEY_SPACE` (kích hoạt bằng **`Shift + Space`** khi dùng chung `Space`).
+  - `run_inventory_menu()` hỗ trợ **Mũi tên trái/phải** gán nhanh vào tay trái/phải và cập nhật nhãn tại chỗ (`Left Hand`, `Right Hand`, `Both Hands`, `Equipped Armor`) mà không đóng menu.
+
+### 3. Âm thanh Ba lô & Kiểm thử (`tools/asset_pipeline.py`, `tools/run_checks.ps1`)
+- Tải 2 file âm thanh CC0 thật (`Kenney RPG Audio`: `handle_small_leather.ogg` -> `ui/inv_open.ogg`, `handle_small_leather_2.ogg` -> `ui/inv_close.ogg`) qua `tools/asset_pipeline.py` (tổng **118** file `.ogg` hợp lệ trong `manifest.txt`).
+- Phát `ui/inv_open.ogg` khi mở Inventory Menu (`I`) và `ui/inv_close.ogg` khi đóng (`Escape` hoặc `Back`).
+- Cập nhật tài liệu [docs/CONTROLS.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/CONTROLS.md), [docs/PROTOCOL.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/PROTOCOL.md), [docs/ACCOUNTS.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/ACCOUNTS.md), [docs/AUDIO.md](file:///C:/Users/LCBoy/Desktop/data/stw/docs/AUDIO.md) và đặc tả [specs/005-persistent-inventory-dual-hand/](file:///C:/Users/LCBoy/Desktop/data/stw/specs/005-persistent-inventory-dual-hand/spec.md).
+- Biên dịch `server/server.exe` và `client/client.exe` bằng `nvgt -c` và xác nhận **`=== ALL CHECKS PASSED ===`** qua `tools/run_checks.ps1` (exit code 0).
+

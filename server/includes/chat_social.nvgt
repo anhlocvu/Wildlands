@@ -148,6 +148,23 @@ void social_send_who(ServerCtx@ ctx, PlayerSession@ ps) {
 	ctx.send_control(ps, pkt_3("WHO_RES", "" + online, entries));
 }
 
+void social_send_who_near(ServerCtx@ ctx, PlayerSession@ ps) {
+	if (@ps == null || !ps.authed) return;
+	int nearby = 0;
+	string entries = "";
+	for (uint i = 0; i < ctx.sessions.length(); i++) {
+		PlayerSession@ other = ctx.sessions[i];
+		if (@other == @ps || !other.authed || other.peer_id == 0 || other.current_map != ps.current_map) continue;
+		if (get_3d_distance(ps.x, ps.y, ps.z, other.x, other.y, other.z) > EARSHOT_RADIUS) continue;
+		nearby++;
+		if (entries.length() > 0) entries += ";";
+		string ftag = (@ps.account != null && ps.account.has_friend(other.name.lower())) ? "1" : "0";
+		entries += wire_escape(other.name) + "~" + fmt2(other.x) + "~" + fmt2(other.y) + "~" + fmt2(other.z) + "~" + other.rank + "~" + ftag;
+	}
+	if (entries.length() == 0) entries = "-";
+	ctx.send_control(ps, pkt_3("WHO_NEAR_RES", "" + nearby, entries));
+}
+
 void social_notify_friends_presence(ServerCtx@ ctx, PlayerSession@ ps, bool joined) {
 	if (@ps == null || ps.is_guest) return;
 	string low = ps.name.lower();

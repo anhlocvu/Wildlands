@@ -487,3 +487,103 @@
 2026-11-19 00:02:29 [LIFECYCLE] anhloc scheduled shutdown in 10s: fuck
 2026-11-19 00:02:34 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
 2026-11-19 00:02:39 [INFO] Server shut down cleanly.
+2026-11-19 00:53:30 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-19 00:53:30 [READY] Server listening on port 7198 (proto=3, maps=3, accounts=0).
+2026-11-19 00:53:33 [NET] Peer 1 connected from 127.0.0.1:60123
+2026-11-19 00:53:51 [AUTH_REG] Registered new account ClientHero from 127.0.0.1:60123
+2026-11-19 00:53:51 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:60123
+2026-11-19 00:53:51 [NET] Peer 1 (ClientHero) disconnected (closed)
+2026-11-19 00:53:51 [NET] Peer 2 connected from 127.0.0.1:64110
+2026-11-19 00:53:51 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:64110
+2026-11-19 00:53:51 [NET] Peer 2 (ClientHero) disconnected (closed)
+2026-11-19 00:53:51 [NET] Peer 3 connected from 127.0.0.1:64111
+2026-11-19 00:53:51 [AUTH_FAIL] LOGIN refused for ClientHero from 127.0.0.1:64111: Unknown account name or incorrect password.
+2026-11-19 00:53:51 [AUTH_FAIL] REG refused for clienthero from 127.0.0.1:64111: That account name is already taken.
+2026-11-19 00:53:51 [NET] Peer 3 () disconnected (closed)
+2026-11-19 00:53:51 [NET] Peer 4 connected from 127.0.0.1:64112
+2026-11-19 00:53:52 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:64112
+2026-11-19 00:53:52 [CHAT] ClientHero: Hello from Client E2E
+2026-11-19 00:53:52 [PM] ClientHero -> ClientHero (len=8)
+2026-11-19 00:53:53 [NET] Peer 4 (ClientHero) disconnected (closed)
+2026-11-19 00:57:14 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-19 00:57:14 [READY] Server listening on port 7100 (proto=3, maps=3, accounts=1).
+2026-11-19 00:58:29 [NET] Peer 1 connected from 127.0.0.1:65010
+2026-11-19 00:58:29 [AUTH] Signed in anhloc (Developer) on anhloc from 127.0.0.1:65010
+2026-11-19 00:58:44 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 9ms
+2026-11-19 00:58:59 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 10ms
+2026-11-19 00:59:14 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-19 00:59:29 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 10ms
+2026-11-19 00:59:44 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 10ms
+2026-11-19 00:59:59 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-19 01:00:14 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 16ms
+2026-11-19 01:00:15 [NET] Peer 1 (anhloc) disconnected (closed)
+2026-11-19 01:00:17 [NET] Peer 2 connected from 127.0.0.1:52711
+2026-11-19 01:00:17 [AUTH] Signed in anhloc (Developer) on anhloc from 127.0.0.1:52711
+2026-11-19 01:00:29 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 17ms
+2026-11-19 01:00:44 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 14ms
+2026-11-19 01:00:55 [NET] Peer 2 (anhloc) disconnected (closed)
+2026-11-19 01:00:58 [INFO] Server shut down cleanly.
+2026-11-19 12:08:36 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-19 12:08:36 [READY] Server listening on port 7198 (proto=3, maps=3, accounts=0).
+2026-11-19 12:08:40 [NET] Peer 1 connected from 127.0.0.1:61379
+2026-11-19 12:08:58 [AUTH_REG] Registered new account ClientHero from 127.0.0.1:61379
+2026-11-19 12:08:58 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:61379
+2026-11-19 12:08:58 [NET] Peer 1 (ClientHero) disconnected (closed)
+2026-11-19 12:08:58 [NET] Peer 2 connected from 127.0.0.1:54086
+2026-11-19 12:08:58 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:54086
+2026-11-19 12:08:58 [NET] Peer 2 (ClientHero) disconnected (closed)
+2026-11-19 12:08:58 [NET] Peer 3 connected from 127.0.0.1:54087
+2026-11-19 12:08:58 [AUTH_FAIL] LOGIN refused for ClientHero from 127.0.0.1:54087: Unknown account name or incorrect password.
+2026-11-19 12:08:58 [AUTH_FAIL] REG refused for clienthero from 127.0.0.1:54087: That account name is already taken.
+2026-11-19 12:08:58 [NET] Peer 3 () disconnected (closed)
+2026-11-19 12:08:58 [NET] Peer 4 connected from 127.0.0.1:54088
+2026-11-19 12:08:58 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:54088
+2026-11-19 12:08:58 [CHAT] ClientHero: Hello from Client E2E
+2026-11-19 12:08:59 [PM] ClientHero -> ClientHero (len=8)
+2026-11-19 12:09:00 [NET] Peer 4 (ClientHero) disconnected (closed)
+2026-11-19 12:13:20 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-19 12:13:20 [READY] Server listening on port 7198 (proto=3, maps=3, accounts=0).
+2026-11-19 12:13:24 [NET] Peer 1 connected from 127.0.0.1:57468
+2026-11-19 12:13:42 [AUTH_REG] Registered new account ClientHero from 127.0.0.1:57468
+2026-11-19 12:13:42 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:57468
+2026-11-19 12:13:42 [NET] Peer 1 (ClientHero) disconnected (closed)
+2026-11-19 12:13:42 [NET] Peer 2 connected from 127.0.0.1:65112
+2026-11-19 12:13:42 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:65112
+2026-11-19 12:13:42 [NET] Peer 2 (ClientHero) disconnected (closed)
+2026-11-19 12:13:43 [NET] Peer 3 connected from 127.0.0.1:65113
+2026-11-19 12:13:43 [AUTH_FAIL] LOGIN refused for ClientHero from 127.0.0.1:65113: Unknown account name or incorrect password.
+2026-11-19 12:13:43 [AUTH_FAIL] REG refused for clienthero from 127.0.0.1:65113: That account name is already taken.
+2026-11-19 12:13:43 [NET] Peer 3 () disconnected (closed)
+2026-11-19 12:13:43 [NET] Peer 4 connected from 127.0.0.1:65114
+2026-11-19 12:13:43 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:65114
+2026-11-19 12:13:43 [CHAT] ClientHero: Hello from Client E2E
+2026-11-19 12:13:44 [PM] ClientHero -> ClientHero (len=8)
+2026-11-19 12:13:45 [NET] Peer 4 (ClientHero) disconnected (closed)
+2026-11-19 12:15:26 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-19 12:15:26 [READY] Server listening on port 7198 (proto=3, maps=3, accounts=0).
+2026-11-19 12:15:29 [NET] Peer 1 connected from 127.0.0.1:54513
+2026-11-19 12:15:47 [AUTH_REG] Registered new account ClientHero from 127.0.0.1:54513
+2026-11-19 12:15:47 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:54513
+2026-11-19 12:15:47 [NET] Peer 1 (ClientHero) disconnected (closed)
+2026-11-19 12:15:47 [NET] Peer 2 connected from 127.0.0.1:51214
+2026-11-19 12:15:47 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:51214
+2026-11-19 12:15:47 [NET] Peer 2 (ClientHero) disconnected (closed)
+2026-11-19 12:15:47 [NET] Peer 3 connected from 127.0.0.1:51215
+2026-11-19 12:15:47 [AUTH_FAIL] LOGIN refused for ClientHero from 127.0.0.1:51215: Unknown account name or incorrect password.
+2026-11-19 12:15:47 [AUTH_FAIL] REG refused for clienthero from 127.0.0.1:51215: That account name is already taken.
+2026-11-19 12:15:47 [NET] Peer 3 () disconnected (closed)
+2026-11-19 12:15:47 [NET] Peer 4 connected from 127.0.0.1:51216
+2026-11-19 12:15:47 [AUTH] Signed in ClientHero (Player) on wildlands_valley from 127.0.0.1:51216
+2026-11-19 12:15:47 [CHAT] ClientHero: Hello from Client E2E
+2026-11-19 12:15:48 [PM] ClientHero -> ClientHero (len=8)
+2026-11-19 12:15:49 [NET] Peer 4 (ClientHero) disconnected (closed)
+2026-11-19 12:54:46 [INFO] Loaded 3 map(s); primary 'wildlands_valley'.
+2026-11-19 12:54:46 [READY] Server listening on port 7100 (proto=3, maps=3, accounts=1).
+2026-11-19 12:55:08 [NET] Peer 1 connected from 127.0.0.1:61372
+2026-11-19 12:55:08 [AUTH] Signed in anhloc (Developer) on anhloc from 127.0.0.1:61372
+2026-11-19 12:55:16 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 10ms
+2026-11-19 12:55:31 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 19ms
+2026-11-19 12:55:46 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 17ms
+2026-11-19 12:56:01 [STAT] Online: 1 | Maps: 3 | Objects: 0 | Worst tick: 29ms
+2026-11-19 12:56:13 [NET] Peer 1 (anhloc) disconnected (closed)
+2026-11-19 12:56:17 [INFO] Server shut down cleanly.

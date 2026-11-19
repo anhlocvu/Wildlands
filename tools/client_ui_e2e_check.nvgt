@@ -129,7 +129,10 @@ void main() {
 	speak_coords_hud(nc);
 
 	chat_dispatch_line(nc, "/who");
+	chat_dispatch_line(nc, "/near");
+	chat_dispatch_line(nc, "/uptime");
 	chat_dispatch_line(nc, "/ping");
+	chat_dispatch_line(nc, "/motd");
 	chat_dispatch_line(nc, "Hello from Client E2E");
 	// Respect CHAT_RATE_LIMIT_MS (700ms) on production server before sending PM
 	timer wait_rate;
@@ -137,7 +140,7 @@ void main() {
 	chat_dispatch_line(nc, "/pm ClientHero SelfNote");
 	timer wait_chat;
 	while (wait_chat.elapsed < 1000) { wait(5); nc.pump(); }
-	assert_true(nc.who_list.length() >= 1 && nc.ping_rtt_ms >= 0, "Client /who & /ping processed cleanly");
+	assert_true(nc.who_list.length() >= 1 && nc.ping_rtt_ms >= 0 && nc.motd.length() > 0 && !nc.uptime_announce_pending && !nc.motd_req_announce_pending && !nc.who_near_announce_pending, "Client /who, /near, /uptime, /ping, /motd processed cleanly");
 	assert_true(buffers[BUF_PM].lines.length() >= 1 && buffers[BUF_CHAT].lines.length() >= 1, "Chat & PM routed into buffers.nvgt");
 
 	buffer_right();

@@ -123,6 +123,7 @@ void complete_login(ServerCtx@ ctx, PlayerSession@ ps, AccountRecord@ acc, const
 	for (uint i = 0; i < ctx.sessions.length(); i++) {
 		PlayerSession@ old = ctx.sessions[i];
 		if (@old != @ps && old.authed && old.name.lower() == acc.name_lower) {
+			ctx_sync_session_account(ctx, old, int64(TIME_STAMP), now_ms);
 			if (old.peer_id != 0) {
 				ctx.send_control(old, pkt_3("REFUSE", "duplicate_login", wire_escape("You signed in from another location.")));
 				ctx.net.flush();
@@ -162,7 +163,10 @@ void complete_login(ServerCtx@ ctx, PlayerSession@ ps, AccountRecord@ acc, const
 	ps.fall_start_z = ps.z;
 	ps.join_ms = now_ms;
 	ps.last_playtime_ms = now_ms;
-	ps.init_starter_inv();
+	ps.restore_inv_from_account();
+	if (!acc.has_saved_inv) {
+		ps.sync_inv_to_account();
+	}
 
 	acc.current_map = ps.current_map;
 	acc.last_seen_epoch = int64(TIME_STAMP);
@@ -328,16 +332,23 @@ void handle_control_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint6
 	if (op == "LOGOUT") {
 		if (@ps.account != null) {
 			ps.account.token_hash = "";
-			ps.account.current_map = ps.current_map;
-			ps.account.last_x = ps.x; ps.account.last_y = ps.y; ps.account.last_z = ps.z;
-			ps.account.last_seen_epoch = now_sec;
-			ctx.accounts.dirty = true;
+			ctx_sync_session_account(ctx, ps, now_sec, now_ms);
 		}
 		ps.authed = false;
 		ctx.send_speech(ps, MBUF_SYSTEM, true, "Signed out.");
 		return;
 	}
 	if (op == "WHO") { social_send_who(ctx, ps); return; }
+	if (op == "WHO_NEAR") { social_send_who_near(ctx, ps); return; }
+	if (op == "UPTIME") {
+		uint64 up_sec = now_ms > ctx.started_ms ? (now_ms - ctx.started_ms) / 1000 : 0;
+		ctx.send_control(ps, pkt_2("UPTIME_RES", "" + up_sec));
+		return;
+	}
+	if (op == "MOTD_REQ") {
+		ctx.send_control(ps, pkt_2("MOTD_RES", wire_escape(ctx.motd)));
+		return;
+	}
 	if (op == "SOCIAL") { social_handle_packet(ctx, ps, p, now_ms); return; }
 	if (op == "REPORT") { social_handle_report(ctx, ps, p, now_sec); return; }
 	if (op == "CHEST") { builder_handle_chest_op(ctx, ps, p); return; }
@@ -351,22 +362,26 @@ void handle_control_packet(ServerCtx@ ctx, PlayerSession@ ps, string[]@ p, uint6
 		string arg1 = field(p, 2, "");
 		if (act == "gather") world_handle_gather(ctx, ps, now_ms);
 		else if (act == "attack") combat_handle_attack(ctx, ps, now_ms);
-		else if (act == "use_belt") world_handle_use_item(ctx, ps);
+		else if (act == "assign_hand") {
+			int slot_idx = safe_int(field(p, 3, "-1"), -1, MAX_INV_SLOTS - 1, -1);
+			world_handle_assign_hand(ctx, ps, arg1, slot_idx);
+		}
+		else if (act == "hand") {
+			int h = safe_int(arg1, 0, 2, 0);
+			world_handle_select_hand(ctx, ps, h);
+		}
+		else if (act == "use_hand") {
+			ItemStack@ eq = ps.active_item();
+			ItemDef@ udef = @eq != null ? find_item(eq.id) : null;
+			if (@udef != null && udef.category == "kit") {
+				builder_place_structure(ctx, ps, udef.build_type.length() > 0 ? udef.build_type : udef.id);
+			} else {
+				world_handle_use_item(ctx, ps);
+			}
+		}
 		else if (act == "climb") {
 			int dir = (arg1 == "down" || arg1 == "-1") ? -1 : 1;
 			world_handle_climb(ctx, ps, dir, now_ms, 80);
-		}
-		else if (act == "equip") {
-			int sl = safe_int(arg1, 0, BELT_SLOTS - 1, 0);
-			ps.belt_slot = sl;
-			ItemStack@ cur = ps.active_item();
-			if (@cur != null) {
-				ItemDef@ idf = find_item(cur.id);
-				ctx.send_speech(ps, MBUF_GAME, true, "Slot " + (sl + 1) + ": " + (@idf != null ? idf.name : cur.id) + " x" + cur.qty);
-			} else {
-				ctx.send_speech(ps, MBUF_GAME, true, "Slot " + (sl + 1) + " empty.");
-			}
-			ctx.send_inv(ps);
 		}
 		else if (act == "craft") world_handle_craft(ctx, ps, arg1);
 		else if (act == "build") builder_place_structure(ctx, ps, arg1);
@@ -535,11 +550,7 @@ void main() {
 						ps.grace_until_ms = tick_start + GRACE_DISCONNECT_MS;
 					} else {
 						if (ps.authed && @ps.account != null) {
-							ps.account.current_map = ps.current_map;
-							ps.account.last_x = ps.x; ps.account.last_y = ps.y; ps.account.last_z = ps.z;
-							ps.account.last_seen_epoch = now_sec;
-							ctx_save_playtime(ps, tick_start);
-							g_srv.accounts.dirty = true;
+							ctx_sync_session_account(g_srv, ps, now_sec, tick_start);
 							social_notify_friends_presence(g_srv, ps, false);
 						}
 						for (uint k = 0; k < g_srv.sessions.length(); k++) {
@@ -572,11 +583,7 @@ void main() {
 			PlayerSession@ ps = g_srv.sessions[uint(i)];
 			if (ps.peer_id == 0 && tick_start >= ps.grace_until_ms) {
 				if (@ps.account != null) {
-					ps.account.current_map = ps.current_map;
-					ps.account.last_x = ps.x; ps.account.last_y = ps.y; ps.account.last_z = ps.z;
-					ps.account.last_seen_epoch = now_sec;
-					ctx_save_playtime(ps, tick_start);
-					g_srv.accounts.dirty = true;
+					ctx_sync_session_account(g_srv, ps, now_sec, tick_start);
 					social_notify_friends_presence(g_srv, ps, false);
 				}
 				g_srv.sessions.remove_at(uint(i));
@@ -604,11 +611,7 @@ void main() {
 			for (uint i = 0; i < g_srv.sessions.length(); i++) {
 				PlayerSession@ ps = g_srv.sessions[i];
 				if (ps.authed && @ps.account != null) {
-					ps.account.current_map = ps.current_map;
-					ps.account.last_x = ps.x; ps.account.last_y = ps.y; ps.account.last_z = ps.z;
-					ps.account.last_seen_epoch = now_sec;
-					ctx_save_playtime(ps, tick_start);
-					g_srv.accounts.dirty = true;
+					ctx_sync_session_account(g_srv, ps, now_sec, tick_start);
 				}
 			}
 			string serr;
@@ -694,4 +697,16 @@ void ctx_save_playtime(PlayerSession@ ps, uint64 now_ms) {
 		ps.account.playtime_sec += sec;
 		ps.last_playtime_ms = now_ms;
 	}
+}
+
+void ctx_sync_session_account(ServerCtx@ ctx, PlayerSession@ ps, int64 now_sec, uint64 now_ms = 0) {
+	if (@ctx == null || @ps == null || @ps.account == null || ps.is_guest) return;
+	ps.account.current_map = ps.current_map;
+	ps.account.last_x = ps.x;
+	ps.account.last_y = ps.y;
+	ps.account.last_z = ps.z;
+	ps.account.last_seen_epoch = now_sec;
+	if (now_ms > 0) ctx_save_playtime(ps, now_ms);
+	ps.sync_inv_to_account();
+	ctx.accounts.dirty = true;
 }

@@ -63,7 +63,10 @@ class PlayerSession {
 	string last_surface = "";
 
 	ItemStack@[] inv;
-	int belt_slot = 0;
+	string left_hand_id = "";
+	string right_hand_id = "";
+	string equipped_armor_id = "";
+	int active_hand = 0; // 0=none, 1=left, 2=right
 
 	bool builder_mode = false;
 	bool builder_noclip = false;
@@ -92,7 +95,85 @@ class PlayerSession {
 		inv.insert_last(ItemStack("water_flask_full", 1));
 		inv.insert_last(ItemStack("berries", 4));
 		inv.insert_last(ItemStack("torch", 1));
-		belt_slot = 0;
+		left_hand_id = "";
+		right_hand_id = "";
+		equipped_armor_id = "";
+		active_hand = 0;
+	}
+
+	void clear_inv_and_hands() {
+		inv.resize(0);
+		left_hand_id = "";
+		right_hand_id = "";
+		equipped_armor_id = "";
+		active_hand = 0;
+	}
+
+	void reconcile_hands() {
+		if (left_hand_id.length() > 0 && count_item(left_hand_id) <= 0) left_hand_id = "";
+		if (right_hand_id.length() > 0 && count_item(right_hand_id) <= 0) right_hand_id = "";
+		if (equipped_armor_id.length() > 0 && count_item(equipped_armor_id) <= 0) equipped_armor_id = "";
+		if (left_hand_id.length() > 0 && left_hand_id == right_hand_id && count_item(left_hand_id) < 2) {
+			if (active_hand == 2) left_hand_id = "";
+			else right_hand_id = "";
+		}
+		if (active_hand == 1 && left_hand_id.length() == 0) active_hand = 0;
+		if (active_hand == 2 && right_hand_id.length() == 0) active_hand = 0;
+		if (active_hand < 0 || active_hand > 2) active_hand = 0;
+	}
+
+	void sync_inv_to_account() {
+		if (@account == null || is_guest) return;
+		reconcile_hands();
+		account.has_saved_inv = true;
+		account.saved_inv.resize(0);
+		for (uint i = 0; i < inv.length(); i++) {
+			if (inv[i].qty > 0) account.saved_inv.insert_last(ItemStack(inv[i].id, inv[i].qty));
+		}
+		account.left_hand_id = left_hand_id;
+		account.right_hand_id = right_hand_id;
+		account.equipped_armor_id = equipped_armor_id;
+		account.active_hand = active_hand;
+	}
+
+	void restore_inv_from_account() {
+		if (@account == null || !account.has_saved_inv) {
+			init_starter_inv();
+			return;
+		}
+		inv.resize(0);
+		for (uint i = 0; i < account.saved_inv.length() && inv.length() < uint(MAX_INV_SLOTS); i++) {
+			ItemStack@ st = account.saved_inv[i];
+			if (@st != null && st.qty > 0 && @find_item(st.id) != null) {
+				inv.insert_last(ItemStack(st.id, st.qty));
+			}
+		}
+		left_hand_id = account.left_hand_id;
+		right_hand_id = account.right_hand_id;
+		equipped_armor_id = account.equipped_armor_id;
+		active_hand = account.active_hand;
+		reconcile_hands();
+	}
+
+	bool assign_hand(int hand, const string&in item_id) {
+		if (hand != 1 && hand != 2) return false;
+		int cnt = count_item(item_id);
+		if (cnt <= 0) return false;
+		if (hand == 1) {
+			if (right_hand_id == item_id && cnt < 2) {
+				right_hand_id = "";
+				if (active_hand == 2) active_hand = 0;
+			}
+			left_hand_id = item_id;
+		} else {
+			if (left_hand_id == item_id && cnt < 2) {
+				left_hand_id = "";
+				if (active_hand == 1) active_hand = 0;
+			}
+			right_hand_id = item_id;
+		}
+		reconcile_hands();
+		return true;
 	}
 
 	int count_item(const string&in item_id) {
@@ -138,14 +219,21 @@ class PlayerSession {
 				}
 			}
 		}
-		if (belt_slot >= int(inv.length())) belt_slot = inv.length() > 0 ? int(inv.length()) - 1 : 0;
+		reconcile_hands();
 		return true;
 	}
 
 	ItemStack@ active_item() {
-		if (inv.length() == 0) return null;
-		if (belt_slot < 0 || belt_slot >= int(inv.length())) return null;
-		return inv[uint(belt_slot)];
+		string target_id = active_hand == 1 ? left_hand_id : (active_hand == 2 ? right_hand_id : "");
+		if (target_id.length() == 0) return null;
+		for (uint i = 0; i < inv.length(); i++) {
+			if (inv[i].id == target_id && inv[i].qty > 0) return inv[i];
+		}
+		return null;
+	}
+
+	string hand_item_id(int hand) const {
+		return hand == 1 ? left_hand_id : (hand == 2 ? right_hand_id : "");
 	}
 }
 
@@ -412,14 +500,18 @@ class ServerCtx {
 	}
 
 	void send_inv(PlayerSession@ ps) {
-		if (@ps == null || ps.peer_id == 0) return;
-		string list = "";
-		for (uint i = 0; i < ps.inv.length(); i++) {
-			if (i > 0) list += ";";
-			list += ps.inv[i].id + ":" + ps.inv[i].qty;
+		if (@ps == null) return;
+		ps.reconcile_hands();
+		if (@ps.account != null && !ps.is_guest) {
+			ps.sync_inv_to_account();
+			accounts.dirty = true;
 		}
-		if (list.length() == 0) list = "-";
-		send_control(ps, pkt_3("INV", "" + ps.belt_slot, list));
+		if (ps.peer_id == 0) return;
+		string list = encode_item_stacks(ps.inv);
+		string lh = ps.left_hand_id.length() > 0 ? ps.left_hand_id : "-";
+		string rh = ps.right_hand_id.length() > 0 ? ps.right_hand_id : "-";
+		string arm = ps.equipped_armor_id.length() > 0 ? ps.equipped_armor_id : "-";
+		send_control(ps, pkt_build("INV", {"" + ps.active_hand, lh, rh, arm, list}));
 	}
 
 	string encode_obj(WorldStructure@ st) {

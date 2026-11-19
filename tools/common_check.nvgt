@@ -64,7 +64,14 @@ void main() {
 	check("format_epoch_datetime unix epoch", format_epoch_datetime(1700000000, 0).starts_with("2023-11-14"));
 	check("format_last_seen_en just now", format_last_seen_en(1000, 1020).starts_with("just now"));
 	check("format_last_seen_en mins ago", format_last_seen_en(1000, 1600).starts_with("10 minutes ago"));
+	check("format_uptime_words zero", format_uptime_words(0) == "0 seconds");
+	check("format_uptime_words hours", format_uptime_words(3661) == "1 hour, 1 minute, 1 second");
+	check("format_uptime_words days", format_uptime_words(90061) == "1 day, 1 hour, 1 minute, 1 second");
 	check("proto v3 active", PROTO_VERSION == 3 && GAME_VERSION == "3.0.0");
+
+	ItemStack@[] decoded;
+	decode_item_stacks("wood:0;stone:-3;berries:4", decoded, MAX_INV_SLOTS);
+	check("decode_item_stacks skips <=0 qtys", decoded.length() == 1 && decoded[0].id == "berries" && decoded[0].qty == 4);
 
 	println(fails == 0 ? "PASS" : (fails + " failure(s)"));
 	exit(fails == 0 ? 0 : 1);

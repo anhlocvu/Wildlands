@@ -10,46 +10,122 @@ void pump_menu_net(NetClient@ nc) {
 	g_audio.tick_menu_audio();
 }
 
+string format_inv_item_label(NetClient@ nc, ItemStack@ st) {
+	ItemDef@ d = find_item(st.id);
+	string name = (@d != null ? d.name : st.id) + " x" + st.qty;
+	bool in_left = (nc.left_hand_id == st.id);
+	bool in_right = (nc.right_hand_id == st.id);
+	string[] tags;
+	if (in_left && in_right) {
+		string act_s = nc.active_hand == 1 ? ", Active Left" : (nc.active_hand == 2 ? ", Active Right" : "");
+		tags.insert_last("Both Hands" + act_s);
+	} else if (in_left) {
+		tags.insert_last("Left Hand" + (nc.active_hand == 1 ? ", Active" : ""));
+	} else if (in_right) {
+		tags.insert_last("Right Hand" + (nc.active_hand == 2 ? ", Active" : ""));
+	}
+	if (nc.equipped_armor_id == st.id) tags.insert_last("Equipped Armor");
+	if (tags.length() == 0) return name;
+	string joined = "";
+	for (uint i = 0; i < tags.length(); i++) {
+		if (i > 0) joined += "; ";
+		joined += tags[i];
+	}
+	return name + " (" + joined + ")";
+}
+
 void run_inventory_menu(NetClient@ nc) {
+	g_audio.play_ui_cue("ui/inv_open.ogg", 0.85f);
+	bool first_open = true;
+	int focus_idx = 0;
+
 	while (nc.state == CONN_READY) {
 		menu m;
-		init_std_menu(m, "Inventory, " + nc.inv.length() + " items, belt slot " + (nc.belt_slot + 1) + ". Select to use or equip.");
+		init_std_menu(m, "Inventory, " + nc.inv.length() + " items. Up and Down to browse, Left Arrow for left hand, Right Arrow for right hand, Enter to use or equip, Escape to close.");
+		m.open_sound = "";
+		m.close_sound = "inv_close.ogg";
+		if (!first_open) {
+			m.automatic_intro = false;
+			m.intro_interrupt = false;
+		}
+		first_open = false;
+
+		int built_inv_count = int(nc.inv.length());
 		if (nc.inv.length() == 0) {
 			m.add_item("Your pack is empty.", "__empty");
 		} else {
 			for (uint i = 0; i < nc.inv.length(); i++) {
-				ItemStack@ st = nc.inv[i];
-				ItemDef@ d = find_item(st.id);
-				string tag = (int(i) == nc.belt_slot) ? " (Active Belt " + (i + 1) + ")" : (i < BELT_SLOTS ? " (Belt " + (i + 1) + ")" : "");
-				m.add_item((@d != null ? d.name : st.id) + " x" + st.qty + tag, "" + i);
+				m.add_item(format_inv_item_label(nc, nc.inv[i]), "" + i);
 			}
 		}
 		m.add_item("Back", "__back");
+		if (focus_idx > 0 && focus_idx < int(m.item_count)) m.set_focused_item(focus_idx, false);
 
 		while (m.monitor()) {
 			wait(5);
 			pump_menu_net(nc);
 			if (nc.state != CONN_READY) return;
+			if (int(nc.inv.length()) != built_inv_count) {
+				focus_idx = m.focused_item;
+				if (focus_idx >= int(nc.inv.length())) focus_idx = nc.inv.length() > 0 ? int(nc.inv.length()) - 1 : 0;
+				break;
+			}
+			bool assign_left = key_pressed(KEY_LEFT);
+			bool assign_right = key_pressed(KEY_RIGHT);
+			if (assign_left || assign_right) {
+				int pos = m.focused_item;
+				if (pos >= 0 && pos < int(nc.inv.length())) {
+					string side = assign_left ? "left" : "right";
+					uint prev_seq = nc.inv_seq;
+					nc.send_control(pkt_4("ACT", "assign_hand", side, "" + pos));
+					timer wt;
+					while (wt.elapsed < 350 && nc.inv_seq == prev_seq && nc.state == CONN_READY) {
+						wait(5);
+						pump_menu_net(nc);
+					}
+					if (int(nc.inv.length()) != built_inv_count) {
+						focus_idx = pos;
+						break;
+					}
+					for (uint i = 0; i < nc.inv.length() && int(i) < m.item_count; i++) {
+						m.set_item_text(int(i), format_inv_item_label(nc, nc.inv[i]));
+					}
+				}
+			}
 		}
+		if (int(nc.inv.length()) != built_inv_count) continue;
 		string sel = m.selected_item_id;
-		if (sel.length() == 0 || sel == "__back" || sel == "__empty") return;
+		if (sel.length() == 0) return; // Escape already played m.close_sound (inv_close.ogg)
+		if (sel == "__back" || sel == "__empty") {
+			g_audio.play_ui_cue("ui/inv_close.ogg", 0.85f);
+			return;
+		}
 		int idx = safe_int(sel, 0, int(nc.inv.length()) - 1, -1);
 		if (idx < 0) return;
+		focus_idx = idx;
 
 		ItemStack@ chosen = nc.inv[uint(idx)];
 		ItemDef@ idf = find_item(chosen.id);
-		if (@idf != null && (idf.category == "food" || idf.category == "drink" || idf.category == "med")) {
-			if (idx < BELT_SLOTS) {
-				nc.send_control("ACT|equip|" + idx);
-				nc.send_control("ACT|use_belt");
-			} else {
-				say("Move consumables into slots 1 to 9 on your belt, or select Use Active Belt Item.", true);
-			}
-		} else if (@idf != null && idf.category == "kit") {
+		if (@idf != null && idf.category == "kit") {
 			nc.send_control("ACT|build|" + (idf.build_type.length() > 0 ? idf.build_type : idf.id));
+			g_audio.play_ui_cue("ui/inv_close.ogg", 0.85f);
 			return;
-		} else if (idx < BELT_SLOTS) {
-			nc.send_control("ACT|equip|" + idx);
+		} else if (@idf != null && (idf.category == "food" || idf.category == "drink" || idf.category == "med" || idf.category == "armor" || idf.category == "weapon" || idf.category == "tool")) {
+			int target_hand = 1;
+			if (nc.right_hand_id == chosen.id && nc.left_hand_id != chosen.id) target_hand = 2;
+			else if (nc.left_hand_id != chosen.id) {
+				uint seq0 = nc.inv_seq;
+				nc.send_control(pkt_4("ACT", "assign_hand", "left", "" + idx));
+				timer wt0;
+				while (wt0.elapsed < 300 && nc.inv_seq == seq0 && nc.state == CONN_READY) { wait(5); pump_menu_net(nc); }
+			}
+			if (nc.active_hand != target_hand) {
+				uint seq1 = nc.inv_seq;
+				nc.send_control("ACT|hand|" + target_hand);
+				timer wt1;
+				while (wt1.elapsed < 300 && nc.inv_seq == seq1 && nc.state == CONN_READY) { wait(5); pump_menu_net(nc); }
+			}
+			nc.send_control("ACT|use_hand");
 		} else {
 			say((@idf != null ? idf.name : chosen.id) + " x" + chosen.qty + ", category " + (@idf != null ? idf.category : "item") + ".", true);
 		}
@@ -427,35 +503,74 @@ void run_settings_menu(ClientProfile@ prof, NetClient@ nc) {
 }
 
 void run_news_menu(NetClient@ nc) {
-	menu m;
-	init_std_menu(m, "News and Changelog. %0 items.");
-	string cur_motd = (@nc != null && nc.motd.length() > 0) ? nc.motd : "";
-	string[] lines;
-	if (@nc != null && nc.changelog.length() > 0) lines = nc.changelog;
-
-	if (cur_motd.length() == 0) {
-		string mp = file_exists("server/data/motd.txt") ? "server/data/motd.txt" : (file_exists("../server/data/motd.txt") ? "../server/data/motd.txt" : "data/motd.txt");
-		if (file_exists(mp)) cur_motd = file_get_contents(mp).replace("\r", "", true).trim_whitespace();
-		else cur_motd = GAME_NAME + " version " + GAME_VERSION + ". Welcome to the wilderness.";
+	if (@nc == null || nc.state != CONN_READY) {
+		g_audio.play_ui_cue("error.ogg", 0.8f);
+		say("Connect to a server first to view the live Message of the Day and Changelog.", true);
+		return;
 	}
-	if (lines.length() == 0) {
-		string cp = file_exists("server/data/changelog.txt") ? "server/data/changelog.txt" : (file_exists("../server/data/changelog.txt") ? "../server/data/changelog.txt" : "data/changelog.txt");
-		if (file_exists(cp)) {
-			string[]@ raw_l = split_keep_empty(file_get_contents(cp).replace("\r", "", true), "\n");
-			for (uint i = 0; i < raw_l.length(); i++) {
-				string t = raw_l[i].trim_whitespace();
-				if (t.length() > 0) lines.insert_last(t);
-			}
-		}
-	}
-
-	m.add_item("Message of the Day: " + cur_motd, "motd");
-	for (uint i = 0; i < lines.length(); i++) m.add_item(lines[i], "ch:" + i);
-	m.add_item("Back", "__back");
-
-	while (m.monitor()) {
+	nc.send_control("NEWS");
+	timer wt;
+	while (wt.elapsed < 250) {
 		wait(5);
 		pump_menu_net(nc);
+		if (nc.state != CONN_READY) return;
+	}
+
+	while (nc.state == CONN_READY) {
+		menu m;
+		init_std_menu(m, "News and Changelog. %0 items.");
+		string cur_motd = nc.motd.length() > 0 ? nc.motd : "No Message of the Day is currently set.";
+		m.add_item("Message of the Day: " + cur_motd, "motd");
+		if (nc.changelog.length() == 0) {
+			m.add_item("No changelog entries published by this server.", "__none");
+		} else {
+			for (uint i = 0; i < nc.changelog.length(); i++) {
+				m.add_item(nc.changelog[i], "ch:" + i);
+			}
+		}
+		m.add_item("Back", "__back");
+
+		while (m.monitor()) {
+			wait(5);
+			pump_menu_net(nc);
+			if (nc.state != CONN_READY) return;
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__back") return;
+	}
+}
+
+void run_credits_menu(NetClient@ nc = null) {
+	string[] lines = {
+		GAME_NAME + ", Version " + GAME_VERSION,
+		"Presented by: LC Boy",
+		"Creator, Game Design and Lead Developer: LC Boy",
+		"Server Architecture and Authoritative Networking: LC Boy (ENet Multi-Map Engine)",
+		"3D Spatial Audio and Acoustic Pipeline: Steam Audio HRTF, Wall Low-Pass Occlusion, and Zone Reverb",
+		"Accessibility and Screen-Reader Interface: Arrow-Key Menus, 6-Channel Message Buffers, and STW 6-Category Tracker",
+		"Audio Assets and Open-Source Attribution: Verified CC0 Sound Libraries, listed in client/sounds/CREDITS.md",
+		"Engine and Tooling: Built with NonVisual Gaming Toolkit (NVGT)",
+		"Developer Note from LC Boy: Perhaps this game may never be officially opened as a live public server, but it is built to serve as a useful starter template for creating a survival online audio game from scratch."
+	};
+
+	int focus = 0;
+	while (true) {
+		menu m;
+		init_std_menu(m, GAME_NAME + " Credits. Created by LC Boy. %0 entries.");
+		if (focus > 0) m.automatic_intro = false;
+		for (uint i = 0; i < lines.length(); i++) {
+			m.add_item(lines[i], "line:" + i);
+		}
+		m.add_item("Back", "__back");
+		if (focus > 0 && focus < int(m.item_count)) m.set_focused_item(focus, false);
+
+		while (m.monitor()) {
+			wait(5);
+			pump_menu_net(nc);
+		}
+		string sel = m.selected_item_id;
+		if (sel.length() == 0 || sel == "__back") return;
+		focus = m.selected_item;
 	}
 }
 
@@ -532,7 +647,7 @@ string run_pause_menu(NetClient@ nc, ClientProfile@ prof) {
 	m.add_item("Crafting (C)", "craft");
 	m.add_item("Survival Building (B)", "build");
 	if (nc.my_rank >= RANK_BUILDER) m.add_item("Audio Map Builder Hub (F8)", "mapbuild");
-	m.add_item("Social and Online Players (F2)", "social");
+	m.add_item("Social and Online Players (F5)", "social");
 	if (nc.my_rank >= RANK_MOD) m.add_item("Staff Panel (F9)", "staff");
 	m.add_item("Settings and 7-Layer Mixer", "settings");
 	m.add_item("Interactive Audio Tutorial", "tutorial");

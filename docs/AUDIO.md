@@ -21,7 +21,7 @@
 | 7 | **Music** | `0.35` | Optional menu/wilderness theme (off-able) | Ducks lowest |
 
 ## 3. Required Asset Catalog (`sounds/`)
-- **ui/**: `menu_move`, `menu_select`, `menu_back`, `menu_wrap`, `menu_edge`, `menu_open`, `slider_tick`, `error`, `key_click`, `key_backspace`, `chat_open`, `chat_close`, `chat_send`, `msg_chat`, `msg_pm`, `msg_social`, `notify_friend`
+- **ui/**: `menu_move`, `menu_select`, `menu_back`, `menu_wrap`, `menu_edge`, `menu_open`, `inv_open`, `inv_close`, `slider_tick`, `error`, `key_click`, `key_backspace`, `chat_open`, `chat_close`, `chat_send`, `msg_chat`, `msg_pm`, `msg_social`, `notify_friend`
 - **steps/**: `grass_1..3`, `dirt_1..3`, `stone_1..3`, `wood_1..3`, `sand_1..3`, `water_1..3`, `jump`, `land_soft`, `land_hard`, `wall_bump_wood`, `wall_bump_stone`
 - **survival/**: `chop_wood`, `tree_fall`, `mine_stone`, `forage_berry`, `water_scoop`, `drink`, `eat`, `bandage`, `craft_ok`, `campfire_ignite`, `campfire_loop`, `heartbeat`, `shiver`
 - **builder/**: `build_place`, `build_repair`, `build_break`, `door_open`, `door_close`, `door_locked`, `chest_open`, `chest_close`, `beacon_ping`

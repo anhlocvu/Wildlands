@@ -31,6 +31,7 @@ void main() {
 	p.layer_pct[LAYER_AMBIENCE] = 35;
 	p.turn_snap_deg = 90;
 	p.hrtf_enabled = false;
+	p.beacons_enabled = false;
 	p.tutorial_done = true;
 	p.custom_host = "play.example.org";
 	p.custom_port = 7205;
@@ -45,14 +46,19 @@ void main() {
 	assert_true(p2.layer_pct[LAYER_AMBIENCE] == 35, "layer ambience persisted as string 35");
 	assert_true(p2.turn_snap_deg == 90, "turn snap 90 persisted");
 	assert_true(!p2.hrtf_enabled, "hrtf false persisted");
+	assert_true(!p2.beacons_enabled, "beacons_enabled false persisted");
 	assert_true(p2.tutorial_done, "tutorial_done persisted");
 	assert_true(p2.custom_host == "play.example.org" && p2.custom_port == 7205, "custom host/port persisted");
 	assert_true(p2.get_bind_key("attack") == KEY_Z, "custom keybind persisted");
 	assert_true(p2.get_bind_key("scanner") == 0, "legacy T scanner keybind removed");
+	assert_true(p2.get_bind_key("who") == KEY_F1 && p2.get_bind_key("uptime") == KEY_F2 && p2.get_bind_key("ping") == KEY_F3 && p2.get_bind_key("motd") == KEY_F4 && p2.get_bind_key("social") == KEY_F5, "Standardized F1-F5 binds active");
+	assert_true(p2.get_bind_key("toggle_beacons") == KEY_F6 && p2.get_bind_key("help") == KEY_F11 && p2.get_bind_key("copy_last") == KEY_F12 && p2.get_bind_key("who_near") == KEY_P, "Template P/F6/F11/F12 binds active");
 	assert_true(p2.get_bind_key("climb_up") == KEY_PAGEUP && p2.get_bind_key("climb_down") == KEY_PAGEDOWN, "PageUp/PageDown climb binds active");
 	assert_true(p2.get_bind_key("trk_next") == KEY_EQUALS && p2.get_bind_key("trk_prev") == KEY_MINUS, "STW tracker = / - binds active");
 	assert_true(p2.get_bind_key("trk_track") == KEY_BACK && p2.get_bind_key("trk_read") == KEY_O, "STW tracker Backspace / O binds active");
 	assert_true(p2.get_bind_key("staff_panel") == KEY_F9, "Staff Panel F9 bind active");
+	assert_true(p2.get_bind_key("use_hand") == KEY_SPACE && p2.get_bind_key("jump") == KEY_SPACE, "v3 Space use_hand and Shift+Space jump binds active");
+	assert_true(p2.get_bind_key("use_belt") == 0, "legacy use_belt bind removed");
 	assert_true(p2.is_blocked("trollone"), "blocklist case-insensitive persisted");
 
 	// Test 8-slot LRU wallet overwrite & eviction on 9th distinct server
@@ -79,6 +85,25 @@ void main() {
 	p4.dir_override = tmp_dir;
 	p4.load();
 	assert_true(@p4.find_wallet_slot("srv8.net", 7108) == null, "deleted wallet slot stays deleted after reload");
+
+	// Verify v1 settings.ini keybind migration preserves unaffected custom keys while enforcing F1-F5 defaults
+	string v1_ini = "[keybinds]\r\nwho=" + KEY_U + "\r\nping=" + KEY_P + "\r\nsocial=" + KEY_F2 + "\r\nattack=" + KEY_Z + "\r\n";
+	p4.write_atomic(p4.settings_path(), v1_ini);
+	ClientProfile pmig;
+	pmig.dir_override = tmp_dir;
+	pmig.load();
+	assert_true(pmig.get_bind_key("who") == KEY_F1 && pmig.get_bind_key("uptime") == KEY_F2 && pmig.get_bind_key("ping") == KEY_F3 && pmig.get_bind_key("motd") == KEY_F4 && pmig.get_bind_key("social") == KEY_F5, "v1 INI migrated to standardized F1-F5 binds");
+	assert_true(pmig.get_bind_key("attack") == KEY_Z, "v1 INI migration preserved unaffected custom attack bind");
+	assert_true(pmig.get_bind_key("use_hand") == KEY_SPACE && pmig.get_bind_key("jump") == KEY_SPACE, "v1 INI migrated use_hand & jump to v3 Space / Shift+Space");
+
+	// Verify v2 settings.ini migration updates use_belt->use_hand (Space) while keeping unaffected custom keys
+	string v2_ini = "[keybinds]\r\nschema_version=2\r\nuse_belt=" + KEY_Q + "\r\njump=" + KEY_SPACE + "\r\nattack=" + KEY_Z + "\r\n";
+	p4.write_atomic(p4.settings_path(), v2_ini);
+	ClientProfile pmig2;
+	pmig2.dir_override = tmp_dir;
+	pmig2.load();
+	assert_true(pmig2.get_bind_key("use_hand") == KEY_SPACE && pmig2.get_bind_key("jump") == KEY_SPACE, "v2 INI migrated use_hand & jump to v3 defaults");
+	assert_true(pmig2.get_bind_key("attack") == KEY_Z, "v2 INI migration preserved unaffected custom attack bind");
 
 	// Corrupt primary settings.ini & verify fallback to .bak cleanly
 	p4.write_atomic(p4.settings_path(), "BROKEN");

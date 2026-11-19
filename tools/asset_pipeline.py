@@ -83,6 +83,8 @@ ASSETS = [
     ("ui/track_arrived.ogg", ("url", KENNEY_IF_BASE + "confirmation_004.wav"), 2, -15, True, 0, "Kenney Interface Sounds (CC0)"),
     ("ui/cat_switch.ogg", ("url", KENNEY_IF_BASE + "switch_002.wav"), 2, -16, True, 0, "Kenney Interface Sounds (CC0)"),
     ("ui/staff_alert.ogg", ("zip", "100_cc0_sfx/key_open_01.ogg"), 2, -15, True, 0, "100 CC0 SFX by rubberduck (CC0)"),
+    ("ui/inv_open.ogg", ("url", KENNEY_RPG_BASE + "handle_small_leather.ogg"), 2, -15, True, 0, "Kenney RPG Audio (CC0)"),
+    ("ui/inv_close.ogg", ("url", KENNEY_RPG_BASE + "handle_small_leather_2.ogg"), 2, -15, True, 0, "Kenney RPG Audio (CC0)"),
 
     # Footsteps & Movement (mono for pure 3D spatialization, zero leading silence)
     ("steps/grass_1.ogg", ("url", KENNEY_IMP_BASE + "footstep_grass_000.ogg"), 1, -16, True, 0, "Kenney Impact Sounds (CC0)"),

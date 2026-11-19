@@ -131,3 +131,19 @@ string format_last_seen_en(int64 last_seen_epoch, int64 now_sec, int tz_offset_s
 	}
 	return rel + " (" + format_epoch_datetime(last_seen_epoch, tz_offset_sec) + ")";
 }
+
+string format_uptime_words(uint64 sec) {
+	if (sec == 0) return "0 seconds";
+	uint64 days = sec / 86400;
+	uint64 hours = (sec % 86400) / 3600;
+	uint64 mins = (sec % 3600) / 60;
+	uint64 secs = sec % 60;
+	string[] parts;
+	if (days > 0) parts.insert_last(days + (days == 1 ? " day" : " days"));
+	if (hours > 0) parts.insert_last(hours + (hours == 1 ? " hour" : " hours"));
+	if (mins > 0) parts.insert_last(mins + (mins == 1 ? " minute" : " minutes"));
+	if (secs > 0 || parts.length() == 0) parts.insert_last(secs + (secs == 1 ? " second" : " seconds"));
+	string res = parts[0];
+	for (uint i = 1; i < parts.length(); i++) res += ", " + parts[i];
+	return res;
+}

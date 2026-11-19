@@ -43,7 +43,6 @@ const double TRACKER_MAX_DIST = 30.0;
 const int MAP_MIN_Z = -50;
 const int MAP_MAX_Z = 100;
 const int MAX_INV_SLOTS = 24;
-const int BELT_SLOTS = 9;
 const int MAX_CHEST_SLOTS = 12;
 
 // Account & chat validation limits.
@@ -53,6 +52,7 @@ const uint MAX_CHAT_LEN = 220;
 const uint64 CHAT_RATE_LIMIT_MS = 700;
 const int PBKDF_ROUNDS = 5000;
 const int WALLET_SLOTS = 8;
+const int KEYBIND_SCHEMA_VERSION = 3;
 
 // Rank hierarchy (nobody moderates sideways or upwards).
 const int RANK_PLAYER = 0;

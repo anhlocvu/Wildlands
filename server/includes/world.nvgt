@@ -5,27 +5,11 @@
 #include "state.nvgt"
 
 string encode_chest_items(ItemStack@[]@ items) {
-	if (@items == null || items.length() == 0) return "-";
-	string out_str = "";
-	for (uint i = 0; i < items.length(); i++) {
-		if (items[i].qty <= 0) continue;
-		if (out_str.length() > 0) out_str += ";";
-		out_str += items[i].id + ":" + items[i].qty;
-	}
-	return out_str.length() > 0 ? out_str : "-";
+	return encode_item_stacks(items);
 }
 
 void decode_chest_items(const string&in encoded, ItemStack@[]@ out_items) {
-	out_items.resize(0);
-	if (encoded.length() == 0 || encoded == "-") return;
-	string[]@ pairs = split_keep_empty(encoded, ";");
-	for (uint i = 0; i < pairs.length() && out_items.length() < uint(MAX_CHEST_SLOTS); i++) {
-		string[]@ kv = split_keep_empty(pairs[i], ":");
-		if (kv.length() < 2) continue;
-		string iid = field(kv, 0, "");
-		int qty = safe_int(field(kv, 1, "0"), 1, 99, 0);
-		if (qty > 0 && @find_item(iid) != null) out_items.insert_last(ItemStack(iid, qty));
-	}
+	decode_item_stacks(encoded, out_items, MAX_CHEST_SLOTS);
 }
 
 void world_init_nodes(ServerCtx@ ctx, MapInstance@ mi) {
@@ -806,14 +790,76 @@ void world_handle_craft(ServerCtx@ ctx, PlayerSession@ ps, const string&in recip
 	ctx.send_inv(ps);
 }
 
+void world_handle_assign_hand(ServerCtx@ ctx, PlayerSession@ ps, const string&in side, int slot_idx) {
+	if (@ps == null || !ps.authed || ps.peer_id == 0) return;
+	int hand = (side == "left" || side == "1") ? 1 : ((side == "right" || side == "2") ? 2 : 0);
+	if (hand == 0 || slot_idx < 0 || slot_idx >= int(ps.inv.length())) {
+		ctx.send_sfx_to(ps, "self", "ui/error.ogg", ps.x, ps.y, ps.z, 0.7);
+		return;
+	}
+	ItemStack@ st = ps.inv[uint(slot_idx)];
+	ItemDef@ def = find_item(st.id);
+	string iname = @def != null ? def.name : st.id;
+	string hlabel = (hand == 1) ? "left hand" : "right hand";
+	string opp_id = (hand == 1) ? ps.right_hand_id : ps.left_hand_id;
+	bool transferred = (opp_id == st.id && ps.count_item(st.id) < 2);
+	if (!ps.assign_hand(hand, st.id)) {
+		ctx.send_sfx_to(ps, "self", "ui/error.ogg", ps.x, ps.y, ps.z, 0.7);
+		return;
+	}
+	ctx.send_sfx_to(ps, "self", "ui/menu_select.ogg", ps.x, ps.y, ps.z, 0.7);
+	if (transferred) {
+		ctx.send_speech(ps, MBUF_GAME, true, "Moved " + iname + " to " + hlabel + ".");
+	} else {
+		ctx.send_speech(ps, MBUF_GAME, true, "Held " + iname + " in " + hlabel + ".");
+	}
+	ctx.send_inv(ps);
+}
+
+void world_handle_select_hand(ServerCtx@ ctx, PlayerSession@ ps, int hand) {
+	if (@ps == null || !ps.authed || ps.peer_id == 0) return;
+	if (hand != 1 && hand != 2) return;
+	ps.reconcile_hands();
+	string cur_id = ps.hand_item_id(hand);
+	string hlabel = (hand == 1) ? "Left hand" : "Right hand";
+	if (cur_id.length() == 0) {
+		ctx.send_sfx_to(ps, "self", "ui/menu_edge.ogg", ps.x, ps.y, ps.z, 0.65);
+		ctx.send_speech(ps, MBUF_GAME, true, hlabel + " is empty.");
+		return;
+	}
+	ItemDef@ def = find_item(cur_id);
+	string iname = @def != null ? def.name : cur_id;
+	if (ps.active_hand == hand) {
+		if (hand == 1) ps.left_hand_id = "";
+		else ps.right_hand_id = "";
+		ps.active_hand = 0;
+		ctx.send_sfx_to(ps, "self", "ui/menu_back.ogg", ps.x, ps.y, ps.z, 0.7);
+		ctx.send_speech(ps, MBUF_GAME, true, "Put " + iname + " away. " + hlabel + " is now empty.");
+		ctx.send_inv(ps);
+		return;
+	}
+	ps.active_hand = hand;
+	int q = ps.count_item(cur_id);
+	string qstr = q > 1 ? (" x" + q) : "";
+	ctx.send_sfx_to(ps, "self", "ui/menu_move.ogg", ps.x, ps.y, ps.z, 0.75);
+	ctx.send_speech(ps, MBUF_GAME, true, hlabel + ": " + iname + qstr + ".");
+	ctx.send_inv(ps);
+}
+
 void world_handle_use_item(ServerCtx@ ctx, PlayerSession@ ps) {
+	ps.reconcile_hands();
 	ItemStack@ eq = ps.active_item();
-	if (@eq == null) {
-		ctx.send_speech(ps, MBUF_GAME, false, "Your active belt slot is empty.");
+	if (@eq == null || ps.active_hand == 0) {
+		if (ps.left_hand_id.length() > 0 || ps.right_hand_id.length() > 0) {
+			ctx.send_speech(ps, MBUF_GAME, false, "No hand selected. Press 1 for left hand or 2 for right hand.");
+		} else {
+			ctx.send_speech(ps, MBUF_GAME, false, "Both hands are empty. Press I to open inventory.");
+		}
 		return;
 	}
 	ItemDef@ def = find_item(eq.id);
 	if (@def == null) return;
+	string hlabel = ps.active_hand == 1 ? "left hand" : "right hand";
 	if (def.category == "food" || def.category == "drink" || def.category == "med") {
 		ps.hp = clampi(ps.hp + def.heal_hp, 0, 100);
 		ps.hunger = clampi(ps.hunger + def.feed_hunger, 0, 100);
@@ -832,9 +878,16 @@ void world_handle_use_item(ServerCtx@ ctx, PlayerSession@ ps) {
 		string extra = cured_fracture ? " Fracture healed." : "";
 		ctx.send_speech(ps, MBUF_GAME, false, "Used " + def.name + "." + extra + " Health " + ps.hp + ", hunger " + ps.hunger + ", thirst " + ps.thirst + ".");
 		ctx.send_inv(ps);
-	} else if (def.category == "kit") {
-		ctx.send_speech(ps, MBUF_GAME, false, "Use B or Survival Builder menu to place " + def.name + ".");
+	} else if (def.category == "armor") {
+		ps.equipped_armor_id = def.id;
+		ctx.send_sfx_to(ps, "self", "ui/menu_select.ogg", ps.x, ps.y, ps.z, 0.75);
+		ctx.send_speech(ps, MBUF_GAME, false, "Equipped " + def.name + " armor.");
+		ctx.send_inv(ps);
+	} else if (def.category == "weapon" || def.category == "tool") {
+		ctx.send_sfx_to(ps, "self", "ui/menu_select.ogg", ps.x, ps.y, ps.z, 0.7);
+		string dmg_note = def.damage > 0 ? (", " + def.damage + " damage") : "";
+		ctx.send_speech(ps, MBUF_GAME, false, "Equipped " + def.name + " in " + hlabel + dmg_note + ".");
 	} else {
-		ctx.send_speech(ps, MBUF_GAME, false, def.name + " equipped.");
+		ctx.send_speech(ps, MBUF_GAME, false, def.name + " x" + eq.qty + " in " + hlabel + ".");
 	}
 }
